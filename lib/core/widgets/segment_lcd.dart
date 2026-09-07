@@ -2,10 +2,21 @@ import 'package:flutter/material.dart';
 
 /// One labelled row on a 7/14-segment pump LCD.
 class SegmentLcdLine {
-  const SegmentLcdLine({required this.label, required this.value});
+  const SegmentLcdLine({
+    required this.label,
+    required this.value,
+    this.placeholder,
+    this.valueSize,
+  });
 
   final String label;
   final String value;
+
+  /// Unlit 7-segment mask painted behind [value], e.g. `888888.88`.
+  final String? placeholder;
+
+  /// Overrides the panel value size for this row only.
+  final double? valueSize;
 }
 
 /// Shared pump LCD. Callers pass glass color, sizes, and layout — do not fork
@@ -22,6 +33,7 @@ class SegmentLcd extends StatelessWidget {
     this.frame = inkFrame,
     this.active = inkFrame,
     this.ghost = const Color(0x2E1C1A17),
+    this.valueUnlit,
     this.rule = const Color(0x40211C1A),
     this.bezelWidth = 3,
     this.frameRadius = 8,
@@ -33,6 +45,20 @@ class SegmentLcd extends StatelessWidget {
     this.showSideNub = false,
     this.labelStroke = false,
   });
+
+  static const String saleAmountMask = '888888.88';
+  static const String saleMeterMask = '88888888.888';
+
+  static double? _dispenserValueSize(String label) {
+    switch (label.toUpperCase()) {
+      case 'AMOUNT':
+        return 38;
+      case 'RATE':
+        return 20;
+      default:
+        return null;
+    }
+  }
 
   /// Purchase stock LCDs — sage glass, compact, AMOUNT rule.
   factory SegmentLcd.purchase({
@@ -66,14 +92,23 @@ class SegmentLcd extends StatelessWidget {
   }) {
     return SegmentLcd(
       key: key,
-      lines: lines,
+      lines: <SegmentLcdLine>[
+        for (final SegmentLcdLine line in lines)
+          SegmentLcdLine(
+            label: line.label,
+            value: line.value,
+            placeholder: line.placeholder ?? saleAmountMask,
+            valueSize: line.valueSize ?? _dispenserValueSize(line.label),
+          ),
+      ],
       digitWidth: 0,
       labelSize: 11,
-      valueSize: 20,
+      valueSize: 30,
       labelWeight: FontWeight.w400,
       glass: offlineAmber(offline),
       active: offlineActive(offline),
       ghost: offlineGhost(offline),
+      valueUnlit: offlineUnlitDigits(offline),
       bezelWidth: 6,
       frameRadius: 8,
       glassRadius: 2,
@@ -93,14 +128,23 @@ class SegmentLcd extends StatelessWidget {
   }) {
     return SegmentLcd(
       key: key,
-      lines: lines,
+      lines: <SegmentLcdLine>[
+        for (final SegmentLcdLine line in lines)
+          SegmentLcdLine(
+            label: line.label,
+            value: line.value,
+            placeholder: line.placeholder ?? saleMeterMask,
+            valueSize: line.valueSize,
+          ),
+      ],
       digitWidth: 0,
       labelSize: 8,
-      valueSize: 13,
+      valueSize: 20,
       labelWeight: FontWeight.w400,
       glass: offlineAmber(offline),
       active: offlineActive(offline),
       ghost: offlineGhost(offline),
+      valueUnlit: offlineUnlitDigits(offline),
       bezelWidth: 4,
       frameRadius: 8,
       glassRadius: 2,
@@ -156,6 +200,13 @@ class SegmentLcd extends StatelessWidget {
     return inkFrame.withValues(alpha: 0.06);
   }
 
+  static Color offlineUnlitDigits(bool offline) {
+    if (!offline) {
+      return const Color(0x1A000000);
+    }
+    return inkFrame.withValues(alpha: 0.08);
+  }
+
   final List<SegmentLcdLine> lines;
   final int digitWidth;
   final double labelSize;
@@ -165,6 +216,7 @@ class SegmentLcd extends StatelessWidget {
   final Color frame;
   final Color active;
   final Color ghost;
+  final Color? valueUnlit;
   final Color rule;
   final double bezelWidth;
   final double frameRadius;
@@ -216,14 +268,18 @@ class SegmentLcd extends StatelessWidget {
               _SegmentLcdRow(
                 label: lines[i].label,
                 value: lines[i].value,
+                placeholder: lines[i].placeholder,
                 digitWidth: digitWidth,
                 labelSize: labelSize,
-                valueSize: emphasizeFirst && i == 0
-                    ? valueSize
-                    : (emphasizeFirst ? valueSize * 0.86 : valueSize),
+                valueSize:
+                    lines[i].valueSize ??
+                    (emphasizeFirst && i == 0
+                        ? valueSize
+                        : (emphasizeFirst ? valueSize * 0.86 : valueSize)),
                 labelWeight: labelWeight,
                 active: active,
                 ghost: ghost,
+                valueUnlit: valueUnlit ?? ghost,
                 labelStroke: labelStroke,
               ),
             ],
@@ -263,24 +319,43 @@ class _SegmentLcdRow extends StatelessWidget {
   const _SegmentLcdRow({
     required this.label,
     required this.value,
+    required this.placeholder,
     required this.digitWidth,
     required this.labelSize,
     required this.valueSize,
     required this.labelWeight,
     required this.active,
     required this.ghost,
+    required this.valueUnlit,
     required this.labelStroke,
   });
 
   final String label;
   final String value;
+  final String? placeholder;
   final int digitWidth;
   final double labelSize;
   final double valueSize;
   final FontWeight labelWeight;
   final Color active;
   final Color ghost;
+  final Color valueUnlit;
   final bool labelStroke;
+
+  String get _liveDigits {
+    if (digitWidth > 0) {
+      return value.padLeft(digitWidth);
+    }
+    return value;
+  }
+
+  String get _unlitMask {
+    final String? mask = placeholder;
+    if (mask != null && mask.isNotEmpty) {
+      return mask;
+    }
+    return _liveDigits.replaceAll(RegExp(r'[0-9 ]'), '8');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -298,22 +373,29 @@ class _SegmentLcdRow extends StatelessWidget {
       color: active,
     );
     final String labelGhost = List<String>.filled(label.length, '~').join();
-    final String live = digitWidth > 0 ? value.padLeft(digitWidth) : value;
-    final String valueGhost = live.replaceAll(RegExp(r'[0-9 ]'), '8');
+    final String live = _liveDigits;
+    final String unlit = _unlitMask;
 
     return Row(
       children: <Widget>[
-        Stack(
-          clipBehavior: Clip.none,
-          children: <Widget>[
-            Text(labelGhost, style: labelStyle.copyWith(color: ghost)),
-            if (labelStroke)
-              Transform.translate(
-                offset: const Offset(0.55, 0),
-                child: Text(label, style: labelStyle),
-              ),
-            Text(label, style: labelStyle),
-          ],
+        Flexible(
+          flex: 0,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: <Widget>[
+                Text(labelGhost, style: labelStyle.copyWith(color: ghost)),
+                if (labelStroke)
+                  Transform.translate(
+                    offset: const Offset(0.55, 0),
+                    child: Text(label, style: labelStyle),
+                  ),
+                Text(label, style: labelStyle),
+              ],
+            ),
+          ),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -326,10 +408,10 @@ class _SegmentLcdRow extends StatelessWidget {
               alignment: Alignment.centerRight,
               children: <Widget>[
                 Text(
-                  valueGhost,
+                  unlit,
                   textAlign: TextAlign.right,
                   maxLines: 1,
-                  style: valueStyle.copyWith(color: ghost),
+                  style: valueStyle.copyWith(color: valueUnlit),
                 ),
                 Text(
                   live,

@@ -1,8 +1,11 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/purchase_repository.dart';
+import '../data/sales_transaction_repository.dart';
 import '../data/transaction_store.dart';
-import '../domain/money_format.dart';
+import 'purchase_providers.dart';
 import 'station_providers.dart';
 
 enum LedgerTab { sales, purchases }
@@ -13,68 +16,81 @@ class LedgerQuery {
     this.tab = LedgerTab.sales,
     this.unitId,
     this.search = '',
-    required this.month,
+    this.salesFrom,
+    this.salesTo,
+    this.purchaseFrom,
+    this.purchaseTo,
   });
 
   final LedgerTab tab;
   final int? unitId;
   final String search;
-  final DateTime month;
+  final DateTime? salesFrom;
+  final DateTime? salesTo;
+  final DateTime? purchaseFrom;
+  final DateTime? purchaseTo;
+
+  DateTimeRange? get salesRange => _range(salesFrom, salesTo);
+
+  DateTimeRange? get purchaseRange => _range(purchaseFrom, purchaseTo);
+
+  static DateTimeRange? _range(DateTime? from, DateTime? to) {
+    if (from == null || to == null) {
+      return null;
+    }
+    return DateTimeRange(start: from, end: to);
+  }
 
   LedgerQuery copyWith({
     LedgerTab? tab,
     int? unitId,
     bool clearUnit = false,
     String? search,
-    DateTime? month,
+    DateTime? salesFrom,
+    DateTime? salesTo,
+    bool clearSalesRange = false,
+    DateTime? purchaseFrom,
+    DateTime? purchaseTo,
+    bool clearPurchaseRange = false,
   }) {
     return LedgerQuery(
       tab: tab ?? this.tab,
       unitId: clearUnit ? null : (unitId ?? this.unitId),
       search: search ?? this.search,
-      month: month ?? this.month,
+      salesFrom: clearSalesRange ? null : (salesFrom ?? this.salesFrom),
+      salesTo: clearSalesRange ? null : (salesTo ?? this.salesTo),
+      purchaseFrom: clearPurchaseRange
+          ? null
+          : (purchaseFrom ?? this.purchaseFrom),
+      purchaseTo: clearPurchaseRange ? null : (purchaseTo ?? this.purchaseTo),
     );
   }
-}
-
-@immutable
-class LedgerMonthNav {
-  const LedgerMonthNav({
-    required this.month,
-    required this.canGoPrevious,
-    required this.canGoNext,
-  });
-
-  final DateTime month;
-  final bool canGoPrevious;
-  final bool canGoNext;
 }
 
 class LedgerQueryNotifier extends Notifier<LedgerQuery> {
   @override
-  LedgerQuery build() {
-    final DateTime initial = _pickMonth(
-      startOfMonth(DateTime.now()),
-      ref.read(transactionStoreProvider).availableSalesMonths(),
-    );
-    return LedgerQuery(month: initial);
-  }
-
-  List<DateTime> _monthsFor(LedgerTab tab) {
-    final TransactionStore store = ref.read(transactionStoreProvider);
-    if (tab == LedgerTab.sales) {
-      return store.availableSalesMonths();
-    }
-    return store.availablePurchaseMonths();
-  }
+  LedgerQuery build() => const LedgerQuery();
 
   void setTab(LedgerTab tab) {
     if (state.tab == tab) {
       return;
     }
+    state = state.copyWith(tab: tab);
+  }
+
+  void setSalesRange(DateTimeRange? range) {
     state = state.copyWith(
-      tab: tab,
-      month: _pickMonth(state.month, _monthsFor(tab)),
+      salesFrom: range?.start,
+      salesTo: range?.end,
+      clearSalesRange: range == null,
+    );
+  }
+
+  void setPurchaseRange(DateTimeRange? range) {
+    state = state.copyWith(
+      purchaseFrom: range?.start,
+      purchaseTo: range?.end,
+      clearPurchaseRange: range == null,
     );
   }
 
@@ -85,90 +101,33 @@ class LedgerQueryNotifier extends Notifier<LedgerQuery> {
   void setSearch(String search) {
     state = state.copyWith(search: search);
   }
-
-  void stepMonth(int delta) {
-    final List<DateTime> months = _monthsFor(state.tab);
-    if (months.isEmpty) {
-      return;
-    }
-    final int index = _indexOfMonth(months, state.month);
-    if (index < 0) {
-      state = state.copyWith(month: _pickMonth(state.month, months));
-      return;
-    }
-    final int next = index + delta;
-    if (next < 0 || next >= months.length) {
-      return;
-    }
-    state = state.copyWith(month: months[next]);
-  }
-
-  static int _indexOfMonth(List<DateTime> months, DateTime month) {
-    return months.indexWhere((DateTime item) {
-      return item.year == month.year && item.month == month.month;
-    });
-  }
-
-  static DateTime _pickMonth(DateTime preferred, List<DateTime> months) {
-    if (months.isEmpty) {
-      return startOfMonth(preferred);
-    }
-    for (final DateTime month in months) {
-      if (month.year == preferred.year && month.month == preferred.month) {
-        return month;
-      }
-    }
-    return months.last;
-  }
 }
 
 final ledgerQueryProvider = NotifierProvider<LedgerQueryNotifier, LedgerQuery>(
   LedgerQueryNotifier.new,
 );
 
-final ledgerAvailableMonthsProvider = Provider<List<DateTime>>((Ref ref) {
-  ref.watch(historyRevisionProvider);
-  final LedgerTab tab = ref.watch(
-    ledgerQueryProvider.select((LedgerQuery q) {
-      return q.tab;
-    }),
-  );
-  final TransactionStore store = ref.read(transactionStoreProvider);
-  if (tab == LedgerTab.sales) {
-    return store.availableSalesMonths();
-  }
-  return store.availablePurchaseMonths();
-});
-
-final ledgerMonthNavProvider = Provider<LedgerMonthNav>((Ref ref) {
-  final DateTime month = ref.watch(
-    ledgerQueryProvider.select((LedgerQuery q) => q.month),
-  );
-  final List<DateTime> months = ref.watch(ledgerAvailableMonthsProvider);
-  final int index = months.indexWhere((DateTime item) {
-    return item.year == month.year && item.month == month.month;
-  });
-  return LedgerMonthNav(
-    month: month,
-    canGoPrevious: index > 0,
-    canGoNext: index >= 0 && index < months.length - 1,
-  );
-});
-
 final salesLedgerSliceProvider = Provider<SalesLedgerSnapshot>((Ref ref) {
   ref.watch(historyRevisionProvider);
   final LedgerQuery query = ref.watch(ledgerQueryProvider);
-  return ref
-      .read(transactionStoreProvider)
-      .querySales(
-        unitId: query.unitId,
-        search: query.search,
-        month: query.month,
-      );
+  return SalesTransactionRepository.querySnapshot(
+    ref.watch(committedSalesProvider),
+    unitId: query.unitId,
+    search: query.search,
+    from: query.salesFrom,
+    to: query.salesTo,
+  );
 });
 
 final purchaseLedgerSliceProvider = Provider<PurchaseLedgerSnapshot>((Ref ref) {
   ref.watch(historyRevisionProvider);
   final LedgerQuery query = ref.watch(ledgerQueryProvider);
-  return ref.read(transactionStoreProvider).queryPurchases(month: query.month);
+  final List<PurchaseRecord> rows = ref
+      .watch(purchaseControllerProvider)
+      .purchases;
+  return PurchaseRepository.snapshot(
+    rows,
+    from: query.purchaseFrom,
+    to: query.purchaseTo,
+  );
 });

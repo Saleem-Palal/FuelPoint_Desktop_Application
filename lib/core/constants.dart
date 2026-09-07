@@ -2,6 +2,8 @@ class AppBrand {
   static const String name = 'FuelPoint';
   static const String tagline = 'Station Control';
   static const String developer = 'RetroSoft';
+  static const String version = '1.0.0.1';
+  static const String versionLabel = 'v$version';
 }
 
 class FdxDefaults {

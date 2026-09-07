@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../core/widgets/segment_lcd.dart';
+import '../../../../features/shift/domain/shift_models.dart';
+import '../../../../features/shift/presentation/shift_providers.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
 import 'confirm_payment_dialog.dart';
 import 'fuel_nozzle_graphic.dart';
-import 'unit_link_dialog.dart';
+import 'helper_duty_dialog.dart';
 
 class DispenserUnitData {
   const DispenserUnitData({
@@ -86,7 +91,7 @@ class DispenserUnitData {
 }
 
 /// One dispenser card. Instantiate once per unit with different [data].
-class DispenserUnitsWidget extends StatelessWidget {
+class DispenserUnitsWidget extends ConsumerWidget {
   const DispenserUnitsWidget({
     super.key,
     required this.data,
@@ -104,7 +109,7 @@ class DispenserUnitsWidget extends StatelessWidget {
   static const Color _idleBorder = Color(0xFFE0E0E0);
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final ColorScheme colors = Theme.of(context).colorScheme;
     final bool offline = data.isOffline;
@@ -142,7 +147,7 @@ class DispenserUnitsWidget extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         clipBehavior: Clip.none,
-        padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
+        padding: const EdgeInsets.fromLTRB(10, 10, 14, 10),
         decoration: BoxDecoration(
           color: tokens.card,
           borderRadius: BorderRadius.circular(tokens.radius20),
@@ -168,13 +173,14 @@ class DispenserUnitsWidget extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
+              _Header(data: data, tokens: tokens, onSelect: onSelect),
               InkWell(
                 onTap: onSelect,
                 borderRadius: BorderRadius.circular(tokens.radius12),
                 child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
-                    _Header(data: data, tokens: tokens),
                     const SizedBox(height: 10),
                     _LcdWithNozzle(
                       data: data,
@@ -184,7 +190,7 @@ class DispenserUnitsWidget extends StatelessWidget {
                       runBorder: runBorder,
                     ),
                     Divider(color: colors.outline, height: 1),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
                     _LastTransaction(data: data, tokens: tokens),
                   ],
                 ),
@@ -205,6 +211,198 @@ class DispenserUnitsWidget extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class BayHelperAssigner extends ConsumerWidget {
+  const BayHelperAssigner({super.key, required this.unitId});
+
+  final int unitId;
+
+  String _menuLabel(HelperProfile helper) {
+    if (helper.assignedUnitIds.isEmpty) {
+      return helper.name;
+    }
+    final String tags = helper.assignedUnitIds
+        .map((int id) => 'U$id')
+        .join(' · ');
+    return '${helper.name} · $tags';
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final List<HelperProfile> helpers = ref.watch(assignableHelpersProvider);
+    final HelperProfile? assigned = helperOnUnit(
+      ref.watch(helperRosterProvider),
+      unitId,
+    );
+    final String selectedId = assigned?.id ?? '';
+    final String selectedLabel = assigned == null
+        ? 'Unassigned'
+        : _menuLabel(assigned);
+
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.only(left: 8, right: 4),
+      decoration: BoxDecoration(
+        color: tokens.canvas,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: tokens.line),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          key: ValueKey<String>('bay-helper-$unitId-$selectedId'),
+          value: selectedId,
+          isDense: true,
+          isExpanded: true,
+          padding: EdgeInsets.zero,
+          alignment: AlignmentDirectional.centerStart,
+          borderRadius: BorderRadius.circular(tokens.radius12),
+          dropdownColor: tokens.card,
+          icon: Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 16,
+            color: colors.onSurfaceVariant,
+          ),
+          style: TextStyle(
+            fontFamily: 'Roboto',
+            fontWeight: FontWeight.w600,
+            fontSize: 11,
+            color: colors.onSurface,
+          ),
+          selectedItemBuilder: (BuildContext context) {
+            return <Widget>[
+              _HelperMenuRow(
+                label: selectedLabel,
+                color: colors.onSurface,
+                compact: true,
+              ),
+              for (final HelperProfile _ in helpers)
+                _HelperMenuRow(
+                  label: selectedLabel,
+                  color: colors.onSurface,
+                  compact: true,
+                ),
+            ];
+          },
+          items: <DropdownMenuItem<String>>[
+            DropdownMenuItem<String>(
+              value: '',
+              child: _HelperMenuRow(
+                label: 'Unassigned',
+                color: colors.onSurface,
+              ),
+            ),
+            for (final HelperProfile helper in helpers)
+              DropdownMenuItem<String>(
+                value: helper.id,
+                child: _HelperMenuRow(
+                  label: _menuLabel(helper),
+                  color: colors.onSurface,
+                ),
+              ),
+          ],
+          onChanged: (String? value) {
+            unawaited(_confirmAndAssign(context, ref, assigned, value));
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmAndAssign(
+    BuildContext context,
+    WidgetRef ref,
+    HelperProfile? assigned,
+    String? value,
+  ) async {
+    final String? helperId = (value == null || value.isEmpty) ? null : value;
+    if (helperId == assigned?.id) {
+      return;
+    }
+
+    final HelperDutyPromptKind kind;
+    final String helperName;
+    String? currentUnitsLabel;
+    bool remainingOnOtherUnits = false;
+    if (helperId == null) {
+      if (assigned == null) {
+        return;
+      }
+      kind = HelperDutyPromptKind.endSession;
+      helperName = assigned.name;
+      remainingOnOtherUnits = assigned.assignedUnitIds.length > 1;
+    } else {
+      final HelperProfile? incoming = helperById(
+        ref.read(helperRosterProvider),
+        helperId,
+      );
+      if (incoming == null) {
+        return;
+      }
+      helperName = incoming.name;
+      if (incoming.assignedUnitIds.isNotEmpty &&
+          !incoming.isAssignedTo(unitId)) {
+        kind = HelperDutyPromptKind.addUnit;
+        currentUnitsLabel = incoming.assignedUnitIds
+            .map((int id) => 'Unit $id')
+            .join(', ');
+      } else {
+        kind = HelperDutyPromptKind.startDuty;
+      }
+    }
+
+    final bool confirmed = await showHelperDutyConfirmDialog(
+      context: context,
+      kind: kind,
+      helperName: helperName,
+      targetUnitId: unitId,
+      currentUnitsLabel: currentUnitsLabel,
+      remainingOnOtherUnits: remainingOnOtherUnits,
+    );
+    if (!confirmed || !context.mounted) {
+      return;
+    }
+    ref
+        .read(shiftWorkspaceProvider.notifier)
+        .assignHelperToUnit(unitId: unitId, helperId: helperId);
+  }
+}
+
+class _HelperMenuRow extends StatelessWidget {
+  const _HelperMenuRow({
+    required this.label,
+    required this.color,
+    this.compact = false,
+  });
+
+  final String label;
+  final Color color;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: <Widget>[
+        Icon(Icons.person_outline, size: compact ? 13 : 16, color: color),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w600,
+              fontSize: compact ? 11 : 12,
+              color: color,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -240,83 +438,93 @@ class _AbortBanner extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.data, required this.tokens});
+  const _Header({required this.data, required this.tokens, this.onSelect});
 
   final DispenserUnitData data;
   final DispensrTokens tokens;
+  final VoidCallback? onSelect;
 
   @override
   Widget build(BuildContext context) {
     final bool offline = data.isOffline;
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        Container(
-          width: 26,
-          height: 26,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: offline ? tokens.inkMuted : tokens.ink,
-            borderRadius: BorderRadius.circular(tokens.radius12),
-          ),
-          child: Text(
-            data.unitNumber,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 12,
-              color: tokens.card,
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: InkWell(
+                onTap: onSelect,
+                borderRadius: BorderRadius.circular(tokens.radius12),
+                child: Row(
+                  children: <Widget>[
+                    Container(
+                      width: 26,
+                      height: 26,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: offline ? tokens.inkMuted : tokens.ink,
+                        borderRadius: BorderRadius.circular(tokens.radius12),
+                      ),
+                      child: Text(
+                        data.unitNumber,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                          color: tokens.card,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            data.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: 'Roboto',
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: tokens.ink,
+                            ),
+                          ),
+                          Text(
+                            data.fuelType,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: 'Roboto',
+                              fontWeight: FontWeight.w500,
+                              fontSize: 11,
+                              color: tokens.inkMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
+            DsStatusPill(
+              label: offline ? 'Offline' : 'Online',
+              foreground: offline ? tokens.inkMuted : tokens.good,
+              background: offline
+                  ? tokens.line.withValues(alpha: 0.7)
+                  : tokens.good.withValues(alpha: 0.12),
+              border: offline
+                  ? tokens.line
+                  : tokens.good.withValues(alpha: 0.3),
+            ),
+          ],
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                data.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                  color: tokens.ink,
-                ),
-              ),
-              Text(
-                data.fuelType,
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w500,
-                  fontSize: 11,
-                  color: tokens.inkMuted,
-                ),
-              ),
-            ],
-          ),
-        ),
-        DsStatusPill(
-          label: offline ? 'Offline' : 'Online',
-          foreground: offline ? tokens.inkMuted : tokens.good,
-          background: offline
-              ? tokens.line.withValues(alpha: 0.7)
-              : tokens.good.withValues(alpha: 0.12),
-          border: offline ? tokens.line : tokens.good.withValues(alpha: 0.3),
-        ),
-        const SizedBox(width: 4),
-        IconButton(
-          tooltip: 'Unit link',
-          onPressed: () {
-            showUnitLinkDialog(context: context, unitId: data.unitId);
-          },
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-          icon: Icon(Icons.settings_outlined, size: 18, color: tokens.inkMuted),
-        ),
+        const SizedBox(height: 8),
+        BayHelperAssigner(unitId: data.unitId),
       ],
     );
   }
@@ -340,15 +548,16 @@ class _LcdWithNozzle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         SizedBox(
-          height: FuelNozzleGraphic.slotHeight,
+          height: 192,
           child: Stack(
             clipBehavior: Clip.none,
             children: <Widget>[
               Positioned.fill(
                 child: Padding(
-                  padding: const EdgeInsets.only(right: 22),
+                  padding: const EdgeInsets.only(right: 36),
                   child: SegmentLcd.dispenser(
                     offline: data.isOffline,
                     lines: <SegmentLcdLine>[
@@ -360,10 +569,10 @@ class _LcdWithNozzle extends StatelessWidget {
                 ),
               ),
               Positioned(
-                right: -15,
-                top: 0,
-                bottom: 15,
-                width: FuelNozzleGraphic.slotWidth,
+                right: FuelNozzleGraphic.left - FuelNozzleGraphic.right,
+                top: FuelNozzleGraphic.down - FuelNozzleGraphic.up,
+                height: FuelNozzleGraphic.height,
+                width: FuelNozzleGraphic.width,
                 child: FuelNozzleGraphic(
                   isDispensing: data.isDispensing,
                   isOffline: data.isOffline,
@@ -372,11 +581,11 @@ class _LcdWithNozzle extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         Padding(
-          padding: const EdgeInsets.only(right: 22),
+          padding: const EdgeInsets.only(right: 36),
           child: SizedBox(
-            height: 36,
+            height: 42,
             child: SegmentLcd.meter(
               offline: data.isOffline,
               lines: <SegmentLcdLine>[
@@ -385,7 +594,7 @@ class _LcdWithNozzle extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         DsStatusPill(
           label: runLabel,
           foreground: runFg,

@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,19 +5,19 @@ import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/presentation/station_providers.dart';
 
-/// Collapsible mock-hardware bar. Hidden in release builds.
+/// Collapsible mock-hardware bar on the Sale screen.
+/// Kept visible in debug and release so client MSIX demos can run without ESP32 hardware.
 class DemoControlsBar extends ConsumerStatefulWidget {
   const DemoControlsBar({super.key});
 
-  static bool get visible =>
-      kDebugMode || const bool.fromEnvironment('DEMO_CONTROLS');
+  static const bool visible = true;
 
   @override
   ConsumerState<DemoControlsBar> createState() => _DemoControlsBarState();
 }
 
 class _DemoControlsBarState extends ConsumerState<DemoControlsBar> {
-  bool _expanded = false;
+  bool _expanded = true;
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +68,7 @@ class _DemoControlsBarState extends ConsumerState<DemoControlsBar> {
                   ),
                   const SizedBox(width: 8),
                   DsStatusPill(
-                    label: 'Debug',
+                    label: 'Demo',
                     foreground: tokens.warn,
                     background: tokens.warn.withValues(alpha: 0.12),
                     border: tokens.warn.withValues(alpha: 0.3),

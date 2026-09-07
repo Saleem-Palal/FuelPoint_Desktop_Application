@@ -80,7 +80,7 @@ class PaymentBuzzer {
       return existing;
     }
     final File file = File(
-      '${Directory.systemTemp.path}${Platform.pathSeparator}dispensr_bay_buzzer_quiet.wav',
+      '${Directory.systemTemp.path}${Platform.pathSeparator}dispensr_bay_buzzer_v012.wav',
     );
     await file.writeAsBytes(_buildBuzzerWav(), flush: true);
     _wavPath = file.path;
@@ -91,6 +91,8 @@ class PaymentBuzzer {
   static Uint8List _buildBuzzerWav() {
     const int sampleRate = 22050;
     const int freqHz = 2200;
+    const double volume = 0.12;
+    final int peak = (32767 * volume).round();
     final List<int> pcm = <int>[];
 
     void appendTone({required int milliseconds, required bool audible}) {
@@ -102,7 +104,7 @@ class PaymentBuzzer {
           pcm.add(0);
           continue;
         }
-        pcm.add((i % period) < half ? 7000 : -7000);
+        pcm.add((i % period) < half ? peak : -peak);
       }
     }
 

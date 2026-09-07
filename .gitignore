@@ -43,3 +43,17 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Station-local Google OAuth / Drive tokens (never commit secrets)
+google_oauth_client.json
+google_drive_credentials.json
+**/google_oauth_client.json
+**/google_drive_credentials.json
+
+# MSIX code-signing private keys (public .cer may be committed)
+certs/*.pfx
+certs/*.p12
+certs/*.key
+
+# Client distribution drop assembled by scripts/build_msix.ps1
+/dist/

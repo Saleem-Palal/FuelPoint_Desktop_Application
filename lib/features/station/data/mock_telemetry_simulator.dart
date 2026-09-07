@@ -11,6 +11,7 @@ class MockTelemetrySimulator {
 
   final void Function(DispenserTelemetry packet) emit;
 
+  static const double demoSaleRate = 256.32;
   static const double demoSaleLiters = 10;
   static const int _saleTicks = 16;
   static const Duration _tick = Duration(milliseconds: 140);
@@ -27,15 +28,19 @@ class MockTelemetrySimulator {
     _timers.remove(unitId)?.cancel();
   }
 
-  /// Runs a full sale: DISPENSING animation, then IDLE hang-up at 10.00 L.
+  /// Runs a full sale: DISPENSING animation, then IDLE hang-up at [targetLiters].
   void simulateDispense({
     required int unitId,
     required double rate,
+    required double targetLiters,
     required int meterCount,
     required bool keypadLocked,
   }) {
     cancel(unitId);
-    final double safeRate = rate > 0 ? rate : 200;
+    final double safeRate = rate > 0 ? rate : demoSaleRate;
+    final double saleLiters = targetLiters > 0
+        ? double.parse(targetLiters.toStringAsFixed(2))
+        : demoSaleLiters;
     int tick = 0;
 
     void pulse(double liters, DispenserRunState status) {
@@ -55,11 +60,11 @@ class MockTelemetrySimulator {
     pulse(0, DispenserRunState.dispensing);
     _timers[unitId] = Timer.periodic(_tick, (Timer timer) {
       tick += 1;
-      final double liters = demoSaleLiters * (tick / _saleTicks);
+      final double liters = saleLiters * (tick / _saleTicks);
       if (tick >= _saleTicks) {
         timer.cancel();
         _timers.remove(unitId);
-        pulse(demoSaleLiters, DispenserRunState.idle);
+        pulse(saleLiters, DispenserRunState.idle);
         return;
       }
       pulse(liters, DispenserRunState.dispensing);
@@ -74,7 +79,7 @@ class MockTelemetrySimulator {
     required bool keypadLocked,
   }) {
     cancel(unitId);
-    final double safeRate = rate > 0 ? rate : 200;
+    final double safeRate = rate > 0 ? rate : demoSaleRate;
     final int abortTicks =
         _abortHold.inMilliseconds ~/ _abortTick.inMilliseconds;
     int tick = 0;

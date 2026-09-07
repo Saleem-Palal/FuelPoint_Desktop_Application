@@ -34,6 +34,9 @@ class ReceiptCopy {
   static const String developerPitchUrdu =
       'کسی بھی قسم کا سافٹ ویئر بنوانے کے لیے رابطہ کریں';
 
+  static const String customerCopyBanner = 'COPY 1: CUSTOMER RECEIPT';
+  static const String stationCopyBanner = 'COPY 2: STATION RECORD';
+
   static const String urduFontFamily = 'NotoNastaliqUrdu';
   static const String latinFontFamily = 'Roboto';
   static const String lcdFontFamily = 'DSEG7Classic';
@@ -142,6 +145,11 @@ class ReceiptTicket {
 
   String get pngFileName => 'receipt-$tokenLabel.png';
 
+  List<String> get udhaarCopyFileNames => <String>[
+    'receipt-$tokenLabel-customer.pdf',
+    'receipt-$tokenLabel-station.pdf',
+  ];
+
   static String _lcdDigits(String raw) {
     return raw
         .replaceFirst('Rs. ', '')
@@ -186,29 +194,37 @@ class ReceiptGenerator {
     }
   }
 
-  Future<Uint8List> _pdfFromPng(Uint8List png) async {
-    final ui.Codec codec = await ui.instantiateImageCodec(png);
-    final ui.FrameInfo frame = await codec.getNextFrame();
-    final int widthPx = frame.image.width;
-    final int heightPx = frame.image.height;
-    frame.image.dispose();
-    if (widthPx <= 0 || heightPx <= 0) {
+  Future<Uint8List> _pdfFromPngs(List<Uint8List> pngs) async {
+    if (pngs.isEmpty) {
       throw StateError('Receipt snapshot is empty');
     }
-
-    final double pageWidth = 80 * PdfPageFormat.mm;
-    final double pageHeight = pageWidth * (heightPx / widthPx);
-    final pw.MemoryImage image = pw.MemoryImage(png);
     final pw.Document pdf = pw.Document();
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat(pageWidth, pageHeight, marginAll: 0),
-        build: (pw.Context context) {
-          return pw.Image(image, fit: pw.BoxFit.fill);
-        },
-      ),
-    );
+    for (final Uint8List png in pngs) {
+      final ui.Codec codec = await ui.instantiateImageCodec(png);
+      final ui.FrameInfo frame = await codec.getNextFrame();
+      final int widthPx = frame.image.width;
+      final int heightPx = frame.image.height;
+      frame.image.dispose();
+      if (widthPx <= 0 || heightPx <= 0) {
+        throw StateError('Receipt snapshot is empty');
+      }
+      final double pageWidth = 80 * PdfPageFormat.mm;
+      final double pageHeight = pageWidth * (heightPx / widthPx);
+      final pw.MemoryImage image = pw.MemoryImage(png);
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat(pageWidth, pageHeight, marginAll: 0),
+          build: (pw.Context context) {
+            return pw.Image(image, fit: pw.BoxFit.fill);
+          },
+        ),
+      );
+    }
     return pdf.save();
+  }
+
+  Future<Uint8List> _pdfFromPng(Uint8List png) async {
+    return _pdfFromPngs(<Uint8List>[png]);
   }
 
   String _whatsAppCaption(ReceiptTicket ticket) {
@@ -257,22 +273,75 @@ class ReceiptGenerator {
     return false;
   }
 
-  Future<void> printPreview(
-    GlobalKey previewKey,
-    ReceiptTicket ticket,
-  ) async {
-    final Uint8List png = await capturePreview(previewKey);
-    final Uint8List pdfBytes = await _pdfFromPng(png);
+  Future<void> printPng(Uint8List png, {required String fileName}) async {
+    await printPngs(<Uint8List>[png], fileName: fileName);
+  }
+
+  /// Sends each slip as its own print job.
+  /// When [parallel] is true, jobs are submitted together.
+  Future<void> printPngJobs(
+    List<Uint8List> pngs, {
+    required List<String> fileNames,
+    Duration pause = const Duration(milliseconds: 250),
+    bool parallel = false,
+  }) async {
+    if (pngs.length != fileNames.length) {
+      throw ArgumentError('Each print job needs a file name');
+    }
+    if (parallel) {
+      await Future.wait(<Future<void>>[
+        for (int i = 0; i < pngs.length; i++)
+          printPng(pngs[i], fileName: fileNames[i]),
+      ]);
+      return;
+    }
+    for (int i = 0; i < pngs.length; i++) {
+      await printPng(pngs[i], fileName: fileNames[i]);
+      if (i < pngs.length - 1) {
+        await Future<void>.delayed(pause);
+      }
+    }
+  }
+
+  Future<void> printCapturedPng(Uint8List png, ReceiptTicket ticket) async {
+    if (ticket.payment == PaymentMethod.udhaar) {
+      await printPngJobs(
+        <Uint8List>[png, png],
+        fileNames: ticket.udhaarCopyFileNames,
+        parallel: true,
+      );
+      return;
+    }
+    await printPng(png, fileName: ticket.fileName);
+  }
+
+  Future<void> printUdhaarCopies({
+    required Uint8List customerPng,
+    required Uint8List stationPng,
+    required ReceiptTicket ticket,
+  }) async {
+    await printPngJobs(
+      <Uint8List>[customerPng, stationPng],
+      fileNames: ticket.udhaarCopyFileNames,
+      parallel: true,
+    );
+  }
+
+  Future<void> printPngs(
+    List<Uint8List> pngs, {
+    required String fileName,
+  }) async {
+    final Uint8List pdfBytes = await _pdfFromPngs(pngs);
     try {
       await Printing.layoutPdf(
         onLayout: (PdfPageFormat format) async => pdfBytes,
-        name: ticket.fileName,
+        name: fileName,
       );
       return;
     } catch (error, stack) {
       debugPrint('Print layout failed: $error\n$stack');
     }
-    final File file = await _writeTempFile(ticket.fileName, pdfBytes);
+    final File file = await _writeTempFile(fileName, pdfBytes);
     final bool opened = await launchUrl(
       Uri.file(file.path),
       mode: LaunchMode.externalApplication,
@@ -282,25 +351,34 @@ class ReceiptGenerator {
     }
   }
 
-  Future<void> sharePreview(
-    GlobalKey previewKey,
-    ReceiptTicket ticket,
-  ) async {
+  Future<void> printPreview(GlobalKey previewKey, ReceiptTicket ticket) async {
     final Uint8List png = await capturePreview(previewKey);
-    final File file = await _writeTempFile(ticket.pngFileName, png);
-    final String caption = _whatsAppCaption(ticket);
+    await printCapturedPng(png, ticket);
+  }
+
+  Future<void> printPreviewPng(
+    GlobalKey previewKey, {
+    required String fileName,
+  }) async {
+    final Uint8List png = await capturePreview(previewKey);
+    await printPng(png, fileName: fileName);
+  }
+
+  Future<void> sharePng({
+    required Uint8List png,
+    required String fileName,
+    required String caption,
+    String? subject,
+  }) async {
+    final File file = await _writeTempFile(fileName, png);
     try {
       await SharePlus.instance.share(
         ShareParams(
           files: <XFile>[
-            XFile(
-              file.path,
-              mimeType: 'image/png',
-              name: ticket.pngFileName,
-            ),
+            XFile(file.path, mimeType: 'image/png', name: fileName),
           ],
           text: caption,
-          subject: 'Receipt ${ticket.tokenLabel}',
+          subject: subject,
         ),
       );
       return;
@@ -318,5 +396,15 @@ class ReceiptGenerator {
     if (!openedFile) {
       throw Exception('Could not share the receipt');
     }
+  }
+
+  Future<void> sharePreview(GlobalKey previewKey, ReceiptTicket ticket) async {
+    final Uint8List png = await capturePreview(previewKey);
+    await sharePng(
+      png: png,
+      fileName: ticket.pngFileName,
+      caption: _whatsAppCaption(ticket),
+      subject: 'Receipt ${ticket.tokenLabel}',
+    );
   }
 }

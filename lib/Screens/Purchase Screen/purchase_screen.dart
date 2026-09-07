@@ -1,192 +1,21 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
+import '../../core/widgets/fuel_point_stat_card.dart';
+import '../../core/widgets/responsive_layout.dart';
 import '../../core/widgets/segment_lcd.dart';
-import '../../features/station/domain/dispenser_models.dart';
+import '../../features/shift/presentation/shift_providers.dart';
+import '../../features/station/data/purchase_repository.dart';
 import '../../features/station/domain/money_format.dart';
-import '../../features/station/presentation/station_providers.dart';
-
-class _TankStock {
-  const _TankStock({
-    required this.amountPkr,
-    required this.volumeLiters,
-    required this.rate,
-  });
-
-  final double amountPkr;
-  final double volumeLiters;
-  final double rate;
-
-  _TankStock merge(_TankStock incoming) {
-    final double availableAmount = amountPkr;
-    final double newAmount = incoming.amountPkr;
-    final double availableQuantity = volumeLiters;
-    final double newQuantity = incoming.volumeLiters;
-    final double totalQuantity = availableQuantity + newQuantity;
-    final double nextRate = totalQuantity <= 0
-        ? 0
-        : (availableAmount + newAmount) / totalQuantity;
-    final double nextQuantity = availableQuantity + newQuantity;
-    final double nextAmount = nextRate * nextQuantity;
-    return _TankStock(
-      amountPkr: nextAmount,
-      volumeLiters: nextQuantity,
-      rate: nextRate,
-    );
-  }
-
-  static const _TankStock empty = _TankStock(
-    amountPkr: 0,
-    volumeLiters: 0,
-    rate: 0,
-  );
-
-  bool sameAs(_TankStock other) {
-    return amountPkr == other.amountPkr &&
-        volumeLiters == other.volumeLiters &&
-        rate == other.rate;
-  }
-
-  _TankStock lerpTo(_TankStock other, double t) {
-    return _TankStock(
-      amountPkr: amountPkr + (other.amountPkr - amountPkr) * t,
-      volumeLiters: volumeLiters + (other.volumeLiters - volumeLiters) * t,
-      rate: rate + (other.rate - rate) * t,
-    );
-  }
-}
-
-class _PurchaseRecord {
-  const _PurchaseRecord({
-    required this.invoiceNo,
-    required this.at,
-    required this.quantity,
-    required this.rate,
-    required this.amount,
-    required this.totalQuantity,
-    required this.tafseel,
-    required this.user,
-  });
-
-  final int invoiceNo;
-  final DateTime at;
-  final double quantity;
-  final double rate;
-  final double amount;
-  final double totalQuantity;
-  final String tafseel;
-  final String user;
-
-  static const String operatorName = 'Ali';
-
-  static List<_PurchaseRecord> lastTen() {
-    return <_PurchaseRecord>[
-      _PurchaseRecord(
-        invoiceNo: 999,
-        at: DateTime(2026, 8, 29, 11, 42),
-        quantity: 580.50,
-        rate: 151.20,
-        amount: 87771.60,
-        totalQuantity: 3890.20,
-        tafseel: 'PSO tanker — morning drop',
-        user: 'Ali',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 998,
-        at: DateTime(2026, 8, 29, 8, 15),
-        quantity: 533.26,
-        rate: 151.20,
-        amount: 80628.40,
-        totalQuantity: 3309.70,
-        tafseel: 'Attock bowser',
-        user: 'Amir R.',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 997,
-        at: DateTime(2026, 8, 26, 16, 30),
-        quantity: 3200.00,
-        rate: 149.80,
-        amount: 479360.00,
-        totalQuantity: 4120.00,
-        tafseel: 'Hascol refill — depot',
-        user: 'Ali',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 996,
-        at: DateTime(2026, 8, 24, 10, 5),
-        quantity: 2100.00,
-        rate: 149.50,
-        amount: 313950.00,
-        totalQuantity: 2450.00,
-        tafseel: 'Shell tanker 12',
-        user: 'Usman',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 995,
-        at: DateTime(2026, 8, 21, 14, 48),
-        quantity: 1750.00,
-        rate: 148.90,
-        amount: 260575.00,
-        totalQuantity: 2680.00,
-        tafseel: 'PSO evening load',
-        user: 'Ali',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 994,
-        at: DateTime(2026, 8, 18, 9, 20),
-        quantity: 980.00,
-        rate: 148.90,
-        amount: 145922.00,
-        totalQuantity: 1980.00,
-        tafseel: 'Local tanker',
-        user: 'Cashier',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 993,
-        at: DateTime(2026, 8, 15, 13, 10),
-        quantity: 2400.00,
-        rate: 147.60,
-        amount: 354240.00,
-        totalQuantity: 3210.00,
-        tafseel: 'Attock — full compartment',
-        user: 'Amir R.',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 992,
-        at: DateTime(2026, 8, 12, 17, 55),
-        quantity: 640.00,
-        rate: 147.60,
-        amount: 94464.00,
-        totalQuantity: 1420.00,
-        tafseel: 'Top-up after drip',
-        user: 'Usman',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 991,
-        at: DateTime(2026, 8, 9, 11, 2),
-        quantity: 1500.00,
-        rate: 146.40,
-        amount: 219600.00,
-        totalQuantity: 2890.00,
-        tafseel: 'Hascol morning',
-        user: 'Ali',
-      ),
-      _PurchaseRecord(
-        invoiceNo: 990,
-        at: DateTime(2026, 8, 6, 15, 40),
-        quantity: 1880.00,
-        rate: 146.40,
-        amount: 275232.00,
-        totalQuantity: 2110.00,
-        tafseel: 'PSO tanker 7',
-        user: 'Amir R.',
-      ),
-    ];
-  }
-}
+import '../../features/station/presentation/workspace_refresh.dart';
+import '../../utils/fuel_formatter.dart';
+import 'Widgets/initial_dip_modal_dialog.dart';
+import 'purchase_providers.dart';
 
 class PurchaseScreen extends ConsumerStatefulWidget {
   const PurchaseScreen({super.key});
@@ -196,56 +25,63 @@ class PurchaseScreen extends ConsumerStatefulWidget {
 }
 
 class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
-  static final FilteringTextInputFormatter _decimalFormatter =
-      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'));
+  static final FilteringTextInputFormatter _wholeFormatter =
+      FilteringTextInputFormatter.allow(RegExp(r'^\d*'));
+  static final FilteringTextInputFormatter _amountFormatter =
+      FilteringTextInputFormatter.allow(RegExp(r'^[\d,]*'));
+  static final FilteringTextInputFormatter _rateFormatter =
+      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,8}'));
 
-  final ScrollController _pageScroll = ScrollController();
-  final TextEditingController _tafseelController = TextEditingController();
-  final TextEditingController _quantityController = TextEditingController();
+  final TextEditingController _litersController = TextEditingController();
   final TextEditingController _rateController = TextEditingController();
   final TextEditingController _amountController = TextEditingController();
+  final TextEditingController _tafseelController = TextEditingController();
 
-  int _todayCount = 2;
-  int _invoiceNo = 1000;
-  double _todayAmount = 168400;
-  double _todayLiters = 1113.76;
-  DateTime _lastRestockAt = DateTime(2026, 8, 26);
-  double _lastRestockLiters = 3200;
+  final FocusNode quantityFocus = FocusNode();
+  final FocusNode rateFocus = FocusNode();
+  final FocusNode amountFocus = FocusNode();
+  final FocusNode tafseelFocus = FocusNode();
+  final FocusNode submitFocus = FocusNode();
+
   bool _draftSaved = false;
   bool _syncing = false;
-  final List<_PurchaseRecord> _purchases = _PurchaseRecord.lastTen();
-
-  _TankStock _available = const _TankStock(
-    amountPkr: 512400,
-    volumeLiters: 3890.20,
-    rate: 131.72,
-  );
 
   @override
   void initState() {
     super.initState();
-    _quantityController.addListener(_onQuantityOrRateChanged);
-    _rateController.addListener(_onQuantityOrRateChanged);
+    _litersController.addListener(_onLitersOrRateChanged);
+    _rateController.addListener(_onLitersOrRateChanged);
     _amountController.addListener(_onAmountChanged);
-    _tafseelController.addListener(_onFormChanged);
+    _tafseelController.addListener(_onDraftInputsChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(refreshPurchasesFromDatabase(ref));
+      quantityFocus.requestFocus();
+    });
   }
 
   @override
   void dispose() {
-    _pageScroll.dispose();
-    _quantityController.removeListener(_onQuantityOrRateChanged);
-    _rateController.removeListener(_onQuantityOrRateChanged);
+    _litersController.removeListener(_onLitersOrRateChanged);
+    _rateController.removeListener(_onLitersOrRateChanged);
     _amountController.removeListener(_onAmountChanged);
-    _tafseelController.removeListener(_onFormChanged);
-    _quantityController.dispose();
+    _tafseelController.removeListener(_onDraftInputsChanged);
+    _litersController.dispose();
     _rateController.dispose();
     _amountController.dispose();
     _tafseelController.dispose();
+    quantityFocus.dispose();
+    rateFocus.dispose();
+    amountFocus.dispose();
+    tafseelFocus.dispose();
+    submitFocus.dispose();
     super.dispose();
   }
 
-  void _onFormChanged() {
-    if (!mounted || _syncing) {
+  void _onDraftInputsChanged() {
+    if (!mounted) {
       return;
     }
     setState(() {
@@ -253,49 +89,80 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     });
   }
 
-  void _onQuantityOrRateChanged() {
+  void _onLitersOrRateChanged() {
     if (_syncing) {
       return;
     }
-    final double qty = _quantity;
-    final double rate = _rate;
+    final double amount = _purchasedLiters * _purchaseRate;
     _syncing = true;
-    _amountController.text = (qty * rate).toStringAsFixed(2);
+    _writeField(_amountController, FuelFormatter.fieldAmount(amount));
     _syncing = false;
-    _onFormChanged();
+    _onDraftInputsChanged();
   }
 
   void _onAmountChanged() {
     if (_syncing) {
       return;
     }
-    final double qty = _quantity;
-    if (qty > 0) {
-      _syncing = true;
-      _rateController.text = (_amount / qty).toStringAsFixed(2);
-      _syncing = false;
+    final double liters = _purchasedLiters;
+    _syncing = true;
+    if (liters > 0) {
+      _writeField(
+        _rateController,
+        FuelFormatter.fieldRate(_totalCost / liters),
+      );
     }
-    _onFormChanged();
+    _writeField(_amountController, FuelFormatter.fieldAmount(_totalCost));
+    _syncing = false;
+    _onDraftInputsChanged();
+  }
+
+  void _writeField(TextEditingController controller, String next) {
+    if (controller.text == next) {
+      return;
+    }
+    controller.text = next;
+    controller.selection = TextSelection.collapsed(offset: next.length);
   }
 
   double _parse(TextEditingController controller) {
-    return double.tryParse(controller.text.trim()) ?? 0;
+    return FuelFormatter.parseGrouped(controller.text);
   }
 
-  double get _quantity => _parse(_quantityController);
-  double get _rate => _parse(_rateController);
-  double get _amount => _parse(_amountController);
+  double get _purchasedLiters => _parse(_litersController);
+  double get _purchaseRate => _parse(_rateController);
+  double get _totalCost => _parse(_amountController);
 
-  _TankStock get _newStock =>
-      _TankStock(amountPkr: _amount, volumeLiters: _quantity, rate: _rate);
+  bool get _inputsReady => _purchasedLiters > 0 && _purchaseRate > 0;
 
-  bool get _canAddStock => _quantity > 0 && _amount > 0;
+  _LcdStock _availableOf(PurchaseController controller) {
+    return _LcdStock(
+      amountPkr: controller.overallStockPkr,
+      volumeLiters: controller.currentDipLiters,
+      rate: controller.weightedAverageRate,
+    );
+  }
 
-  double get _avgRate {
-    if (_todayLiters <= 0) {
-      return _available.rate;
-    }
-    return _todayAmount / _todayLiters;
+  _LcdStock get _incomingDraft {
+    return _LcdStock(
+      amountPkr: _totalCost,
+      volumeLiters: _purchasedLiters,
+      rate: _purchaseRate,
+    );
+  }
+
+  _LcdStock _projectedOf(PurchaseController controller) {
+    final double previousLiters = controller.currentDipLiters;
+    final double previousCost = controller.overallStockPkr;
+    final double nextLiters = previousLiters + _purchasedLiters;
+    final double nextRate = nextLiters == 0
+        ? 0
+        : (previousCost + _totalCost) / nextLiters;
+    return _LcdStock(
+      amountPkr: nextLiters * nextRate,
+      volumeLiters: nextLiters,
+      rate: nextRate,
+    );
   }
 
   void _snack(String message) {
@@ -311,73 +178,90 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     _snack('Draft saved. Add Stock when the tanker figures are final.');
   }
 
+  ({String id, String name, String pin}) _managerCreds() {
+    final ShiftWorkspaceState shift = ref.read(shiftWorkspaceProvider);
+    return PurchaseRepository.managerCreds(
+      activeShift: shift.activeShift,
+      managers: shift.managers,
+    );
+  }
+
   Future<void> _addStock() async {
-    if (!_canAddStock) {
-      _snack('Enter diesel quantity and amount before adding stock.');
+    if (!_inputsReady) {
+      _snack('Enter quantity and rate before adding stock.');
       return;
     }
-    final _TankStock incoming = _newStock;
-    final String tafseel = _tafseelController.text.trim();
-    final int invoiceNo = _invoiceNo;
-    setState(() {
-      _purchases.insert(
-        0,
-        _PurchaseRecord(
-          invoiceNo: invoiceNo,
-          at: DateTime.now(),
-          quantity: incoming.volumeLiters,
-          rate: incoming.rate,
-          amount: incoming.amountPkr,
-          totalQuantity: _available.volumeLiters + incoming.volumeLiters,
-          tafseel: tafseel.isEmpty ? '—' : tafseel,
-          user: _PurchaseRecord.operatorName,
-        ),
-      );
-      if (_purchases.length > 10) {
-        _purchases.removeRange(10, _purchases.length);
-      }
-      _available = _available.merge(incoming);
-      _todayAmount += incoming.amountPkr;
-      _todayLiters += incoming.volumeLiters;
-      _todayCount += 1;
-      _invoiceNo += 1;
-      _lastRestockAt = DateTime.now();
-      _lastRestockLiters = incoming.volumeLiters;
-      _draftSaved = false;
-      _syncing = true;
-      _quantityController.clear();
-      _amountController.clear();
-      _tafseelController.clear();
-      _syncing = false;
-    });
-    const double sharah = 0.840;
+    final ({String id, String name, String pin}) manager = _managerCreds();
     try {
       await ref
-          .read(transactionStoreProvider)
-          .insertPurchaseHistory(
-            PurchaseTransaction(
-              refNo: invoiceNo,
-              timestamp: DateTime.now(),
-              supplierName: tafseel.isEmpty ? 'Owner' : tafseel,
-              fuelType: 'Diesel',
-              weightKg: incoming.volumeLiters * sharah,
-              sharahRatio: sharah,
-              netLiters: incoming.volumeLiters,
-              ratePerLiter: incoming.rate,
-              totalAmount: incoming.amountPkr,
-              paidAmount: incoming.amountPkr,
-            ),
+          .read(purchaseControllerProvider)
+          .recordPurchase(
+            purchasedLiters: _purchasedLiters,
+            totalAmountPkr: _totalCost,
+            tafseel: _tafseelController.text,
+            managerId: manager.id,
+            managerName: manager.name,
+            managerPin: manager.pin,
           );
-      bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
-    } catch (error, stack) {
-      debugPrint('purchase_history insert failed: $error\n$stack');
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      _snack(
+        'Could not save this purchase. Check the tank figures and try again.',
+      );
+      return;
     }
-    _snack('Diesel stock updated.');
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _draftSaved = false;
+      _litersController.clear();
+      _rateController.clear();
+      _amountController.clear();
+      _tafseelController.clear();
+    });
+    _snack('Purchase recorded.');
+    quantityFocus.requestFocus();
+  }
+
+  Future<void> _openInitialDip() async {
+    final InitialDipResult? result = await showInitialDipModal(context);
+    if (!mounted || result == null) {
+      return;
+    }
+    final ({String id, String name, String pin}) manager = _managerCreds();
+    try {
+      await ref
+          .read(purchaseControllerProvider)
+          .recordInitialDip(
+            liters: result.liters,
+            ratePerLiter: result.rate,
+            tafseel: result.description,
+            managerId: manager.id,
+            managerName: manager.name,
+            managerPin: manager.pin,
+          );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      _snack('Could not save the initial dip. Try again.');
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    _snack(
+      'Initial dip saved — ${FuelFormatter.formatVolume(result.liters)} at ${FuelFormatter.formatRate(result.rate)}.',
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
+    final PurchaseController controller = ref.watch(purchaseControllerProvider);
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
@@ -386,288 +270,232 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
         const SingleActivator(LogicalKeyboardKey.keyS, control: true):
             _saveDraft,
       },
-      child: Focus(
-        autofocus: true,
-        child: ColoredBox(
-          color: tokens.canvas,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: AppScreenHeader(
-                  title: 'Purchase Screen',
-                  icon: Icons.shopping_cart_outlined,
-                  invoiceLabel: formatInvoiceNo(_invoiceNo),
+      child: ColoredBox(
+        color: tokens.canvas,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              child: AppScreenHeader(
+                title: 'Purchase Screen',
+                icon: Icons.shopping_cart_outlined,
+                invoiceLabel: formatInvoiceNo(controller.nextInvoiceNo),
+                trailingAction: AppHeaderActionButton(
+                  label: 'Initial Dip Setup',
+                  icon: Icons.water_drop_outlined,
+                  onPressed: _openInitialDip,
                 ),
               ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                  child: LayoutBuilder(
-                    builder:
-                        (BuildContext context, BoxConstraints constraints) {
-                          final bool wide = constraints.maxWidth >= 980;
-                          final Widget kpis = _KpiBar(
-                            todayAmount: formatPkr(_todayAmount),
-                            todayCount: '$_todayCount entries',
-                            avgRate: formatPkr(_avgRate),
-                            lastRestockDate: _formatRestockDate(_lastRestockAt),
-                            lastRestockLiters: formatLiters(_lastRestockLiters),
-                          );
-                          final Widget purchase = _EntryCard(
-                            tafseelController: _tafseelController,
-                            quantityController: _quantityController,
-                            rateController: _rateController,
-                            amountController: _amountController,
-                            decimalFormatter: _decimalFormatter,
-                          );
-                          final Widget preview = _StockPreviewPanel(
-                            available: _available,
-                            incoming: _newStock,
-                            projected: _available.merge(_newStock),
-                            showProjected: _canAddStock,
-                          );
-                          final Widget history = _LastPurchasesTable(
-                            rows: _purchases,
-                          );
-                          final Widget cards = wide
-                              ? IntrinsicHeight(
-                                  child: Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: <Widget>[
-                                      Expanded(child: purchase),
-                                      const SizedBox(width: 10),
-                                      SizedBox(width: 328, child: preview),
-                                    ],
-                                  ),
-                                )
-                              : Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: <Widget>[
-                                    purchase,
-                                    const SizedBox(height: 10),
-                                    preview,
-                                  ],
-                                );
-                          return Scrollbar(
-                            controller: _pageScroll,
-                            child: SingleChildScrollView(
-                              controller: _pageScroll,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: <Widget>[
-                                  kpis,
-                                  const SizedBox(height: 10),
-                                  cards,
-                                  const SizedBox(height: 10),
-                                  history,
-                                ],
-                              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    final bool wide = constraints.maxWidth >= 980;
+                    final Widget kpis = _KpiBar(controller: controller);
+                    final Widget purchase = _EntryCard(
+                      litersController: _litersController,
+                      rateController: _rateController,
+                      amountController: _amountController,
+                      tafseelController: _tafseelController,
+                      quantityFocus: quantityFocus,
+                      rateFocus: rateFocus,
+                      amountFocus: amountFocus,
+                      tafseelFocus: tafseelFocus,
+                      wholeFormatter: _wholeFormatter,
+                      amountFormatter: _amountFormatter,
+                      rateFormatter: _rateFormatter,
+                      onQuantitySubmitted: () => rateFocus.requestFocus(),
+                      onRateSubmitted: () => amountFocus.requestFocus(),
+                      onAmountSubmitted: () => tafseelFocus.requestFocus(),
+                      onTafseelSubmitted: _addStock,
+                    );
+                    final Widget preview = _StockPreviewPanel(
+                      available: _availableOf(controller),
+                      incoming: _incomingDraft,
+                      projected: _projectedOf(controller),
+                      showProjected: _inputsReady,
+                    );
+                    final Widget history = _LastPurchasesTable(
+                      rows: controller.lastTenPurchases,
+                      totalCount: controller.purchases.length,
+                      fillHeight: wide,
+                    );
+                    if (!wide) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          kpis,
+                          const SizedBox(height: 10),
+                          Expanded(
+                            child: ListView(
+                              children: <Widget>[
+                                purchase,
+                                const SizedBox(height: 10),
+                                preview,
+                                const SizedBox(height: 10),
+                                history,
+                              ],
                             ),
-                          );
-                        },
-                  ),
+                          ),
+                        ],
+                      );
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        kpis,
+                        const SizedBox(height: 10),
+                        Expanded(
+                          flex: 5,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: <Widget>[
+                              Expanded(
+                                child: ScrollableConstrainedBody(
+                                  child: purchase,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              SizedBox(
+                                width: constraints.maxWidth < 1180 ? 280 : 328,
+                                child: ScrollableConstrainedBody(
+                                  child: preview,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Expanded(flex: 3, child: history),
+                      ],
+                    );
+                  },
                 ),
               ),
-              _PurchaseFooter(
-                canAdd: _canAddStock,
-                draftSaved: _draftSaved,
-                onSaveDraft: _saveDraft,
-                onAddStock: _addStock,
-              ),
-            ],
-          ),
+            ),
+            _PurchaseFooter(
+              canAdd: _inputsReady,
+              draftSaved: _draftSaved,
+              submitFocus: submitFocus,
+              onSaveDraft: _saveDraft,
+              onAddStock: _addStock,
+            ),
+          ],
         ),
       ),
     );
   }
-
-  static String _formatRestockDate(DateTime time) {
-    const List<String> months = <String>[
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${months[time.month - 1]} ${time.day}';
-  }
 }
 
-class _KpiBar extends StatelessWidget {
-  const _KpiBar({
-    required this.todayAmount,
-    required this.todayCount,
-    required this.avgRate,
-    required this.lastRestockDate,
-    required this.lastRestockLiters,
+class _LcdStock {
+  const _LcdStock({
+    required this.amountPkr,
+    required this.volumeLiters,
+    required this.rate,
   });
 
-  final String todayAmount;
-  final String todayCount;
-  final String avgRate;
-  final String lastRestockDate;
-  final String lastRestockLiters;
+  final double amountPkr;
+  final double volumeLiters;
+  final double rate;
 
-  @override
-  Widget build(BuildContext context) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
-    final List<_KpiSpec> stats = <_KpiSpec>[
-      _KpiSpec(
-        label: "Today's Purchases",
-        value: todayAmount,
-        hint: todayCount,
-        icon: Icons.trending_up,
-        tint: tokens.good,
-      ),
-      _KpiSpec(
-        label: 'Avg Rate',
-        value: avgRate,
-        hint: '/ Ltr',
-        icon: Icons.water_drop_outlined,
-        tint: tokens.coral,
-      ),
-      _KpiSpec(
-        label: 'Last Restock',
-        value: lastRestockDate,
-        hint: lastRestockLiters,
-        icon: Icons.inventory_2_outlined,
-        tint: tokens.warn,
-      ),
-    ];
+  static const _LcdStock empty = _LcdStock(
+    amountPkr: 0,
+    volumeLiters: 0,
+    rate: 0,
+  );
 
-    return Row(
-      children: <Widget>[
-        for (int i = 0; i < stats.length; i++) ...<Widget>[
-          if (i > 0) const SizedBox(width: 8),
-          Expanded(child: _KpiCard(spec: stats[i])),
-        ],
-      ],
+  bool sameAs(_LcdStock other) {
+    return amountPkr == other.amountPkr &&
+        volumeLiters == other.volumeLiters &&
+        rate == other.rate;
+  }
+
+  _LcdStock lerpTo(_LcdStock other, double t) {
+    return _LcdStock(
+      amountPkr: amountPkr + (other.amountPkr - amountPkr) * t,
+      volumeLiters: volumeLiters + (other.volumeLiters - volumeLiters) * t,
+      rate: rate + (other.rate - rate) * t,
     );
   }
 }
 
-class _KpiSpec {
-  const _KpiSpec({
-    required this.label,
-    required this.value,
-    required this.hint,
-    required this.icon,
-    required this.tint,
-  });
+class _KpiBar extends StatelessWidget {
+  const _KpiBar({required this.controller});
 
-  final String label;
-  final String value;
-  final String hint;
-  final IconData icon;
-  final Color tint;
-}
-
-class _KpiCard extends StatelessWidget {
-  const _KpiCard({required this.spec});
-
-  final _KpiSpec spec;
+  final PurchaseController controller;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: tokens.card,
-        borderRadius: BorderRadius.circular(tokens.radius20),
-        border: Border.all(color: tokens.line),
-        boxShadow: tokens.cardShadow,
-      ),
-      child: Row(
-        children: <Widget>[
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: spec.tint.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(spec.icon, color: spec.tint, size: 16),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  spec.label.toUpperCase(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: 'Roboto',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 9,
-                    letterSpacing: 0.8,
-                    color: tokens.inkMuted,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text.rich(
-                  TextSpan(
-                    children: <InlineSpan>[
-                      TextSpan(
-                        text: spec.value,
-                        style: TextStyle(
-                          fontFamily: 'Roboto',
-                          fontWeight: FontWeight.w700,
-                          fontSize: 16,
-                          color: tokens.ink,
-                        ),
-                      ),
-                      TextSpan(
-                        text: '  ${spec.hint}',
-                        style: TextStyle(
-                          fontFamily: 'Roboto',
-                          fontWeight: FontWeight.w500,
-                          fontSize: 11,
-                          color: tokens.inkMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return ExtentWrap(
+      maxCrossAxisExtent: 320,
+      children: <Widget>[
+        FuelPointStatCard(
+          title: 'Overall Stock',
+          value: FuelFormatter.formatCurrency(controller.overallStockPkr),
+          subtitle: FuelFormatter.formatVolume(controller.currentDipLiters),
+          icon: Icons.inventory_2_outlined,
+          badgeBackgroundColor: tokens.good.withValues(alpha: 0.12),
+          badgeIconColor: tokens.good,
+        ),
+        FuelPointStatCard(
+          title: 'Current Dip',
+          value: FuelFormatter.formatVolume(controller.currentDipLiters),
+          subtitle: 'Tank volume',
+          icon: Icons.water_drop_outlined,
+          badgeBackgroundColor: tokens.coral.withValues(alpha: 0.12),
+          badgeIconColor: tokens.coral,
+        ),
+        FuelPointStatCard(
+          title: 'Weighted Average Rate',
+          value: FuelFormatter.formatRate(controller.weightedAverageRate),
+          subtitle: 'WAC',
+          icon: Icons.speed_outlined,
+          badgeBackgroundColor: tokens.warn.withValues(alpha: 0.12),
+          badgeIconColor: tokens.warn,
+        ),
+      ],
     );
   }
 }
 
 class _EntryCard extends StatelessWidget {
   const _EntryCard({
-    required this.tafseelController,
-    required this.quantityController,
+    required this.litersController,
     required this.rateController,
     required this.amountController,
-    required this.decimalFormatter,
+    required this.tafseelController,
+    required this.quantityFocus,
+    required this.rateFocus,
+    required this.amountFocus,
+    required this.tafseelFocus,
+    required this.wholeFormatter,
+    required this.amountFormatter,
+    required this.rateFormatter,
+    required this.onQuantitySubmitted,
+    required this.onRateSubmitted,
+    required this.onAmountSubmitted,
+    required this.onTafseelSubmitted,
   });
 
-  final TextEditingController tafseelController;
-  final TextEditingController quantityController;
+  final TextEditingController litersController;
   final TextEditingController rateController;
   final TextEditingController amountController;
-  final TextInputFormatter decimalFormatter;
+  final TextEditingController tafseelController;
+  final FocusNode quantityFocus;
+  final FocusNode rateFocus;
+  final FocusNode amountFocus;
+  final FocusNode tafseelFocus;
+  final TextInputFormatter wholeFormatter;
+  final TextInputFormatter amountFormatter;
+  final TextInputFormatter rateFormatter;
+  final VoidCallback onQuantitySubmitted;
+  final VoidCallback onRateSubmitted;
+  final VoidCallback onAmountSubmitted;
+  final VoidCallback onTafseelSubmitted;
 
   @override
   Widget build(BuildContext context) {
@@ -675,8 +503,8 @@ class _EntryCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      alignment: Alignment.topCenter,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      alignment: Alignment.topLeft,
       decoration: BoxDecoration(
         color: tokens.card,
         borderRadius: BorderRadius.circular(tokens.radius20),
@@ -684,53 +512,59 @@ class _EntryCard extends StatelessWidget {
         boxShadow: tokens.cardShadow,
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          _SectionTitle(title: 'Diesel Purchase', urdu: 'ڈیزل خریداری'),
-          const SizedBox(height: 14),
-          _FieldRow(
-            left: _LabeledField(
-              label: 'Tafseel',
-              urdu: 'تفصیل',
-              controller: tafseelController,
-              hint: 'Tanker / invoice note',
-            ),
-            right: _LabeledField(
-              label: 'Diesel Quantity',
-              urdu: 'مقدار',
-              controller: quantityController,
-              hint: '0',
-              suffix: 'Ltr',
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              inputFormatters: <TextInputFormatter>[decimalFormatter],
-            ),
+          const _SectionTitle(title: 'Diesel Purchase', urdu: 'ڈیزل خریداری'),
+          const SizedBox(height: 6),
+          _LabeledField(
+            label: 'Quantity',
+            urdu: 'مقدار',
+            controller: litersController,
+            focusNode: quantityFocus,
+            hint: '0',
+            suffix: 'Ltr',
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: <TextInputFormatter>[wholeFormatter],
+            textInputAction: TextInputAction.next,
+            onFieldSubmitted: (_) => onQuantitySubmitted(),
           ),
-          const SizedBox(height: 12),
-          _FieldRow(
-            left: _LabeledField(
-              label: 'Rate',
-              urdu: 'ریٹ',
-              controller: rateController,
-              hint: '0.00',
-              suffix: 'Rs / Ltr',
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              inputFormatters: <TextInputFormatter>[decimalFormatter],
-            ),
-            right: _LabeledField(
-              label: 'Amount',
-              urdu: 'رقم',
-              controller: amountController,
-              hint: '0.00',
-              suffix: 'Rs',
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              inputFormatters: <TextInputFormatter>[decimalFormatter],
-            ),
+          const SizedBox(height: 2),
+          _LabeledField(
+            label: 'Rate',
+            urdu: 'ریٹ',
+            controller: rateController,
+            focusNode: rateFocus,
+            hint: '0',
+            suffix: 'Rs / Ltr',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: <TextInputFormatter>[rateFormatter],
+            textInputAction: TextInputAction.next,
+            onFieldSubmitted: (_) => onRateSubmitted(),
+          ),
+          const SizedBox(height: 2),
+          _LabeledField(
+            label: 'Amount',
+            urdu: 'رقم',
+            controller: amountController,
+            focusNode: amountFocus,
+            hint: '0',
+            suffix: 'Rs',
+            keyboardType: TextInputType.number,
+            inputFormatters: <TextInputFormatter>[amountFormatter],
+            textInputAction: TextInputAction.next,
+            onFieldSubmitted: (_) => onAmountSubmitted(),
+          ),
+          const SizedBox(height: 2),
+          _LabeledField(
+            label: 'Tafseel',
+            urdu: 'تفصیل',
+            controller: tafseelController,
+            focusNode: tafseelFocus,
+            hint: 'Tanker note / supplier',
+            textInputAction: TextInputAction.done,
+            onFieldSubmitted: (_) => onTafseelSubmitted(),
           ),
         ],
       ),
@@ -758,47 +592,34 @@ class _SectionTitle extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        Text(
-          title,
-          style: TextStyle(
-            fontFamily: 'Roboto',
-            fontWeight: FontWeight.w700,
-            fontSize: 14,
-            color: tokens.ink,
+        Expanded(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+              color: tokens.ink,
+            ),
           ),
         ),
-        const Spacer(),
+        const SizedBox(width: 12),
         Directionality(
           textDirection: TextDirection.rtl,
           child: Text(
             urdu,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontFamily: 'NotoNastaliqUrdu',
               fontSize: 13,
-              height: 1.6,
+              height: 1.1,
               color: tokens.inkMuted,
             ),
           ),
         ),
-      ],
-    );
-  }
-}
-
-class _FieldRow extends StatelessWidget {
-  const _FieldRow({required this.left, required this.right});
-
-  final Widget left;
-  final Widget right;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Expanded(child: left),
-        const SizedBox(width: 12),
-        Expanded(child: right),
       ],
     );
   }
@@ -809,71 +630,113 @@ class _LabeledField extends StatelessWidget {
     required this.label,
     required this.urdu,
     required this.controller,
+    required this.focusNode,
     required this.hint,
+    required this.textInputAction,
+    required this.onFieldSubmitted,
     this.suffix,
     this.keyboardType,
     this.inputFormatters,
+    this.autofocus = false,
   });
 
   final String label;
   final String urdu;
   final TextEditingController controller;
+  final FocusNode focusNode;
   final String hint;
+  final TextInputAction textInputAction;
+  final ValueChanged<String> onFieldSubmitted;
   final String? suffix;
   final TextInputType? keyboardType;
   final List<TextInputFormatter>? inputFormatters;
+  final bool autofocus;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         Row(
           children: <Widget>[
             Text(
               label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w600,
                 fontSize: 12,
+                height: 1.2,
                 color: tokens.inkMuted,
               ),
             ),
             const Spacer(),
+            const SizedBox(width: 12),
             Directionality(
               textDirection: TextDirection.rtl,
               child: Text(
                 urdu,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontFamily: 'NotoNastaliqUrdu',
                   fontSize: 12,
-                  height: 1.6,
+                  height: 1.1,
                   color: tokens.inkMuted,
                 ),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 6),
-        TextField(
+        const SizedBox(height: 4),
+        TextFormField(
           controller: controller,
+          focusNode: focusNode,
+          autofocus: autofocus,
           keyboardType: keyboardType,
           inputFormatters: inputFormatters,
+          textInputAction: textInputAction,
+          onFieldSubmitted: onFieldSubmitted,
+          textAlignVertical: TextAlignVertical.center,
           style: TextStyle(
             fontFamily: 'Roboto',
             fontWeight: FontWeight.w600,
             fontSize: 14,
+            height: 1.2,
             color: tokens.ink,
           ),
           decoration: InputDecoration(
+            isDense: true,
             hintText: hint,
-            suffixText: suffix,
-            suffixStyle: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w500,
-              fontSize: 12,
-              color: tokens.inkMuted,
+            contentPadding: const EdgeInsets.symmetric(
+              vertical: 12,
+              horizontal: 16,
+            ),
+            suffixIcon: suffix == null
+                ? null
+                : Padding(
+                    padding: const EdgeInsets.only(right: 12),
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      widthFactor: 1,
+                      child: Text(
+                        suffix!,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w500,
+                          fontSize: 12,
+                          height: 1,
+                          color: tokens.inkMuted,
+                        ),
+                      ),
+                    ),
+                  ),
+            suffixIconConstraints: const BoxConstraints(
+              minWidth: 0,
+              minHeight: 0,
             ),
           ),
         ),
@@ -890,9 +753,9 @@ class _StockPreviewPanel extends StatelessWidget {
     required this.showProjected,
   });
 
-  final _TankStock available;
-  final _TankStock incoming;
-  final _TankStock projected;
+  final _LcdStock available;
+  final _LcdStock incoming;
+  final _LcdStock projected;
   final bool showProjected;
 
   @override
@@ -924,38 +787,20 @@ class _StockPreviewPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          _LcdBlock(caption: 'Available Stock', stock: available),
+          _StockLcd(caption: 'Available Stock', stock: available),
           const SizedBox(height: 12),
-          _LcdBlock(caption: 'New Stock (this purchase)', stock: incoming),
-          AnimatedSize(
-            duration: const Duration(milliseconds: 280),
-            curve: Curves.easeOutCubic,
-            alignment: Alignment.topCenter,
-            child: showProjected
-                ? Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: _RollingLcdBlock(
-                      caption: 'New Available Stock would be Like',
-                      stock: projected,
-                    ),
-                  )
-                : const SizedBox.shrink(),
-          ),
+          _StockLcd(caption: 'New Stock (this purchase)', stock: incoming),
+          if (showProjected)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: _RollingLcdBlock(
+                caption: 'New Available Stock Would be Like',
+                stock: projected,
+              ),
+            ),
         ],
       ),
     );
-  }
-}
-
-class _LcdBlock extends StatelessWidget {
-  const _LcdBlock({required this.caption, required this.stock});
-
-  final String caption;
-  final _TankStock stock;
-
-  @override
-  Widget build(BuildContext context) {
-    return _StockLcd(caption: caption, stock: stock);
   }
 }
 
@@ -963,7 +808,7 @@ class _RollingLcdBlock extends StatefulWidget {
   const _RollingLcdBlock({required this.caption, required this.stock});
 
   final String caption;
-  final _TankStock stock;
+  final _LcdStock stock;
 
   @override
   State<_RollingLcdBlock> createState() => _RollingLcdBlockState();
@@ -972,8 +817,8 @@ class _RollingLcdBlock extends StatefulWidget {
 class _RollingLcdBlockState extends State<_RollingLcdBlock>
     with SingleTickerProviderStateMixin {
   late final AnimationController _roll;
-  _TankStock _from = _TankStock.empty;
-  late _TankStock _to;
+  _LcdStock _from = _LcdStock.empty;
+  late _LcdStock _to;
 
   @override
   void initState() {
@@ -1006,7 +851,7 @@ class _RollingLcdBlockState extends State<_RollingLcdBlock>
     super.dispose();
   }
 
-  _TankStock get _displayed {
+  _LcdStock get _displayed {
     final double t = Curves.easeOutCubic.transform(_roll.value);
     return _from.lerpTo(_to, t);
   }
@@ -1025,7 +870,7 @@ class _StockLcd extends StatelessWidget {
   });
 
   final String caption;
-  final _TankStock stock;
+  final _LcdStock stock;
   final bool hint;
 
   @override
@@ -1052,15 +897,15 @@ class _StockLcd extends StatelessWidget {
             lines: <SegmentLcdLine>[
               SegmentLcdLine(
                 label: 'AMOUNT',
-                value: stock.amountPkr.toStringAsFixed(2),
+                value: FuelFormatter.lcdAmount(stock.amountPkr),
               ),
               SegmentLcdLine(
                 label: 'LITERS',
-                value: stock.volumeLiters.toStringAsFixed(2),
+                value: FuelFormatter.lcdVolume(stock.volumeLiters),
               ),
               SegmentLcdLine(
                 label: 'RATE',
-                value: stock.rate.toStringAsFixed(2),
+                value: FuelFormatter.lcdRate(stock.rate),
               ),
             ],
           ),
@@ -1071,13 +916,20 @@ class _StockLcd extends StatelessWidget {
 }
 
 class _LastPurchasesTable extends StatelessWidget {
-  const _LastPurchasesTable({required this.rows});
+  const _LastPurchasesTable({
+    required this.rows,
+    required this.totalCount,
+    this.fillHeight = false,
+  });
 
-  final List<_PurchaseRecord> rows;
+  final List<PurchaseRecord> rows;
+  final int totalCount;
+  final bool fillHeight;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
+    final int shown = rows.length;
 
     return Container(
       width: double.infinity,
@@ -1096,7 +948,7 @@ class _LastPurchasesTable extends StatelessWidget {
             child: Row(
               children: <Widget>[
                 Text(
-                  'Last Purchases',
+                  'Last 10 Purchases',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w700,
@@ -1106,7 +958,7 @@ class _LastPurchasesTable extends StatelessWidget {
                 ),
                 const Spacer(),
                 Text(
-                  '${rows.length} of 10',
+                  '$shown of ${totalCount < 10 ? 10 : totalCount}',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w500,
@@ -1118,107 +970,161 @@ class _LastPurchasesTable extends StatelessWidget {
             ),
           ),
           Divider(color: tokens.line, height: 1),
-          if (rows.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'No purchases yet.',
-                style: TextStyle(fontFamily: 'Roboto', color: tokens.inkMuted),
-              ),
-            )
-          else
-            LayoutBuilder(
-              builder: (BuildContext context, BoxConstraints constraints) {
-                return SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                    child: DataTable(
-                      headingRowHeight: 32,
-                      dataRowMinHeight: 36,
-                      dataRowMaxHeight: 40,
-                      horizontalMargin: 16,
-                      columnSpacing: 20,
-                      headingTextStyle: TextStyle(
-                        fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w700,
-                        fontSize: 10,
-                        letterSpacing: 0.9,
-                        color: tokens.inkMuted,
-                      ),
-                      dataTextStyle: TextStyle(
-                        fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w500,
-                        fontSize: 12,
-                        color: tokens.ink,
-                      ),
-                      columns: const <DataColumn>[
-                        DataColumn(label: Text('INV-NO')),
-                        DataColumn(label: Text('DATETIME')),
-                        DataColumn(label: Text('QUANTITY'), numeric: true),
-                        DataColumn(label: Text('RATE'), numeric: true),
-                        DataColumn(label: Text('AMOUNT'), numeric: true),
-                        DataColumn(
-                          label: Text('TOTAL QUANTITY'),
-                          numeric: true,
-                        ),
-                        DataColumn(label: Text('TAFSEEL')),
-                        DataColumn(label: Text('USER')),
-                      ],
-                      rows: <DataRow>[
-                        for (final _PurchaseRecord row in rows)
-                          DataRow(
-                            cells: <DataCell>[
-                              DataCell(
-                                Text(
-                                  formatInvoiceNo(row.invoiceNo),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              DataCell(
-                                Text(
-                                  formatDateTime(row.at),
-                                  style: TextStyle(color: tokens.inkMuted),
-                                ),
-                              ),
-                              DataCell(Text(formatLiters(row.quantity))),
-                              DataCell(Text(row.rate.toStringAsFixed(2))),
-                              DataCell(
-                                Text(
-                                  formatPkr(row.amount),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              DataCell(Text(formatLiters(row.totalQuantity))),
-                              DataCell(
-                                SizedBox(
-                                  width: 180,
-                                  child: Text(
-                                    row.tafseel,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ),
-                              DataCell(
-                                Text(
-                                  row.user,
-                                  style: TextStyle(color: tokens.inkMuted),
-                                ),
-                              ),
-                            ],
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+          if (fillHeight) Expanded(child: _body(tokens)) else _body(tokens),
         ],
+      ),
+    );
+  }
+
+  Widget _body(DispensrTokens tokens) {
+    if (rows.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          'No purchases yet. Set Initial Dip or add a purchase.',
+          style: TextStyle(fontFamily: 'Roboto', color: tokens.inkMuted),
+        ),
+      );
+    }
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: DataTable(
+              headingRowHeight: 32,
+              dataRowMinHeight: 36,
+              dataRowMaxHeight: 40,
+              horizontalMargin: 16,
+              columnSpacing: 20,
+              headingTextStyle: TextStyle(
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w700,
+                fontSize: 10,
+                letterSpacing: 0.9,
+                color: tokens.inkMuted,
+              ),
+              dataTextStyle: TextStyle(
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w500,
+                fontSize: 12,
+                color: tokens.ink,
+              ),
+              columns: const <DataColumn>[
+                DataColumn(label: Text('INV-NO')),
+                DataColumn(label: Text('DATE & TIME')),
+                DataColumn(label: Text('TAFSEEL')),
+                DataColumn(label: Text('QUANTITY'), numeric: true),
+                DataColumn(label: Text('RATE'), numeric: true),
+                DataColumn(label: Text('AMOUNT'), numeric: true),
+              ],
+              rows: <DataRow>[
+                for (final PurchaseRecord row in rows)
+                  DataRow(
+                    color: row.isInitialDip
+                        ? WidgetStatePropertyAll<Color>(
+                            tokens.bad.withValues(alpha: 0.10),
+                          )
+                        : null,
+                    cells: <DataCell>[
+                      DataCell(
+                        Text(
+                          row.invNo,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: row.isInitialDip
+                                ? tokens.bad
+                                : tokens.coralPressed,
+                          ),
+                        ),
+                      ),
+                      DataCell(
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Text(
+                              formatDateTime(row.dateTime),
+                              style: TextStyle(
+                                color: row.isInitialDip
+                                    ? tokens.bad
+                                    : tokens.inkMuted,
+                              ),
+                            ),
+                            if (row.isInitialDip) ...<Widget>[
+                              const SizedBox(width: 8),
+                              _DipTag(color: tokens.bad),
+                            ],
+                          ],
+                        ),
+                      ),
+                      DataCell(
+                        Text(
+                          row.tafseel.isEmpty ? '—' : row.tafseel,
+                          style: row.isInitialDip
+                              ? TextStyle(color: tokens.bad)
+                              : null,
+                        ),
+                      ),
+                      DataCell(
+                        Text(
+                          FuelFormatter.formatVolume(row.quantity),
+                          style: row.isInitialDip
+                              ? TextStyle(color: tokens.bad)
+                              : null,
+                        ),
+                      ),
+                      DataCell(
+                        Text(
+                          FuelFormatter.formatRate(row.rate),
+                          style: row.isInitialDip
+                              ? TextStyle(color: tokens.bad)
+                              : null,
+                        ),
+                      ),
+                      DataCell(
+                        Text(
+                          FuelFormatter.formatCurrency(row.amount),
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: row.isInitialDip ? tokens.bad : tokens.ink,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _DipTag extends StatelessWidget {
+  const _DipTag({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.55)),
+      ),
+      child: Text(
+        'DIP',
+        style: TextStyle(
+          fontFamily: 'Roboto',
+          fontWeight: FontWeight.w700,
+          fontSize: 9,
+          letterSpacing: 0.8,
+          color: color,
+        ),
       ),
     );
   }
@@ -1228,12 +1134,14 @@ class _PurchaseFooter extends StatelessWidget {
   const _PurchaseFooter({
     required this.canAdd,
     required this.draftSaved,
+    required this.submitFocus,
     required this.onSaveDraft,
     required this.onAddStock,
   });
 
   final bool canAdd;
   final bool draftSaved;
+  final FocusNode submitFocus;
   final VoidCallback onSaveDraft;
   final VoidCallback onAddStock;
 
@@ -1241,7 +1149,7 @@ class _PurchaseFooter extends StatelessWidget {
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final String status = !canAdd
-        ? 'Enter diesel quantity and amount to continue'
+        ? 'Enter quantity and rate to continue'
         : draftSaved
         ? 'Draft saved — ready to add this purchase to stock'
         : 'Ready to add this purchase to stock';
@@ -1250,7 +1158,7 @@ class _PurchaseFooter extends StatelessWidget {
     return Material(
       color: tokens.card,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
         decoration: BoxDecoration(
           color: tokens.card,
           border: Border(top: BorderSide(color: tokens.line)),
@@ -1262,42 +1170,71 @@ class _PurchaseFooter extends StatelessWidget {
             ),
           ],
         ),
-        child: Row(
-          children: <Widget>[
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: statusColor,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                status,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w500,
-                  fontSize: 13,
-                  color: tokens.inkMuted,
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final Widget statusLine = Row(
+              children: <Widget>[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    shape: BoxShape.circle,
+                  ),
                 ),
-              ),
-            ),
-            DsPillButton(
-              label: 'Save as Draft',
-              variant: DsPillVariant.outline,
-              onPressed: onSaveDraft,
-            ),
-            const SizedBox(width: 8),
-            DsPillButton(
-              label: 'Add Stock',
-              icon: Icons.check,
-              onPressed: canAdd ? onAddStock : null,
-            ),
-          ],
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    status,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: 'Roboto',
+                      fontWeight: FontWeight.w500,
+                      fontSize: 13,
+                      color: tokens.inkMuted,
+                    ),
+                  ),
+                ),
+              ],
+            );
+            final Widget actions = Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                DsPillButton(
+                  label: 'Save as Draft',
+                  variant: DsPillVariant.outline,
+                  onPressed: onSaveDraft,
+                ),
+                const SizedBox(width: 8),
+                Focus(
+                  focusNode: submitFocus,
+                  child: DsPillButton(
+                    label: 'Add Stock',
+                    icon: Icons.check,
+                    onPressed: canAdd ? onAddStock : null,
+                  ),
+                ),
+              ],
+            );
+            if (constraints.maxWidth < 640) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  statusLine,
+                  const SizedBox(height: 10),
+                  Align(alignment: Alignment.centerRight, child: actions),
+                ],
+              );
+            }
+            return Row(
+              children: <Widget>[
+                Expanded(child: statusLine),
+                const SizedBox(width: 12),
+                actions,
+              ],
+            );
+          },
         ),
       ),
     );

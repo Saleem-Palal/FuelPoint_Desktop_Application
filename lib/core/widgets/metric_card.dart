@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'responsive_layout.dart';
+
 class MetricCard extends StatelessWidget {
   const MetricCard({super.key, required this.label, required this.value});
 
@@ -27,14 +29,17 @@ class MetricCard extends StatelessWidget {
               ).textTheme.labelMedium?.copyWith(color: colors.onSurfaceVariant),
             ),
             const SizedBox(height: 4),
-            Text(
-              value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: colors.onSurface,
-                fontWeight: FontWeight.w600,
-              ),
+            ScaleDownMetric(
+              text: value,
+              style:
+                  Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ) ??
+                  TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
             ),
           ],
         ),

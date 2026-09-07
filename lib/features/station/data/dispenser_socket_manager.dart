@@ -4,24 +4,40 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../domain/dispenser_models.dart';
+import '../domain/dispenser_monitor_models.dart';
 import 'telemetry_parser.dart';
 
 typedef TelemetryHandler = void Function(DispenserTelemetry packet);
 typedef OfflineHandler = void Function(int unitId);
+typedef WireFrameHandler = void Function(DispenserWireFrame frame);
 
 class StationNetDefaults {
   static const int port = 8080;
-  static const Duration heartbeat = Duration(seconds: 3);
+  static const Duration heartbeat = Duration(milliseconds: 3000);
+  static const Duration serialStall = Duration(milliseconds: 1500);
   static const Duration connectTimeout = Duration(seconds: 4);
 
+  /// Central ESP32 on the office SSID that Flutter talks to.
+  static const String gatewayHost = '192.168.1.100';
+  static const String officeSsid = 'FDX-MUXTRONICS';
+
   static String hostFor(int unitId) => '192.168.1.${100 + unitId}';
+
+  static String gatewayUrl({String? host, int? port}) {
+    return 'ws://${host ?? gatewayHost}:${port ?? StationNetDefaults.port}';
+  }
 }
 
 class DispenserSocketManager {
-  DispenserSocketManager({required this.onTelemetry, required this.onOffline});
+  DispenserSocketManager({
+    required this.onTelemetry,
+    required this.onOffline,
+    this.onWire,
+  });
 
   final TelemetryHandler onTelemetry;
   final OfflineHandler onOffline;
+  final WireFrameHandler? onWire;
 
   final TelemetryParser _parser = TelemetryParser();
   final Map<int, _UnitLink> _links = <int, _UnitLink>{};
@@ -38,10 +54,11 @@ class DispenserSocketManager {
     for (final int unitId in dispenserUnitIds) {
       _links[unitId] = _UnitLink(
         unitId: unitId,
+        host: StationNetDefaults.hostFor(unitId),
+        port: StationNetDefaults.port,
         onBytes: (Uint8List data) => _ingest(unitId, data),
         onOffline: () => onOffline(unitId),
       );
-      unawaited(_links[unitId]!.connect());
     }
     await _bindUdp();
     _heartbeat = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -114,12 +131,51 @@ class DispenserSocketManager {
   }
 
   void _accept(String piece) {
-    final DispenserTelemetry? packet = _parser.tryParse(piece);
+    final String trimmed = piece.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    final DispenserTelemetry? packet = _parser.tryParse(trimmed);
     if (packet == null) {
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.error,
+          payload: trimmed,
+          unitId: _unitHintFromJson(trimmed),
+        ),
+      );
       return;
     }
     _lastPacketAt[packet.unitId] = DateTime.now();
+    _emitWire(
+      DispenserWireFrame(
+        at: DateTime.now(),
+        outbound: false,
+        kind: DispenserWireKind.classifyInbound(trimmed),
+        payload: trimmed,
+        unitId: packet.unitId,
+      ),
+    );
     onTelemetry(packet);
+  }
+
+  int? _unitHintFromJson(String trimmed) {
+    try {
+      final Object? decoded = jsonDecode(trimmed);
+      if (decoded is Map) {
+        final Object? unit = decoded['unit'] ?? decoded['unit_id'];
+        if (unit != null) {
+          return int.tryParse(unit.toString());
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  void _emitWire(DispenserWireFrame frame) {
+    onWire?.call(frame);
   }
 
   void _checkHeartbeats() {
@@ -136,18 +192,134 @@ class DispenserSocketManager {
   }
 
   Future<void> setKeypadRelay({required int unitId, required bool lock}) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{
+        'cmd': 'SET_KEYPAD_LOCK',
+        'unit': unitId,
+        'lock': lock,
+        'gpio': 23,
+      },
+    );
+  }
+
+  Future<void> testBuzzer({required int unitId}) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{
+        'cmd': 'BUZZER_TEST',
+        'unit': unitId,
+        'gpio': 19,
+      },
+    );
+  }
+
+  Future<void> pingUnit({required int unitId}) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{'cmd': 'PING', 'unit': unitId},
+    );
+  }
+
+  Future<void> connectBay({
+    required int unitId,
+    required String host,
+    required int port,
+  }) async {
+    final _UnitLink link = _links.putIfAbsent(
+      unitId,
+      () => _UnitLink(
+        unitId: unitId,
+        host: host,
+        port: port,
+        onBytes: (Uint8List data) => _ingest(unitId, data),
+        onOffline: () => onOffline(unitId),
+      ),
+    );
+    link.host = host;
+    link.port = port;
+    link.wanted = true;
+    await link.reset();
+  }
+
+  Future<void> disconnectBay(int unitId) async {
     final _UnitLink? link = _links[unitId];
     if (link == null) {
       return;
     }
-    final String payload = jsonEncode(<String, Object>{
-      'cmd': lock ? 'LOCK_KEYPAD' : 'UNLOCK_KEYPAD',
-      'unit': unitId,
-      'lock': lock,
-    });
+    link.wanted = false;
+    await link.hangUp();
+  }
+
+  Future<void> rescanBayWifi(int unitId) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{'cmd': 'RESCAN_BAY_WIFI', 'unit': unitId},
+    );
+  }
+
+  Future<void> flushUartBuffer(int unitId) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{'cmd': 'FLUSH_UART', 'unit': unitId},
+    );
+  }
+
+  Future<void> reconnectUnit(int unitId) async {
+    final _UnitLink? link = _links[unitId];
+    if (link == null) {
+      return;
+    }
+    _emitWire(
+      DispenserWireFrame(
+        at: DateTime.now(),
+        outbound: true,
+        kind: DispenserWireKind.command,
+        payload: jsonEncode(<String, Object>{
+          'cmd': 'RESET_BAY_SOCKET',
+          'unit': unitId,
+        }),
+        unitId: unitId,
+      ),
+    );
+    link.wanted = true;
+    await link.reset();
+  }
+
+  Future<void> sendCommand({
+    required int unitId,
+    required Map<String, Object> payload,
+  }) async {
+    final _UnitLink? link = _links[unitId];
+    final String encoded = jsonEncode(payload);
+    _emitWire(
+      DispenserWireFrame(
+        at: DateTime.now(),
+        outbound: true,
+        kind: DispenserWireKind.command,
+        payload: encoded,
+        unitId: unitId,
+      ),
+    );
+    if (link == null) {
+      return;
+    }
     try {
-      await link.sendLine(payload);
-    } catch (_) {}
+      await link.sendLine(encoded);
+    } catch (error) {
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.error,
+          payload: jsonEncode(<String, Object>{
+            'error': error.toString(),
+            'unit': unitId,
+          }),
+          unitId: unitId,
+        ),
+      );
+    }
   }
 
   Future<void> dispose() async {
@@ -168,6 +340,8 @@ class DispenserSocketManager {
 class _UnitLink {
   _UnitLink({
     required this.unitId,
+    required this.host,
+    required this.port,
     required this.onBytes,
     required this.onOffline,
   });
@@ -175,6 +349,10 @@ class _UnitLink {
   final int unitId;
   final void Function(Uint8List data) onBytes;
   final void Function() onOffline;
+
+  String host;
+  int port;
+  bool wanted = false;
 
   final StringBuffer buffer = StringBuffer();
   Socket? _socket;
@@ -184,14 +362,14 @@ class _UnitLink {
   bool _connecting = false;
 
   Future<void> connect() async {
-    if (_disposed || _connecting) {
+    if (_disposed || _connecting || !wanted) {
       return;
     }
     _connecting = true;
     try {
       final Socket socket = await Socket.connect(
-        StationNetDefaults.hostFor(unitId),
-        StationNetDefaults.port,
+        host,
+        port,
         timeout: StationNetDefaults.connectTimeout,
       );
       try {
@@ -230,7 +408,7 @@ class _UnitLink {
 
   Future<void> _handleDrop() async {
     await _closeSocket();
-    if (_disposed) {
+    if (_disposed || !wanted) {
       return;
     }
     onOffline();
@@ -238,7 +416,7 @@ class _UnitLink {
     final int shift = _attempts.clamp(1, 5);
     final int ms = (1000 * (1 << (shift - 1))).clamp(1000, 30000);
     await Future<void>.delayed(Duration(milliseconds: ms));
-    if (!_disposed) {
+    if (!_disposed && wanted) {
       unawaited(connect());
     }
   }
@@ -260,8 +438,22 @@ class _UnitLink {
     }
   }
 
+  Future<void> hangUp() async {
+    wanted = false;
+    await _closeSocket();
+  }
+
+  Future<void> reset() async {
+    _attempts = 0;
+    await _closeSocket();
+    if (!_disposed && wanted) {
+      unawaited(connect());
+    }
+  }
+
   Future<void> dispose() async {
     _disposed = true;
+    wanted = false;
     await _closeSocket();
   }
 }

@@ -6,11 +6,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
+import '../../core/widgets/date_range_selector.dart';
+import '../../features/station/data/ledger_pdf_export.dart';
 import '../../features/station/data/transaction_store.dart';
 import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/presentation/ledger_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
+import '../../features/station/presentation/workspace_refresh.dart';
 import '../Sale Screen/Widgets/Services/generate_receipt.dart';
 import '../Sale Screen/Widgets/Services/receipt_preview_widget.dart';
 
@@ -24,6 +27,16 @@ class LedgerScreen extends ConsumerStatefulWidget {
 class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   final TextEditingController _search = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(refreshLedgerFromDatabase(ref));
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -199,6 +212,10 @@ class _SalesLedgerView extends ConsumerWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final LedgerQuery query = ref.watch(ledgerQueryProvider);
     final SalesLedgerSnapshot slice = ref.watch(salesLedgerSliceProvider);
+    final bool filtered = query.salesRange != null;
+    final String countLabel = slice.totalCount == 1
+        ? 'transaction'
+        : 'transactions';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -212,20 +229,75 @@ class _SalesLedgerView extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                _TableHeader(
-                  title: 'Sales History',
-                  hint: '${slice.totalCount} transactions',
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 12, 8),
+                  child: Row(
+                    children: <Widget>[
+                      Text(
+                        'Sales History',
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                          color: tokens.ink,
+                        ),
+                      ),
+                      const Spacer(),
+                      DateRangeFilterButton(
+                        range: query.salesRange,
+                        onChanged: (DateTimeRange? range) {
+                          ref
+                              .read(ledgerQueryProvider.notifier)
+                              .setSalesRange(range);
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      _GeneratePdfButton(
+                        onPressed: () {
+                          unawaited(
+                            _exportLedgerPdf(
+                              context,
+                              empty: slice.rows.isEmpty,
+                              export: () {
+                                return LedgerPdfExport.instance.exportSales(
+                                  slice: slice,
+                                  unitId: query.unitId,
+                                  range: query.salesRange,
+                                  search: query.search,
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ),
                 Divider(color: tokens.line, height: 1),
                 Expanded(
                   child: slice.rows.isEmpty
-                      ? const _EmptyHint(message: 'No sales in this month.')
+                      ? _EmptyHint(
+                          message: filtered
+                              ? 'No sales match this date range.'
+                              : 'No sales yet.',
+                        )
                       : _SalesDataTable(rows: slice.rows),
                 ),
                 Divider(color: tokens.line, height: 1),
-                _MonthStepper(
-                  totalCount: slice.totalCount,
-                  noun: 'transactions',
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '${slice.totalCount} $countLabel',
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w500,
+                        fontSize: 12,
+                        color: tokens.inkMuted,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -242,7 +314,10 @@ class _PurchaseLedgerView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final DispensrTokens tokens = DispensrTokens.of(context);
+    final LedgerQuery query = ref.watch(ledgerQueryProvider);
     final PurchaseLedgerSnapshot slice = ref.watch(purchaseLedgerSliceProvider);
+    final bool filtered = query.purchaseRange != null;
+    final String entryLabel = slice.totalCount == 1 ? 'Entry' : 'Entries';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -254,20 +329,73 @@ class _PurchaseLedgerView extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                _TableHeader(
-                  title: 'Purchase History',
-                  hint: '${slice.totalCount} replenishments',
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 12, 8),
+                  child: Row(
+                    children: <Widget>[
+                      Text(
+                        'Purchase History',
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                          color: tokens.ink,
+                        ),
+                      ),
+                      const Spacer(),
+                      DateRangeFilterButton(
+                        range: query.purchaseRange,
+                        onChanged: (DateTimeRange? range) {
+                          ref
+                              .read(ledgerQueryProvider.notifier)
+                              .setPurchaseRange(range);
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      _GeneratePdfButton(
+                        onPressed: () {
+                          unawaited(
+                            _exportLedgerPdf(
+                              context,
+                              empty: slice.rows.isEmpty,
+                              export: () {
+                                return LedgerPdfExport.instance.exportPurchases(
+                                  slice: slice,
+                                  range: query.purchaseRange,
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ),
                 Divider(color: tokens.line, height: 1),
                 Expanded(
                   child: slice.rows.isEmpty
-                      ? const _EmptyHint(message: 'No purchases in this month.')
+                      ? _EmptyHint(
+                          message: filtered
+                              ? 'No purchases match this date range.'
+                              : 'No purchases yet.',
+                        )
                       : _PurchaseDataTable(rows: slice.rows),
                 ),
                 Divider(color: tokens.line, height: 1),
-                _MonthStepper(
-                  totalCount: slice.totalCount,
-                  noun: 'replenishments',
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '${slice.totalCount} $entryLabel',
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w500,
+                        fontSize: 12,
+                        color: tokens.inkMuted,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -305,7 +433,7 @@ class _SalesKpiBar extends StatelessWidget {
             spec: _KpiSpec(
               label: 'Total Volume Dispensed',
               value: formatLiters(slice.totalVolumeLiters),
-              hint: 'This month',
+              hint: 'Filtered view',
               icon: Icons.water_drop_outlined,
               tint: tokens.coral,
             ),
@@ -625,6 +753,45 @@ class _UnitChip extends StatelessWidget {
   }
 }
 
+class _GeneratePdfButton extends StatelessWidget {
+  const _GeneratePdfButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return DsPillButton(
+      label: 'Generate PDF',
+      icon: Icons.picture_as_pdf_outlined,
+      compact: true,
+      onPressed: onPressed,
+    );
+  }
+}
+
+Future<void> _exportLedgerPdf(
+  BuildContext context, {
+  required bool empty,
+  required Future<void> Function() export,
+}) async {
+  if (empty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Nothing to export for this filter.')),
+    );
+    return;
+  }
+  try {
+    await export();
+  } catch (error) {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Could not generate PDF: $error')));
+  }
+}
+
 class _TableCard extends StatelessWidget {
   const _TableCard({required this.child});
 
@@ -643,44 +810,6 @@ class _TableCard extends StatelessWidget {
       ),
       clipBehavior: Clip.antiAlias,
       child: child,
-    );
-  }
-}
-
-class _TableHeader extends StatelessWidget {
-  const _TableHeader({required this.title, required this.hint});
-
-  final String title;
-  final String hint;
-
-  @override
-  Widget build(BuildContext context) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-      child: Row(
-        children: <Widget>[
-          Text(
-            title,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 14,
-              color: tokens.ink,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            hint,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w500,
-              fontSize: 12,
-              color: tokens.inkMuted,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -801,8 +930,8 @@ class _SalesDataTable extends ConsumerWidget {
               DataColumn(label: Text('PAYMENT METHOD')),
               DataColumn(label: Text('CUSTOMER NAME')),
               DataColumn(label: Text('VEHICLE NO')),
+              DataColumn(label: Text('HELPER')),
               DataColumn(label: Text('CASHIER')),
-              DataColumn(label: Text('SHIFT')),
               DataColumn(label: Text('ACTIONS')),
             ],
             rows: <DataRow>[
@@ -870,13 +999,13 @@ class _SalesDataTable extends ConsumerWidget {
                     DataCell(Text(displayVehicleNo(row.vehicleNo))),
                     DataCell(
                       Text(
-                        row.cashierName,
+                        row.helperName.trim().isEmpty ? '—' : row.helperName,
                         style: TextStyle(color: tokens.inkMuted),
                       ),
                     ),
                     DataCell(
                       Text(
-                        row.shiftName,
+                        row.cashierName,
                         style: TextStyle(color: tokens.inkMuted),
                       ),
                     ),
@@ -914,17 +1043,14 @@ class _PurchaseDataTable extends StatelessWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double minWidth = constraints.maxWidth < 1480
-            ? 1480
-            : constraints.maxWidth;
         return _TwoAxisScroll(
-          minWidth: minWidth,
+          minWidth: constraints.maxWidth < 980 ? 980 : constraints.maxWidth,
           child: DataTable(
             headingRowHeight: 32,
             dataRowMinHeight: 38,
             dataRowMaxHeight: 42,
             horizontalMargin: 14,
-            columnSpacing: 16,
+            columnSpacing: 20,
             headingTextStyle: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w700,
@@ -939,17 +1065,13 @@ class _PurchaseDataTable extends StatelessWidget {
               color: tokens.ink,
             ),
             columns: const <DataColumn>[
-              DataColumn(label: Text('REF #')),
-              DataColumn(label: Text('SUPPLIER / OWNER')),
-              DataColumn(label: Text('FUEL TYPE')),
-              DataColumn(label: Text('WEIGHT (KG)'), numeric: true),
-              DataColumn(label: Text('SHARAH RATIO'), numeric: true),
-              DataColumn(label: Text('NET LITERS'), numeric: true),
-              DataColumn(label: Text('RATE / LTR'), numeric: true),
-              DataColumn(label: Text('TOTAL AMOUNT'), numeric: true),
-              DataColumn(label: Text('DEDUCTIONS'), numeric: true),
-              DataColumn(label: Text('PAID AMOUNT'), numeric: true),
-              DataColumn(label: Text('REMAINING'), numeric: true),
+              DataColumn(label: Text('INV-NO')),
+              DataColumn(label: Text('DATETIME')),
+              DataColumn(label: Text('QUANTITY'), numeric: true),
+              DataColumn(label: Text('RATE'), numeric: true),
+              DataColumn(label: Text('AMOUNT'), numeric: true),
+              DataColumn(label: Text('TAFSEEL')),
+              DataColumn(label: Text('USERS')),
             ],
             rows: <DataRow>[
               for (final PurchaseTransaction row in rows)
@@ -965,38 +1087,31 @@ class _PurchaseDataTable extends StatelessWidget {
                       ),
                     ),
                     DataCell(
-                      SizedBox(
-                        width: 180,
-                        child: Text(
-                          row.supplierName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                      Text(
+                        formatDateTime(row.timestamp),
+                        style: TextStyle(color: tokens.inkMuted),
                       ),
                     ),
-                    DataCell(Text(row.fuelType)),
-                    DataCell(Text(formatKg(row.weightKg))),
-                    DataCell(Text(formatSharah(row.sharahRatio))),
                     DataCell(Text(formatLiters(row.netLiters))),
-                    DataCell(Text(formatRate(row.ratePerLiter))),
+                    DataCell(Text(row.ratePerLiter.toStringAsFixed(2))),
                     DataCell(
                       Text(
                         formatPkr(row.totalAmount),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
-                    DataCell(Text(formatPkr(row.deductions))),
-                    DataCell(Text(formatPkr(row.paidAmount))),
                     DataCell(
-                      Text(
-                        formatPkr(row.remainingBalance),
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: row.remainingBalance > 0
-                              ? tokens.bad
-                              : tokens.good,
+                      SizedBox(
+                        width: 200,
+                        child: Text(
+                          row.tafseelDisplay,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                    ),
+                    DataCell(
+                      Text(row.user, style: TextStyle(color: tokens.inkMuted)),
                     ),
                   ],
                 ),
@@ -1180,71 +1295,6 @@ class _PaymentPill extends StatelessWidget {
   }
 }
 
-class _MonthStepper extends ConsumerWidget {
-  const _MonthStepper({required this.totalCount, required this.noun});
-
-  final int totalCount;
-  final String noun;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
-    final LedgerMonthNav nav = ref.watch(ledgerMonthNavProvider);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
-      child: Row(
-        children: <Widget>[
-          Text(
-            totalCount == 0 ? 'No $noun this month' : '$totalCount $noun',
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w500,
-              fontSize: 12,
-              color: tokens.inkMuted,
-            ),
-          ),
-          const Spacer(),
-          IconButton(
-            tooltip: nav.canGoPrevious
-                ? 'Previous month with data'
-                : 'No earlier month with data',
-            onPressed: nav.canGoPrevious
-                ? () {
-                    ref.read(ledgerQueryProvider.notifier).stepMonth(-1);
-                  }
-                : null,
-            icon: const Icon(Icons.chevron_left, size: 22),
-          ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(minWidth: 140),
-            child: Text(
-              formatMonthTitle(nav.month),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w700,
-                fontSize: 14,
-                color: tokens.ink,
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: nav.canGoNext
-                ? 'Next month with data'
-                : 'No later month with data',
-            onPressed: nav.canGoNext
-                ? () {
-                    ref.read(ledgerQueryProvider.notifier).stepMonth(1);
-                  }
-                : null,
-            icon: const Icon(Icons.chevron_right, size: 22),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 Future<void> _reprint(
   BuildContext context,
   WidgetRef ref,
@@ -1352,8 +1402,11 @@ class _ReprintReceiptDialog extends StatefulWidget {
 class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
   final GlobalKey _previewKey = GlobalKey();
   bool _busy = false;
+  bool _stationCapture = false;
 
   ReceiptTicket get _ticket => ReceiptTicket.fromTransaction(widget.txn);
+
+  bool get _udhaar => widget.txn.payment == PaymentMethod.udhaar;
 
   Future<void> _print() async {
     if (_busy) {
@@ -1363,7 +1416,24 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
       _busy = true;
     });
     try {
-      await ReceiptGenerator.instance.printPreview(_previewKey, _ticket);
+      final Uint8List customerPng = await ReceiptGenerator.instance
+          .capturePreview(_previewKey);
+      if (_udhaar) {
+        setState(() {
+          _stationCapture = true;
+        });
+        await WidgetsBinding.instance.endOfFrame;
+        await WidgetsBinding.instance.endOfFrame;
+        final Uint8List stationPng = await ReceiptGenerator.instance
+            .capturePreview(_previewKey);
+        await ReceiptGenerator.instance.printUdhaarCopies(
+          customerPng: customerPng,
+          stationPng: stationPng,
+          ticket: _ticket,
+        );
+      } else {
+        await ReceiptGenerator.instance.printCapturedPng(customerPng, _ticket);
+      }
       if (!mounted) {
         return;
       }
@@ -1371,7 +1441,9 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Receipt ${formatLedgerToken(widget.txn.tokenNo)} sent to printer',
+            _udhaar
+                ? 'Receipt ${formatLedgerToken(widget.txn.tokenNo)} — 2 copies sent to printer'
+                : 'Receipt ${formatLedgerToken(widget.txn.tokenNo)} sent to printer',
           ),
         ),
       );
@@ -1433,7 +1505,14 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
                   child: Center(
                     child: RepaintBoundary(
                       key: _previewKey,
-                      child: ThermalReceiptView(ticket: _ticket),
+                      child: ThermalReceiptView(
+                        ticket: _ticket,
+                        copyBanner: !_udhaar
+                            ? null
+                            : (_stationCapture
+                                  ? ReceiptCopy.stationCopyBanner
+                                  : ReceiptCopy.customerCopyBanner),
+                      ),
                     ),
                   ),
                 ),

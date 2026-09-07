@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -22,31 +23,102 @@ class UnitReceiptOverlay extends StatefulWidget {
 
 class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
   final GlobalKey _previewKey = GlobalKey();
+  bool _stationCapture = false;
 
   ReceiptTicket get ticket => ReceiptTicket.fromTransaction(widget.txn);
 
-  Future<void> _run(
-    Future<void> Function() action,
-    String okMessage,
-  ) async {
+  bool get _udhaar => widget.txn.payment == PaymentMethod.udhaar;
+
+  String? get _copyBanner {
+    if (!_udhaar) {
+      return null;
+    }
+    return _stationCapture
+        ? ReceiptCopy.stationCopyBanner
+        : ReceiptCopy.customerCopyBanner;
+  }
+
+  Future<bool> _run(Future<void> Function() action, String okMessage) async {
     try {
       await action();
     } catch (error, stack) {
       debugPrint('Receipt action failed: $error\n$stack');
       if (!mounted) {
-        return;
+        return false;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not complete receipt. $error')),
       );
-      return;
+      return false;
     }
     if (!mounted) {
-      return;
+      return false;
     }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(okMessage)));
+    return true;
+  }
+
+  Future<void> _printThenClose() async {
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    final ReceiptTicket slip = ticket;
+    late final Uint8List customerPng;
+    late final Uint8List stationPng;
+    try {
+      customerPng = await ReceiptGenerator.instance.capturePreview(_previewKey);
+      if (_udhaar) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _stationCapture = true;
+        });
+        await WidgetsBinding.instance.endOfFrame;
+        await WidgetsBinding.instance.endOfFrame;
+        stationPng = await ReceiptGenerator.instance.capturePreview(
+          _previewKey,
+        );
+      } else {
+        stationPng = customerPng;
+      }
+    } catch (error, stack) {
+      debugPrint('Receipt snapshot failed: $error\n$stack');
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('Could not prepare receipt. $error')),
+      );
+      return;
+    }
+    widget.onDismiss();
+    unawaited(() async {
+      try {
+        if (slip.payment == PaymentMethod.udhaar) {
+          await ReceiptGenerator.instance.printUdhaarCopies(
+            customerPng: customerPng,
+            stationPng: stationPng,
+            ticket: slip,
+          );
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('2 Udhaar copies sent to printer'),
+            ),
+          );
+        } else {
+          await ReceiptGenerator.instance.printCapturedPng(customerPng, slip);
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Receipt sent to printer')),
+          );
+        }
+      } catch (error, stack) {
+        debugPrint('Print failed: $error\n$stack');
+        messenger.showSnackBar(
+          SnackBar(content: Text('Could not complete receipt. $error')),
+        );
+      }
+    }());
   }
 
   @override
@@ -74,7 +146,10 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
                 fit: BoxFit.contain,
                 child: RepaintBoundary(
                   key: _previewKey,
-                  child: ThermalReceiptView(ticket: ticket),
+                  child: ThermalReceiptView(
+                    ticket: ticket,
+                    copyBanner: _copyBanner,
+                  ),
                 ),
               ),
             ),
@@ -89,15 +164,7 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
                   icon: Icons.print_outlined,
                   color: const Color(ColorData.printTerracotta),
                   onPressed: () {
-                    unawaited(
-                      _run(
-                        () => ReceiptGenerator.instance.printPreview(
-                          _previewKey,
-                          ticket,
-                        ),
-                        'Receipt sent to printer',
-                      ),
-                    );
+                    unawaited(_printThenClose());
                   },
                 ),
                 const SizedBox(height: 6),
@@ -126,9 +193,72 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
   }
 }
 
-/// Compact thermal slip. Reuse for the live preview and print/export views.
+class ThermalReceiptDetail {
+  const ThermalReceiptDetail({required this.label, required this.value});
+
+  final String label;
+  final String value;
+}
+
+/// Compact thermal slip. Sale tickets keep the LCD; other slips can hide it.
 class ThermalReceiptView extends StatelessWidget {
-  const ThermalReceiptView({super.key, required this.ticket});
+  ThermalReceiptView({
+    Key? key,
+    required ReceiptTicket ticket,
+    bool showLcd = true,
+    String? badge,
+    String? referenceLabel,
+    String? referenceValue,
+    String? copyBanner,
+    List<ThermalReceiptDetail>? details,
+  }) : this.custom(
+         key: key,
+         dateLabel: ticket.dateLabel,
+         timeLabel: ticket.timeLabel,
+         badge: badge ?? ticket.unitBadge,
+         referenceLabel: referenceLabel ?? 'Token',
+         referenceValue: referenceValue ?? ticket.tokenLabel,
+         showLcd: showLcd,
+         amount: ticket.amount,
+         liters: ticket.liters,
+         rate: ticket.rate,
+         copyBanner: copyBanner,
+         details:
+             details ??
+             <ThermalReceiptDetail>[
+               ThermalReceiptDetail(
+                 label: 'Customer',
+                 value: ticket.customerName,
+               ),
+               ThermalReceiptDetail(
+                 label: 'Vehicle No.',
+                 value: ticket.vehicleDisplay,
+               ),
+               ThermalReceiptDetail(
+                 label: 'Payment',
+                 value: ticket.paymentLabel,
+               ),
+               ThermalReceiptDetail(
+                 label: 'Cashier',
+                 value: ticket.cashierName,
+               ),
+             ],
+       );
+
+  const ThermalReceiptView.custom({
+    super.key,
+    required this.dateLabel,
+    required this.timeLabel,
+    required this.badge,
+    required this.referenceLabel,
+    required this.referenceValue,
+    required this.details,
+    this.showLcd = true,
+    this.amount = '',
+    this.liters = '',
+    this.rate = '',
+    this.copyBanner,
+  });
 
   static const double width = 272;
 
@@ -138,7 +268,17 @@ class ThermalReceiptView extends StatelessWidget {
   static const Color _steel = Color(ColorData.steel);
   static const Color _rule = Color(0x06211C1A);
 
-  final ReceiptTicket ticket;
+  final String dateLabel;
+  final String timeLabel;
+  final String badge;
+  final String referenceLabel;
+  final String referenceValue;
+  final bool showLcd;
+  final String amount;
+  final String liters;
+  final String rate;
+  final String? copyBanner;
+  final List<ThermalReceiptDetail> details;
 
   @override
   Widget build(BuildContext context) {
@@ -176,7 +316,7 @@ class ThermalReceiptView extends StatelessWidget {
                   Row(
                     children: <Widget>[
                       Text(
-                        'Date  ${ticket.dateLabel}',
+                        'Date  $dateLabel',
                         style: const TextStyle(
                           fontFamily: ReceiptCopy.latinFontFamily,
                           fontWeight: FontWeight.w600,
@@ -195,7 +335,7 @@ class ThermalReceiptView extends StatelessWidget {
                       ),
                       const SizedBox(width: 5),
                       Text(
-                        ticket.unitBadge,
+                        badge,
                         style: const TextStyle(
                           fontFamily: ReceiptCopy.latinFontFamily,
                           fontWeight: FontWeight.w600,
@@ -209,7 +349,7 @@ class ThermalReceiptView extends StatelessWidget {
                   Row(
                     children: <Widget>[
                       Text(
-                        'Time  ${ticket.timeLabel}',
+                        'Time  $timeLabel',
                         style: const TextStyle(
                           fontFamily: ReceiptCopy.latinFontFamily,
                           fontWeight: FontWeight.w600,
@@ -219,7 +359,7 @@ class ThermalReceiptView extends StatelessWidget {
                       ),
                       const Spacer(),
                       Text(
-                        'Token  ${ticket.tokenLabel}',
+                        '$referenceLabel  $referenceValue',
                         style: const TextStyle(
                           fontFamily: ReceiptCopy.latinFontFamily,
                           fontWeight: FontWeight.w500,
@@ -229,22 +369,34 @@ class ThermalReceiptView extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if ((copyBanner ?? '').trim().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        copyBanner!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontFamily: ReceiptCopy.latinFontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 10,
+                          letterSpacing: 0.6,
+                          color: _ink,
+                        ),
+                      ),
+                    ),
+                  if (showLcd) ...<Widget>[
+                    const SizedBox(height: 10),
+                    SegmentLcd.receipt(
+                      lines: <SegmentLcdLine>[
+                        SegmentLcdLine(label: 'AMOUNT', value: amount),
+                        SegmentLcdLine(label: 'LITERS', value: liters),
+                        SegmentLcdLine(label: 'RATE', value: rate),
+                      ],
+                    ),
+                  ],
                   const SizedBox(height: 10),
-                  SegmentLcd.receipt(
-                    lines: <SegmentLcdLine>[
-                      SegmentLcdLine(label: 'AMOUNT', value: ticket.amount),
-                      SegmentLcdLine(label: 'LITERS', value: ticket.liters),
-                      SegmentLcdLine(label: 'RATE', value: ticket.rate),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  _DetailRow(label: 'Customer', value: ticket.customerName),
-                  _DetailRow(
-                    label: 'Vehicle No.',
-                    value: ticket.vehicleDisplay,
-                  ),
-                  _DetailRow(label: 'Payment', value: ticket.paymentLabel),
-                  _DetailRow(label: 'Cashier', value: ticket.cashierName),
+                  for (final ThermalReceiptDetail row in details)
+                    _DetailRow(label: row.label, value: row.value),
                   const SizedBox(height: 8),
                   const _DashRule(color: Color(0x55211C1A)),
                   const SizedBox(height: 8),

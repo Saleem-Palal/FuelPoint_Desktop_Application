@@ -147,6 +147,8 @@ class DispenserTelemetry {
     required this.meterCount,
     required this.status,
     required this.keypadLocked,
+    this.rssiDbm,
+    this.pulseCount,
   });
 
   final int unitId;
@@ -156,6 +158,14 @@ class DispenserTelemetry {
   final int meterCount;
   final DispenserRunState status;
   final bool keypadLocked;
+
+  /// ESP-01 Wi-Fi RSSI in dBm when the gateway includes it.
+  final int? rssiDbm;
+
+  /// Raw GPIO 14 pulse encoder ticks. Falls back to [meterCount] in the UI.
+  final int? pulseCount;
+
+  int get encoderPulses => pulseCount ?? meterCount;
 }
 
 class SystemLog {
@@ -196,6 +206,7 @@ class SaleTransaction {
     this.vehicleNo = '',
     this.payment = PaymentMethod.cash,
     this.cashierName = 'Cashier',
+    this.helperName = '',
     this.shiftName = 'Morning',
     this.notes = '',
     this.udhaarSettled = false,
@@ -218,6 +229,7 @@ class SaleTransaction {
   final String vehicleNo;
   final PaymentMethod payment;
   final String cashierName;
+  final String helperName;
   final String shiftName;
   final String notes;
   final bool udhaarSettled;
@@ -244,6 +256,7 @@ class SaleTransaction {
     String? vehicleNo,
     PaymentMethod? payment,
     String? cashierName,
+    String? helperName,
     String? shiftName,
     String? notes,
     bool? udhaarSettled,
@@ -266,6 +279,7 @@ class SaleTransaction {
       vehicleNo: vehicleNo ?? this.vehicleNo,
       payment: payment ?? this.payment,
       cashierName: cashierName ?? this.cashierName,
+      helperName: helperName ?? this.helperName,
       shiftName: shiftName ?? this.shiftName,
       notes: notes ?? this.notes,
       udhaarSettled: udhaarSettled ?? this.udhaarSettled,
@@ -291,6 +305,8 @@ class PurchaseTransaction {
     this.deductions = 0,
     this.paidAmount = 0,
     this.remainingBalance = 0,
+    this.tafseel = '',
+    this.user = 'Ali',
   });
 
   final int? id;
@@ -306,6 +322,20 @@ class PurchaseTransaction {
   final double deductions;
   final double paidAmount;
   final double remainingBalance;
+  final String tafseel;
+  final String user;
+
+  String get tafseelDisplay {
+    final String note = tafseel.trim();
+    if (note.isNotEmpty) {
+      return note;
+    }
+    final String supplier = supplierName.trim();
+    if (supplier.isEmpty) {
+      return '—';
+    }
+    return supplier;
+  }
 }
 
 /// Active dispenser bays on the sale workspace (Unit 1 … Unit N).
@@ -338,12 +368,16 @@ class UnitEndpoint {
   }
 }
 
+/// Sole station product. Purchase, sale, and LCD RATE all share this type.
+const String kDieselFuelType = 'Diesel';
+
 class StationState {
   const StationState({
     required this.bays,
     required this.sequences,
     required this.recentTransactions,
     required this.endpoints,
+    this.dieselAverageRate = 0,
     this.abortNotices = const <int, String>{},
   });
 
@@ -351,6 +385,9 @@ class StationState {
   final Map<int, int> sequences;
   final List<SaleTransaction> recentTransactions;
   final Map<int, UnitEndpoint> endpoints;
+
+  /// Weighted-average diesel cost from Purchase. Independent of per-bay RATE.
+  final double dieselAverageRate;
   final Map<int, String> abortNotices;
 
   String? abortNoticeFor(int unitId) => abortNotices[unitId];
@@ -377,7 +414,7 @@ class StationState {
         return const DispenserBay(
           unitId: 2,
           name: 'Unit 2',
-          fuelType: 'Diesel',
+          fuelType: kDieselFuelType,
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -393,7 +430,7 @@ class StationState {
         return const DispenserBay(
           unitId: 3,
           name: 'Unit 3',
-          fuelType: 'Diesel',
+          fuelType: kDieselFuelType,
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -409,7 +446,7 @@ class StationState {
         return const DispenserBay(
           unitId: 4,
           name: 'Unit 4',
-          fuelType: 'Diesel',
+          fuelType: kDieselFuelType,
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -425,7 +462,7 @@ class StationState {
         return const DispenserBay(
           unitId: 5,
           name: 'Unit 5',
-          fuelType: 'Diesel',
+          fuelType: kDieselFuelType,
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -442,7 +479,7 @@ class StationState {
         return const DispenserBay(
           unitId: 1,
           name: 'Unit 1',
-          fuelType: 'Diesel',
+          fuelType: kDieselFuelType,
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -468,6 +505,7 @@ class StationState {
         for (final int unitId in dispenserUnitIds)
           unitId: UnitEndpoint.seedFor(unitId),
       },
+      dieselAverageRate: 0,
     );
   }
 
@@ -476,6 +514,7 @@ class StationState {
     Map<int, int>? sequences,
     List<SaleTransaction>? recentTransactions,
     Map<int, UnitEndpoint>? endpoints,
+    double? dieselAverageRate,
     Map<int, String>? abortNotices,
   }) {
     return StationState(
@@ -483,6 +522,7 @@ class StationState {
       sequences: sequences ?? this.sequences,
       recentTransactions: recentTransactions ?? this.recentTransactions,
       endpoints: endpoints ?? this.endpoints,
+      dieselAverageRate: dieselAverageRate ?? this.dieselAverageRate,
       abortNotices: abortNotices ?? this.abortNotices,
     );
   }
@@ -502,6 +542,27 @@ String formatTokenNo(int tokenNo) {
 
 String formatLedgerToken(int tokenNo) {
   return 'TKN-${formatTokenNo(tokenNo)}';
+}
+
+int parseLedgerToken(String raw) {
+  final String digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
+  return int.tryParse(digits) ?? 0;
+}
+
+PaymentMethod paymentMethodFromStorage(String? raw) {
+  switch ((raw ?? '').trim().toLowerCase()) {
+    case 'udhaar':
+      return PaymentMethod.udhaar;
+    case 'bank account':
+    case 'bankaccount':
+    case 'bank / digital':
+    case 'bank':
+      return PaymentMethod.bankAccount;
+    case 'easypaisa':
+      return PaymentMethod.easyPaisa;
+    default:
+      return PaymentMethod.cash;
+  }
 }
 
 String formatUnitLabel(int unitId) {

@@ -1,7 +1,7 @@
 name: fuel_dispenser
 description: "FuelPoint station control by RetroSoft."
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.0.0+1
 
 environment:
   sdk: ^3.11.3
@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_riverpod: ^2.6.1
+  intl: ^0.20.2
   ffi: ^2.1.3
   network_info_plus: ^8.2.1
   path: ^1.9.1
@@ -20,17 +21,44 @@ dependencies:
   provider: ^6.1.5+1
   share_plus: ^13.3.0
   url_launcher: ^6.3.2
+  window_manager: ^0.5.1
+  sqflite_common_ffi: ^2.4.0+3
+  crypto: ^3.0.7
+  file_picker: ^12.2.0
+  googleapis: ^17.0.0
+  googleapis_auth: ^2.3.3
+  http: ^1.6.0
+  google_sign_in: 6.3.0
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  msix: ^3.18.0
+
+msix_config:
+  display_name: "FuelPoint Station OS"
+  publisher_display_name: "RetroSoft"
+  identity_name: "com.fuelpoint.stationos"
+  msix_version: "1.0.0.1"
+  logo_path: "assets/icons/app_logo.png"
+  trim_logo: false
+  capabilities: "internetClient, privateNetworkClientServer"
+  publisher: "CN=FuelPoint, O=RetroSoft, C=PK"
+  certificate_path: "certs/FuelPointDevCert.pfx"
+  certificate_password: "FuelPointDev"
+  install_certificate: false
+  architecture: x64
+  output_path: "build/windows/x64/runner/Release"
+  output_name: "FuelPoint Station OS"
 
 flutter:
   uses-material-design: true
   assets:
     - assets/images/
     - assets/fonts/
+    - assets/icons/
   fonts:
     - family: Roboto
       fonts:
