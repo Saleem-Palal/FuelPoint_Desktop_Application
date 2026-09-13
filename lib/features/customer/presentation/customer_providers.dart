@@ -61,7 +61,6 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
   Future<CustomerSettlement> settleBill({
     required CustomerProfile customer,
     required double amountPkr,
-    required SettlementPaymentMode paymentMode,
     String notes = '',
     String cashierName = 'Cashier',
     String cashierId = '',
@@ -76,13 +75,11 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
       customerId: customer.id,
       customerName: customer.name,
       amountPkr: amountPkr,
-      paymentMode: paymentMode,
+      paymentMode: SettlementPaymentMode.cash,
       shiftId: shiftId,
       notes: notes,
     );
-    if (paymentMode == SettlementPaymentMode.cash) {
-      ref.read(shiftWorkspaceProvider.notifier).addUdhaarRecovery(amountPkr);
-    }
+    ref.read(shiftWorkspaceProvider.notifier).addUdhaarRecovery(amountPkr);
     await reloadCustomerPersistence(ref);
     return settlementFromLedgerRow(
       row,

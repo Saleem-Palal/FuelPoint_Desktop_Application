@@ -169,11 +169,13 @@ class ShiftSalesTable extends StatelessWidget {
     required this.rows,
     this.showPayment = true,
     this.showFooter = false,
+    this.compact = false,
   });
 
   final List<HelperSaleRecord> rows;
   final bool showPayment;
   final bool showFooter;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -184,18 +186,18 @@ class ShiftSalesTable extends StatelessWidget {
     );
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double floor = showPayment ? 1240 : 1100;
+        final double floor = compact ? 420 : (showPayment ? 1240 : 1100);
         final double minWidth = constraints.maxWidth < floor
             ? floor
             : constraints.maxWidth;
         final Widget table = ShiftTwoAxisScroll(
           minWidth: minWidth,
           child: DataTable(
-            headingRowHeight: 32,
-            dataRowMinHeight: 44,
-            dataRowMaxHeight: 52,
-            horizontalMargin: 14,
-            columnSpacing: 14,
+            headingRowHeight: compact ? 24 : 32,
+            dataRowMinHeight: compact ? 28 : 44,
+            dataRowMaxHeight: compact ? 30 : 52,
+            horizontalMargin: compact ? 8 : 14,
+            columnSpacing: compact ? 10 : 14,
             headingTextStyle: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w700,
@@ -209,57 +211,89 @@ class ShiftSalesTable extends StatelessWidget {
               fontSize: 12,
               color: tokens.ink,
             ),
-            columns: <DataColumn>[
-              const DataColumn(label: Text('TOKEN #')),
-              const DataColumn(label: Text('DATE & TIME')),
-              const DataColumn(label: Text('DISPENSER UNIT')),
-              const DataColumn(label: Text('FUEL TYPE')),
-              const DataColumn(label: Text('VOLUME (L)'), numeric: true),
-              const DataColumn(label: Text('RATE (PKR)'), numeric: true),
-              const DataColumn(
-                label: Text('TOTAL AMOUNT (PKR)'),
-                numeric: true,
-              ),
-              if (showPayment) const DataColumn(label: Text('PAYMENT METHOD')),
-              const DataColumn(label: Text('HELPER NAME')),
-            ],
+            columns: compact
+                ? const <DataColumn>[
+                    DataColumn(label: Text('TOKEN #')),
+                    DataColumn(label: Text('DATE & TIME')),
+                    DataColumn(label: Text('UNIT')),
+                    DataColumn(label: Text('FUEL')),
+                  ]
+                : <DataColumn>[
+                    const DataColumn(label: Text('TOKEN #')),
+                    const DataColumn(label: Text('DATE & TIME')),
+                    const DataColumn(label: Text('DISPENSER UNIT')),
+                    const DataColumn(label: Text('FUEL TYPE')),
+                    const DataColumn(label: Text('VOLUME (L)'), numeric: true),
+                    const DataColumn(label: Text('RATE (PKR)'), numeric: true),
+                    const DataColumn(
+                      label: Text('TOTAL AMOUNT (PKR)'),
+                      numeric: true,
+                    ),
+                    if (showPayment)
+                      const DataColumn(label: Text('PAYMENT METHOD')),
+                    const DataColumn(label: Text('HELPER NAME')),
+                  ],
             rows: <DataRow>[
               for (final HelperSaleRecord row in rows)
                 DataRow(
-                  cells: <DataCell>[
-                    DataCell(
-                      Text(
-                        formatLedgerToken(row.tokenNo),
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: tokens.coralPressed,
-                        ),
-                      ),
-                    ),
-                    DataCell(
-                      Text(
-                        formatDateTime(row.timestamp),
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                    DataCell(Text(formatUnitLabel(row.unitId))),
-                    DataCell(Text(row.fuelType.toUpperCase())),
-                    DataCell(Text(formatLiters(row.volumeLiters))),
-                    DataCell(Text(formatRate(row.rate))),
-                    DataCell(
-                      Text(
-                        formatPkr(row.amountPkr),
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    if (showPayment) DataCell(Text(row.payment.label)),
-                    DataCell(
-                      Text(
-                        row.helperName.trim().isEmpty ? '—' : row.helperName,
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                  ],
+                  cells: compact
+                      ? <DataCell>[
+                          DataCell(
+                            Text(
+                              formatLedgerToken(row.tokenNo),
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: tokens.coralPressed,
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              formatDateTime(row.timestamp),
+                              style: TextStyle(color: tokens.inkMuted),
+                            ),
+                          ),
+                          DataCell(Text(formatUnitLabel(row.unitId))),
+                          DataCell(Text(row.fuelType.toUpperCase())),
+                        ]
+                      : <DataCell>[
+                          DataCell(
+                            Text(
+                              formatLedgerToken(row.tokenNo),
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: tokens.coralPressed,
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              formatDateTime(row.timestamp),
+                              style: TextStyle(color: tokens.inkMuted),
+                            ),
+                          ),
+                          DataCell(Text(formatUnitLabel(row.unitId))),
+                          DataCell(Text(row.fuelType.toUpperCase())),
+                          DataCell(Text(formatLiters(row.volumeLiters))),
+                          DataCell(Text(formatRate(row.rate))),
+                          DataCell(
+                            Text(
+                              formatPkr(row.amountPkr),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          if (showPayment) DataCell(Text(row.payment.label)),
+                          DataCell(
+                            Text(
+                              row.helperName.trim().isEmpty
+                                  ? '—'
+                                  : row.helperName,
+                              style: TextStyle(color: tokens.inkMuted),
+                            ),
+                          ),
+                        ],
                 ),
             ],
           ),
@@ -272,7 +306,12 @@ class ShiftSalesTable extends StatelessWidget {
           children: <Widget>[
             Expanded(child: table),
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
+              padding: EdgeInsets.fromLTRB(
+                compact ? 10 : 14,
+                compact ? 6 : 8,
+                compact ? 10 : 14,
+                compact ? 8 : 10,
+              ),
               child: Row(
                 children: <Widget>[
                   Text(

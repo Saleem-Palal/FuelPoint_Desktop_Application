@@ -384,6 +384,7 @@ class AuthNotifier extends Notifier<AuthState> {
         loading: false,
         busy: false,
         isAuthenticated: true,
+        isOwnerElevated: true,
         selectedManagerId: chosen.id,
         activeManagerId: chosen.id,
         activeManagerName: chosen.name,
@@ -396,6 +397,7 @@ class AuthNotifier extends Notifier<AuthState> {
       state = state.copyWith(
         loading: false,
         isAuthenticated: true,
+        isOwnerElevated: true,
         activeManagerId: 'mgr-dev',
         activeManagerName: 'Debug Manager',
         selectedManagerId: 'mgr-dev',

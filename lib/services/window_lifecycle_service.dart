@@ -15,16 +15,16 @@ final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 typedef ActiveShiftReader = ManagerShiftRecord? Function();
 typedef ActiveShiftFlag = bool Function();
 typedef ShiftEndHandler = Future<void> Function();
-typedef ForceCloseHandler = Future<bool> Function();
+typedef CleanShutdownHandler = Future<void> Function();
 
-/// Intercepts native desktop close. An OPEN / pending shift blocks destroy
-/// until the operator cancels, ends the shift, or force-closes with PIN.
+/// Intercepts native desktop close. A LIVE / pending shift blocks destroy
+/// until the operator cancels or ends the shift for reconciliation.
 class WindowLifecycleService with WindowListener {
   WindowLifecycleService({
     required this.hasActiveShift,
     required this.activeManagerName,
     required this.onProceedToEndShift,
-    required this.onForceClose,
+    this.onCleanShutdown,
     GlobalKey<NavigatorState>? navigatorKey,
   }) : navigatorKey = navigatorKey ?? appNavigatorKey;
 
@@ -32,7 +32,7 @@ class WindowLifecycleService with WindowListener {
   final ActiveShiftFlag hasActiveShift;
   final String Function() activeManagerName;
   final ShiftEndHandler onProceedToEndShift;
-  final ForceCloseHandler onForceClose;
+  final CleanShutdownHandler? onCleanShutdown;
 
   bool _attached = false;
   bool _dialogOpen = false;
@@ -110,6 +110,12 @@ class WindowLifecycleService with WindowListener {
       return;
     }
     if (!hasActiveShift()) {
+      try {
+        await windowManager.hide();
+      } catch (_) {}
+      try {
+        await onCleanShutdown?.call();
+      } catch (_) {}
       await windowManager.destroy();
       return;
     }
@@ -133,11 +139,6 @@ class WindowLifecycleService with WindowListener {
       }
       if (action == ShiftCloseWarningAction.proceedEndShift) {
         await onProceedToEndShift();
-        return;
-      }
-      final bool closed = await onForceClose();
-      if (closed) {
-        await windowManager.destroy();
       }
     } finally {
       _dialogOpen = false;

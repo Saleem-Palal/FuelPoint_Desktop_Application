@@ -165,7 +165,7 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
               _ReadOnlyField(
                 label: 'Expected Cash in Hand (PKR)',
                 value: formatPkr(widget.metrics.expectedCashInHand),
-                hint: 'Fuel cash sales + Udhaar recovery',
+                hint: ShiftWindowMetrics.expectedCashFormula,
               ),
               const SizedBox(height: 10),
               _ReadOnlyField(
@@ -179,7 +179,7 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
                 children: <Widget>[
                   Expanded(
                     child: _ReadOnlyField(
-                      label: 'Udhaar Amount (PKR)',
+                      label: 'Udhaar Issued (PKR)',
                       value: formatPkr(widget.metrics.udhaarSales),
                       hint: 'Credit sales',
                     ),
@@ -187,7 +187,7 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: _ReadOnlyField(
-                      label: 'Account Amount (PKR)',
+                      label: 'Account Payments (PKR)',
                       value: formatPkr(widget.metrics.accountSales),
                       hint: 'Bank / EasyPaisa',
                     ),

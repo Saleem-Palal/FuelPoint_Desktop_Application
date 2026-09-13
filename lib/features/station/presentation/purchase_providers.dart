@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../shift/presentation/shift_providers.dart';
 import '../data/purchase_repository.dart';
 import 'purchase_controller.dart';
 import 'station_providers.dart';
@@ -22,11 +21,6 @@ final purchaseControllerProvider = ChangeNotifierProvider<PurchaseController>((
     ref.watch(purchaseRepositoryProvider),
     onCommitted: () {
       bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
-      unawaited(
-        ref
-            .read(shiftWorkspaceProvider.notifier)
-            .refreshExpectedCashComponents(),
-      );
     },
   );
 
@@ -36,9 +30,14 @@ final purchaseControllerProvider = ChangeNotifierProvider<PurchaseController>((
         .setDieselAverageRate(controller.weightedAverageRate);
   }
 
-  controller.addListener(publishDieselRate);
+  void onPurchasesChanged() {
+    publishDieselRate();
+    unawaited(ref.read(lowStockAlertProvider.notifier).sync());
+  }
+
+  controller.addListener(onPurchasesChanged);
   ref.onDispose(() {
-    controller.removeListener(publishDieselRate);
+    controller.removeListener(onPurchasesChanged);
   });
   return controller;
 });

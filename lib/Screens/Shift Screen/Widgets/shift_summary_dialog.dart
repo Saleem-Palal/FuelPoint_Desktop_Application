@@ -171,6 +171,14 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
               value: formatPkr(metrics.fuelCashSales),
             ),
             _SummaryRow(
+              label: 'Udhaar issued',
+              value: formatPkr(metrics.udhaarSales),
+            ),
+            _SummaryRow(
+              label: 'Account payments',
+              value: formatPkr(metrics.accountSales),
+            ),
+            _SummaryRow(
               label: 'Udhaar recovery',
               value: formatPkr(metrics.udhaarRecoveryTotal),
             ),

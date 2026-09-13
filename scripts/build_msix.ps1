@@ -132,12 +132,14 @@ if (Test-Path -LiteralPath $CerPath) {
 }
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\install_client_cert.ps1') -Destination (Join-Path $DistDir 'install_client_cert.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\install_fuelpoint_bundle.ps1') -Destination (Join-Path $DistDir 'install_fuelpoint_bundle.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\install.bat') -Destination (Join-Path $DistDir 'install.bat') -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\Install.cmd') -Destination (Join-Path $DistDir 'Install.cmd') -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'DISTRIBUTION_README.txt') -Destination (Join-Path $DistDir 'DISTRIBUTION_README.txt') -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'RELEASE_NOTES.txt') -Destination (Join-Path $DistDir 'RELEASE_NOTES.txt') -Force
 
 Write-Host ''
 Write-Host 'Build complete.' -ForegroundColor Green
 Write-Host "  Installer : $msixPath"
 Write-Host "  Client kit: $DistDir"
 Write-Host ''
-Write-Host 'Give the client the folder dist\. They double-click Install.cmd.'
+Write-Host 'Give the client the folder dist\. They double-click install.bat.'

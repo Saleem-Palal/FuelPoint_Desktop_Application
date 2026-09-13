@@ -1,6 +1,8 @@
 import '../../../core/security/pin_hasher.dart';
 import '../../../services/database_helper.dart';
 import '../../station/domain/dispenser_models.dart';
+import '../../station/domain/fuel_precision.dart';
+import '../domain/shift_lifecycle.dart';
 import '../domain/shift_models.dart';
 
 class ShiftStoreSnapshot {
@@ -22,10 +24,8 @@ class SqliteShiftRepository {
   SqliteShiftRepository({DatabaseHelper? db})
     : _db = db ?? DatabaseHelper.instance;
 
-  static const String _statusOpen = 'OPEN';
-  static const String _statusPending = 'PENDING_RECONCILIATION';
-  static const String _statusClosed = 'CLOSED';
-  static const String _statusForceClosed = 'FORCE_CLOSED';
+  static const String _statusLive = ShiftStatusStorage.live;
+  static const String _statusPending = ShiftStatusStorage.pending;
 
   final DatabaseHelper _db;
 
@@ -116,6 +116,7 @@ class SqliteShiftRepository {
     required ManagerProfile manager,
     required DateTime startTime,
     String? helperId,
+    Map<int, double> openingMeters = const <int, double>{},
   }) async {
     await _db.upsertManager(
       managerId: manager.id,
@@ -126,7 +127,8 @@ class SqliteShiftRepository {
       managerId: manager.id,
       helperId: helperId,
       startTimeIso: startTime.toIso8601String(),
-      status: _statusOpen,
+      status: _statusLive,
+      openingMeters: ShiftMeterSnapshot.encode(openingMeters),
     );
     return ManagerShiftRecord(
       shiftId: formatShiftId(pk),
@@ -136,6 +138,7 @@ class SqliteShiftRepository {
       startTime: startTime,
       expectedCash: 0,
       status: ManagerShiftStatus.open,
+      openingMeters: openingMeters,
     );
   }
 
@@ -151,7 +154,67 @@ class SqliteShiftRepository {
       actualCash: shift.actualCash ?? 0,
       discrepancy: shift.discrepancy,
       status: _statusToStorage(shift.status),
+      notes: shift.notes,
+      openingMeters: ShiftMeterSnapshot.encode(shift.openingMeters),
+      closingMeters: ShiftMeterSnapshot.encode(shift.closingMeters),
     );
+  }
+
+  /// Freezes the outgoing shift for cash tally and opens the incoming LIVE shift.
+  Future<({ManagerShiftRecord pending, ManagerShiftRecord opened})>
+  handoverWithPendingTally({
+    required ManagerShiftRecord outgoing,
+    required ManagerProfile incoming,
+    required DateTime handoffAt,
+    Map<int, double> closingMeters = const <int, double>{},
+    Map<int, double> openingMeters = const <int, double>{},
+  }) async {
+    final int? outgoingPk = parseShiftPk(outgoing.shiftId);
+    if (outgoingPk == null) {
+      throw StateError('Cannot freeze shift ${outgoing.shiftId}');
+    }
+    await _db.upsertManager(
+      managerId: incoming.id,
+      managerName: incoming.name,
+      pin: incoming.pin,
+    );
+    final ManagerShiftRecord pending = outgoing.copyWith(
+      endTime: handoffAt,
+      status: ManagerShiftStatus.pendingReconciliation,
+      closingMeters: closingMeters,
+    );
+    return _db.runInTransaction((txn) async {
+      await _db.updateShift(
+        shiftId: outgoingPk,
+        endTimeIso: handoffAt.toIso8601String(),
+        expectedCash: pending.expectedCash,
+        actualCash: pending.actualCash ?? 0,
+        discrepancy: pending.discrepancy,
+        status: _statusPending,
+        notes: pending.notes,
+        openingMeters: ShiftMeterSnapshot.encode(pending.openingMeters),
+        closingMeters: ShiftMeterSnapshot.encode(closingMeters),
+        executor: txn,
+      );
+      final int pk = await _db.insertShift(
+        managerId: incoming.id,
+        startTimeIso: handoffAt.toIso8601String(),
+        status: _statusLive,
+        openingMeters: ShiftMeterSnapshot.encode(openingMeters),
+        executor: txn,
+      );
+      final ManagerShiftRecord opened = ManagerShiftRecord(
+        shiftId: formatShiftId(pk),
+        managerId: incoming.id,
+        managerName: incoming.name,
+        role: incoming.role,
+        startTime: handoffAt,
+        expectedCash: 0,
+        status: ManagerShiftStatus.open,
+        openingMeters: openingMeters,
+      );
+      return (pending: pending, opened: opened);
+    });
   }
 
   static ShiftWindowMetrics metricsForShift(
@@ -178,7 +241,11 @@ class SqliteShiftRepository {
     if (udhaarRecoveryTotal > 0) {
       return fromSales;
     }
-    final double inferred = shift.expectedCash - fromSales.fuelCashSales;
+    final double inferred =
+        shift.expectedCash -
+        fromSales.fuelCashSales -
+        fromSales.accountSales +
+        fromSales.udhaarSales;
     if (inferred <= 0) {
       return fromSales;
     }
@@ -218,7 +285,7 @@ class SqliteShiftRepository {
       }
     }
     final ManagerShiftStatus status = _statusFromStorage(
-      '${row['STATUS'] ?? _statusOpen}',
+      '${row['STATUS'] ?? _statusLive}',
     );
     final double actualStored = _asDouble(row['ACTUAL_CASH']);
     return ManagerShiftRecord(
@@ -235,7 +302,14 @@ class SqliteShiftRepository {
               status == ManagerShiftStatus.forceClosed
           ? actualStored
           : null,
+      notes: '${row['NOTES'] ?? ''}',
       status: status,
+      openingMeters: ShiftMeterSnapshot.decode(
+        row['OPENING_METERS'] as String?,
+      ),
+      closingMeters: ShiftMeterSnapshot.decode(
+        row['CLOSING_METERS'] as String?,
+      ),
     );
   }
 
@@ -301,39 +375,15 @@ class SqliteShiftRepository {
   }
 
   static String _statusToStorage(ManagerShiftStatus status) {
-    switch (status) {
-      case ManagerShiftStatus.open:
-        return _statusOpen;
-      case ManagerShiftStatus.pendingReconciliation:
-        return _statusPending;
-      case ManagerShiftStatus.closed:
-        return _statusClosed;
-      case ManagerShiftStatus.forceClosed:
-        return _statusForceClosed;
-    }
+    return ShiftStatusStorage.toStorage(status);
   }
 
   static ManagerShiftStatus _statusFromStorage(String raw) {
-    switch (raw.trim().toUpperCase()) {
-      case _statusPending:
-        return ManagerShiftStatus.pendingReconciliation;
-      case _statusClosed:
-        return ManagerShiftStatus.closed;
-      case _statusForceClosed:
-        return ManagerShiftStatus.forceClosed;
-      default:
-        return ManagerShiftStatus.open;
-    }
+    return ShiftStatusStorage.fromStorage(raw);
   }
 
   static double _asDouble(Object? value) {
-    if (value is double) {
-      return value;
-    }
-    if (value is num) {
-      return value.toDouble();
-    }
-    return 0;
+    return storedNumberToDouble(value);
   }
 
   static int _asInt(Object? value) {

@@ -3,11 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/security/pin_hasher.dart';
 import '../../../providers/settings_provider.dart';
 import '../../../services/database_helper.dart';
+import '../../access/domain/access_policy.dart';
 import '../../station/domain/dispenser_models.dart';
 import '../data/sqlite_shift_repository.dart';
+import '../domain/shift_lifecycle.dart';
 import '../domain/shift_models.dart';
 
 @immutable
@@ -31,8 +32,8 @@ class ShiftWorkspaceState {
     this.nextShiftSeq = 1,
     this.nextDutySeq = 1,
     this.udhaarRecoveryTotal = 0,
-    this.purchaseTotal = 0,
     this.sessionVerified = true,
+    this.uncleanExitAt,
   });
 
   final List<ManagerProfile> managers;
@@ -53,8 +54,8 @@ class ShiftWorkspaceState {
   final int nextShiftSeq;
   final int nextDutySeq;
   final double udhaarRecoveryTotal;
-  final double purchaseTotal;
   final bool sessionVerified;
+  final DateTime? uncleanExitAt;
 
   HelperProfile? get selectedHelper => helperById(helpers, selectedHelperId);
 
@@ -77,7 +78,6 @@ class ShiftWorkspaceState {
     return metricsForSales(
       salesForOutgoingManager(sales, open),
       udhaarRecoveryTotal: udhaarRecoveryTotal,
-      purchaseTotal: purchaseTotal,
     );
   }
 
@@ -99,6 +99,8 @@ class ShiftWorkspaceState {
   bool get isUnverifiedSession {
     return activeShift != null && activeShift!.isOpen && !sessionVerified;
   }
+
+  bool get needsCrashRecovery => isUnverifiedSession;
 
   List<ManagerShiftRecord> get knownShifts {
     return <ManagerShiftRecord>[
@@ -131,8 +133,9 @@ class ShiftWorkspaceState {
     int? nextShiftSeq,
     int? nextDutySeq,
     double? udhaarRecoveryTotal,
-    double? purchaseTotal,
     bool? sessionVerified,
+    DateTime? uncleanExitAt,
+    bool clearUncleanExitAt = false,
   }) {
     return ShiftWorkspaceState(
       managers: managers ?? this.managers,
@@ -158,8 +161,10 @@ class ShiftWorkspaceState {
       nextShiftSeq: nextShiftSeq ?? this.nextShiftSeq,
       nextDutySeq: nextDutySeq ?? this.nextDutySeq,
       udhaarRecoveryTotal: udhaarRecoveryTotal ?? this.udhaarRecoveryTotal,
-      purchaseTotal: purchaseTotal ?? this.purchaseTotal,
       sessionVerified: sessionVerified ?? this.sessionVerified,
+      uncleanExitAt: clearUncleanExitAt
+          ? null
+          : (uncleanExitAt ?? this.uncleanExitAt),
     );
   }
 
@@ -181,16 +186,21 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
   final SqliteShiftRepository _repo = SqliteShiftRepository();
   Future<void>? _hydrateFuture;
   bool _alive = true;
+  Timer? _sessionHeartbeat;
 
   @override
   ShiftWorkspaceState build() {
     _alive = true;
     ref.onDispose(() {
       _alive = false;
+      _sessionHeartbeat?.cancel();
+      _sessionHeartbeat = null;
     });
     _hydrateFuture = _hydrate();
     return ShiftWorkspaceState.empty();
   }
+
+  Future<void> ensureReady() => _ensureHydrated();
 
   Future<void> _ensureHydrated() async {
     await (_hydrateFuture ??= _hydrate());
@@ -202,11 +212,51 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       if (!_alive) {
         return;
       }
-      state = _stateFromStore(snapshot, preserve: state);
+      ManagerShiftRecord? live;
+      for (final ManagerShiftRecord shift in snapshot.shifts) {
+        if (shift.isOpen) {
+          live = shift;
+          break;
+        }
+      }
+      final AppSessionSnapshot session = await _loadBootSession(live);
+      if (!_alive) {
+        return;
+      }
+      state = _stateFromStore(snapshot, preserve: state, session: session);
       await _refreshExpectedCashComponents();
+      _syncSessionHeartbeat();
     } catch (error, stack) {
       debugPrint('ShiftWorkspaceNotifier.hydrate failed: $error\n$stack');
     }
+  }
+
+  Future<AppSessionSnapshot> _loadBootSession(ManagerShiftRecord? live) async {
+    if (live == null || !live.isOpen) {
+      return DatabaseHelper.instance.readAppSessionState();
+    }
+    final AppSessionSnapshot session = await DatabaseHelper.instance
+        .readAppSessionState();
+    if (session.isCleanShutdown) {
+      return session;
+    }
+    return DatabaseHelper.instance.captureUncleanExitIfNeeded();
+  }
+
+  void _syncSessionHeartbeat() {
+    _sessionHeartbeat?.cancel();
+    _sessionHeartbeat = null;
+    final bool live =
+        state.activeShift != null &&
+        state.activeShift!.isOpen &&
+        state.sessionVerified;
+    if (!live) {
+      return;
+    }
+    unawaited(DatabaseHelper.instance.markRuntimeUnclean());
+    _sessionHeartbeat = Timer.periodic(const Duration(seconds: 5), (_) {
+      unawaited(DatabaseHelper.instance.touchSessionHeartbeat());
+    });
   }
 
   Future<void> reload() async {
@@ -217,6 +267,7 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
   ShiftWorkspaceState _stateFromStore(
     ShiftStoreSnapshot snapshot, {
     required ShiftWorkspaceState preserve,
+    required AppSessionSnapshot session,
   }) {
     ManagerShiftRecord? open;
     ManagerShiftRecord? pending;
@@ -281,7 +332,14 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
         snapshot.helpers.map((HelperProfile row) => row.id),
         'hlp-',
       ),
-      sessionVerified: open == null,
+      sessionVerified:
+          !shouldEnforceStationGuards ||
+          open == null ||
+          session.isCleanShutdown,
+      uncleanExitAt: open != null && !session.isCleanShutdown
+          ? session.uncleanExitAt
+          : null,
+      clearUncleanExitAt: open == null || session.isCleanShutdown,
     );
   }
 
@@ -455,6 +513,7 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     String managerId, {
     required String pin,
     Map<int, String?>? unitAssignments,
+    Map<int, double> openingMeters = const <int, double>{},
   }) async {
     await _ensureHydrated();
     final ManagerShiftRecord? open = state.activeShift;
@@ -484,17 +543,21 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ManagerShiftRecord shift = await _repo.insertOpenShift(
       manager: profile,
       startTime: DateTime.now(),
+      openingMeters: openingMeters,
     );
+    await DatabaseHelper.instance.markRuntimeUnclean();
+    await DatabaseHelper.instance.clearUncleanExitStamp();
     state = state.copyWith(
       activeShift: shift,
       managers: _withSingleActive(profile.id),
       udhaarRecoveryTotal: 0,
-      purchaseTotal: 0,
       sessionVerified: true,
+      clearUncleanExitAt: true,
     );
     applyUnitAssignments(
       unitAssignments ?? unitHelperAssignmentsOf(state.helpers),
     );
+    _syncSessionHeartbeat();
     return StartShiftOutcome.started;
   }
 
@@ -513,7 +576,6 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics metrics = metricsForSales(
       salesForOutgoingManager(state.sales, window),
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
-      purchaseTotal: state.purchaseTotal,
     );
     final ManagerShiftRecord closed = open.copyWith(
       endTime: ended,
@@ -531,17 +593,28 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       udhaarRecoveryTotal: 0,
     );
     unawaited(ref.read(settingsProvider.notifier).maybeUploadOnShiftClose());
+    _syncSessionHeartbeat();
     return ShiftSummary(shift: closed, metrics: metrics);
   }
 
-  /// Authenticates the incoming manager, freezes Shift N for tally, and opens
-  /// Shift N+1 immediately so live sales tag to the new shift.
+  /// Authenticates the incoming manager, freezes Shift N for tally, and opens N+1 LIVE.
   Future<ShiftHandoverResult> beginHandover({
     required String incomingManagerId,
     required String pin,
     Map<int, String?>? unitAssignments,
+    int? blockingDispensingBay,
+    double? actualCash,
+    String notes = '',
+    Map<int, double> closingMeters = const <int, double>{},
+    Map<int, double> openingMeters = const <int, double>{},
   }) async {
     await _ensureHydrated();
+    if (shouldEnforceStationGuards && blockingDispensingBay != null) {
+      return ShiftHandoverResult(
+        outcome: HandoverOutcome.baysDispensing,
+        blockedBayId: blockingDispensingBay,
+      );
+    }
     if (state.pendingReconciliation != null) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.alreadyPending);
     }
@@ -562,7 +635,11 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     if (incoming == null) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.unknownManager);
     }
-    if (!PinHasher.matches(entered: pin, stored: incoming.pin)) {
+    final bool pinOk = await DatabaseHelper.instance.verifyManagerPin(
+      managerId: incomingManagerId,
+      pin: pin,
+    );
+    if (!pinOk) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.invalidPin);
     }
 
@@ -572,36 +649,45 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics frozenMetrics = metricsForSales(
       List<HelperSaleRecord>.from(salesForOutgoingManager(state.sales, window)),
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
-      purchaseTotal: state.purchaseTotal,
     );
-    final ManagerShiftRecord pendingShift = open.copyWith(
+    final ManagerShiftRecord outgoing = open.copyWith(
       endTime: handoffAt,
       expectedCash: frozenMetrics.expectedCashInHand,
+      actualCash: actualCash,
+      notes: notes.trim(),
       status: ManagerShiftStatus.pendingReconciliation,
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
+      closingMeters: closingMeters,
     );
-    await _repo.persistShift(pendingShift);
-    final ManagerShiftRecord incomingShift = await _repo.insertOpenShift(
-      manager: incoming,
-      startTime: handoffAt,
-    );
-    final ReconciliationSnapshot snapshot = ReconciliationSnapshot(
-      shift: pendingShift,
+    final ({ManagerShiftRecord pending, ManagerShiftRecord opened}) swapped =
+        await _repo.handoverWithPendingTally(
+          outgoing: outgoing,
+          incoming: incoming,
+          handoffAt: handoffAt,
+          closingMeters: closingMeters,
+          openingMeters: openingMeters,
+        );
+    final ReconciliationSnapshot pendingSnap = ReconciliationSnapshot(
+      shift: swapped.pending,
       metrics: frozenMetrics,
     );
     state = state.copyWith(
-      activeShift: incomingShift,
-      pendingReconciliation: snapshot,
+      activeShift: swapped.opened,
+      pendingReconciliation: pendingSnap,
       managers: _withSingleActive(incoming.id),
       udhaarRecoveryTotal: 0,
+      sessionVerified: true,
+      clearUncleanExitAt: true,
     );
     applyUnitAssignments(
       unitAssignments ?? unitHelperAssignmentsOf(state.helpers),
     );
+    unawaited(ref.read(settingsProvider.notifier).maybeUploadOnShiftClose());
+    _syncSessionHeartbeat();
     return ShiftHandoverResult(
       outcome: HandoverOutcome.handedOff,
-      pending: snapshot,
-      opened: incomingShift,
+      opened: swapped.opened,
+      pending: pendingSnap,
     );
   }
 
@@ -628,6 +714,7 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       closedShifts: <ManagerShiftRecord>[closed, ...state.closedShifts],
     );
     unawaited(ref.read(settingsProvider.notifier).maybeUploadOnShiftClose());
+    _syncSessionHeartbeat();
     return ShiftSummary(shift: closed, metrics: pending.metrics);
   }
 
@@ -652,23 +739,38 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     if (!ok) {
       return false;
     }
-    state = state.copyWith(sessionVerified: true);
+    state = state.copyWith(sessionVerified: true, clearUncleanExitAt: true);
+    unawaited(DatabaseHelper.instance.clearUncleanExitStamp());
+    unawaited(DatabaseHelper.instance.markRuntimeUnclean());
+    _syncSessionHeartbeat();
     return true;
   }
 
-  /// Marks the live OPEN shift as PIN-verified (after login unlock).
+  /// Marks the live LIVE shift as PIN-verified (after login unlock).
   void markSessionVerified() {
     if (state.sessionVerified) {
       return;
     }
-    state = state.copyWith(sessionVerified: true);
+    state = state.copyWith(sessionVerified: true, clearUncleanExitAt: true);
+    unawaited(DatabaseHelper.instance.clearUncleanExitStamp());
+    unawaited(DatabaseHelper.instance.markRuntimeUnclean());
+    _syncSessionHeartbeat();
     debugPrint('ShiftWorkspace: session marked verified after manager login');
   }
 
-  /// Closes the live shift for tally. Does not open a successor and never
-  /// sends keypad lock commands to ESP32 units.
-  Future<ShiftHandoverResult> beginManualEnd({required String pin}) async {
+  /// Closes the live shift for tally. Does not open a successor.
+  Future<ShiftHandoverResult> beginManualEnd({
+    required String pin,
+    int? blockingDispensingBay,
+    Map<int, double> closingMeters = const <int, double>{},
+  }) async {
     await _ensureHydrated();
+    if (shouldEnforceStationGuards && blockingDispensingBay != null) {
+      return ShiftHandoverResult(
+        outcome: HandoverOutcome.baysDispensing,
+        blockedBayId: blockingDispensingBay,
+      );
+    }
     if (state.pendingReconciliation != null) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.alreadyPending);
     }
@@ -690,13 +792,13 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics metrics = metricsForSales(
       List<HelperSaleRecord>.from(salesForOutgoingManager(state.sales, window)),
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
-      purchaseTotal: state.purchaseTotal,
     );
     final ManagerShiftRecord pendingShift = open.copyWith(
       endTime: ended,
       expectedCash: metrics.expectedCashInHand,
       status: ManagerShiftStatus.pendingReconciliation,
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
+      closingMeters: closingMeters,
     );
     await _repo.persistShift(pendingShift);
     state = state.copyWith(
@@ -708,7 +810,9 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       managers: _withSingleActive(null),
       sessionVerified: true,
       udhaarRecoveryTotal: 0,
+      clearUncleanExitAt: true,
     );
+    _syncSessionHeartbeat();
     return ShiftHandoverResult(
       outcome: HandoverOutcome.handedOff,
       pending: ReconciliationSnapshot(shift: pendingShift, metrics: metrics),
@@ -737,7 +841,6 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics metrics = metricsForSales(
       salesForOutgoingManager(state.sales, window),
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
-      purchaseTotal: state.purchaseTotal,
     );
     final ManagerShiftRecord closed = target.copyWith(
       endTime: ended,
@@ -762,10 +865,17 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       managers: _withSingleActive(null),
       sessionVerified: true,
       udhaarRecoveryTotal: 0,
-      purchaseTotal: 0,
     );
     unawaited(ref.read(settingsProvider.notifier).maybeUploadOnShiftClose());
+    _syncSessionHeartbeat();
     return true;
+  }
+
+  Future<void> markAppCleanShutdown() async {
+    if (state.hasActiveShift) {
+      return;
+    }
+    await DatabaseHelper.instance.markCleanShutdown();
   }
 
   Future<void> refreshExpectedCashComponents() async {
@@ -776,26 +886,14 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ManagerShiftRecord? shift =
         state.activeShift ?? state.pendingReconciliation?.shift;
     if (shift == null) {
-      if (state.purchaseTotal != 0) {
-        state = state.copyWith(purchaseTotal: 0);
-      }
       return;
     }
     try {
-      final double purchases = await DatabaseHelper.instance
-          .sumPurchasesInWindow(
-            start: shift.startTime,
-            end: shift.endTime,
-            managerId: shift.managerId,
-          );
       final double settlements = await DatabaseHelper.instance
           .sumSettlementsForShift(shift.shiftId);
-      state = state.copyWith(
-        purchaseTotal: purchases,
-        udhaarRecoveryTotal: settlements > state.udhaarRecoveryTotal
-            ? settlements
-            : state.udhaarRecoveryTotal,
-      );
+      if (settlements > state.udhaarRecoveryTotal) {
+        state = state.copyWith(udhaarRecoveryTotal: settlements);
+      }
     } catch (error, stack) {
       debugPrint(
         'ShiftWorkspaceNotifier.refreshExpectedCash failed: $error\n$stack',

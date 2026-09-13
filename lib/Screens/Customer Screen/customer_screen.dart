@@ -116,7 +116,6 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
           .settleBill(
             customer: account.profile,
             amountPkr: draft.amountPkr,
-            paymentMode: draft.paymentMode,
             notes: draft.notes,
           );
       if (!mounted) {
@@ -790,7 +789,7 @@ class _LedgerTable extends StatelessWidget {
                       Text(
                         line.volumeLiters == null
                             ? '—'
-                            : line.volumeLiters!.toStringAsFixed(2),
+                            : formatTruncatedDecimal(line.volumeLiters!),
                       ),
                     ),
                     DataCell(

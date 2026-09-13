@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../domain/dispenser_models.dart';
 import '../domain/dispenser_monitor_models.dart';
@@ -9,22 +10,22 @@ import 'telemetry_parser.dart';
 
 typedef TelemetryHandler = void Function(DispenserTelemetry packet);
 typedef OfflineHandler = void Function(int unitId);
+typedef ConnectedHandler = void Function(int unitId);
 typedef WireFrameHandler = void Function(DispenserWireFrame frame);
+typedef PendingSaleHandler = void Function(PendingEspSale sale);
 
 class StationNetDefaults {
-  static const int port = 8080;
+  static const int port = 81;
   static const Duration heartbeat = Duration(milliseconds: 3000);
   static const Duration serialStall = Duration(milliseconds: 1500);
   static const Duration connectTimeout = Duration(seconds: 4);
+  static const String officeSsid = 'System';
+  static const String gatewayHost = '192.168.0.110';
 
-  /// Central ESP32 on the office SSID that Flutter talks to.
-  static const String gatewayHost = '192.168.1.100';
-  static const String officeSsid = 'FDX-MUXTRONICS';
-
-  static String hostFor(int unitId) => '192.168.1.${100 + unitId}';
+  static String hostFor(int unitId) => '192.168.0.${100 + (10 * unitId)}';
 
   static String gatewayUrl({String? host, int? port}) {
-    return 'ws://${host ?? gatewayHost}:${port ?? StationNetDefaults.port}';
+    return 'ws://${host ?? gatewayHost}:${port ?? StationNetDefaults.port}/';
   }
 }
 
@@ -32,110 +33,106 @@ class DispenserSocketManager {
   DispenserSocketManager({
     required this.onTelemetry,
     required this.onOffline,
+    this.onConnected,
     this.onWire,
+    this.onPendingSale,
   });
 
   final TelemetryHandler onTelemetry;
   final OfflineHandler onOffline;
+  final ConnectedHandler? onConnected;
   final WireFrameHandler? onWire;
+  final PendingSaleHandler? onPendingSale;
 
   final TelemetryParser _parser = TelemetryParser();
   final Map<int, _UnitLink> _links = <int, _UnitLink>{};
   final Map<int, DateTime> _lastPacketAt = <int, DateTime>{};
 
-  RawDatagramSocket? _udp;
   Timer? _heartbeat;
+  Timer? _appHeartbeat;
+  bool _appHeartbeatEnabled = false;
+  bool _shiftLive = false;
   bool _disposed = false;
 
   Future<void> start() async {
     if (_disposed) {
       return;
     }
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
     for (final int unitId in dispenserUnitIds) {
+      final String host =
+          prefs.getString('esp_host_$unitId') ??
+          StationNetDefaults.hostFor(unitId);
+      final int port =
+          prefs.getInt('esp_port_$unitId') ?? StationNetDefaults.port;
       _links[unitId] = _UnitLink(
         unitId: unitId,
-        host: StationNetDefaults.hostFor(unitId),
-        port: StationNetDefaults.port,
-        onBytes: (Uint8List data) => _ingest(unitId, data),
+        host: host,
+        port: port,
+        onText: (String text) => _accept(text, fallbackUnit: unitId),
         onOffline: () => onOffline(unitId),
+        onConnected: () => onConnected?.call(unitId),
       );
     }
-    await _bindUdp();
     _heartbeat = Timer.periodic(const Duration(milliseconds: 500), (_) {
       _checkHeartbeats();
     });
   }
 
-  Future<void> _bindUdp() async {
-    try {
-      _udp = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        StationNetDefaults.port,
-      );
-      _udp?.listen((RawSocketEvent event) {
-        if (event != RawSocketEvent.read) {
-          return;
-        }
-        final Datagram? datagram = _udp?.receive();
-        if (datagram == null) {
-          return;
-        }
-        _ingest(0, datagram.data);
-      });
-    } catch (_) {}
+  static Future<void> persistEndpoint({
+    required int unitId,
+    required String host,
+    required int port,
+  }) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('esp_host_$unitId', host);
+    await prefs.setInt('esp_port_$unitId', port);
   }
 
-  void _ingest(int fallbackUnit, Uint8List data) {
+  static Future<Map<int, UnitEndpoint>> loadEndpoints() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    return <int, UnitEndpoint>{
+      for (final int unitId in dispenserUnitIds)
+        unitId: UnitEndpoint(
+          host:
+              prefs.getString('esp_host_$unitId') ??
+              StationNetDefaults.hostFor(unitId),
+          port: prefs.getInt('esp_port_$unitId') ?? StationNetDefaults.port,
+        ),
+    };
+  }
+
+  void _accept(String piece, {int fallbackUnit = 0}) {
     if (_disposed) {
       return;
     }
-    String chunk;
-    try {
-      chunk = utf8.decode(data, allowMalformed: true);
-    } catch (_) {
-      return;
-    }
-    final int unitHint = fallbackUnit;
-    if (_links.containsKey(unitHint)) {
-      _links[unitHint]!.buffer.write(chunk);
-      _drain(_links[unitHint]!);
-      return;
-    }
-    _drainRaw(chunk);
-  }
-
-  void _drain(_UnitLink link) {
-    final String raw = link.buffer.toString();
-    final int lastNl = raw.lastIndexOf('\n');
-    if (lastNl < 0) {
-      final String trimmed = raw.trim();
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        _accept(trimmed);
-        link.buffer.clear();
-      }
-      return;
-    }
-    final String complete = raw.substring(0, lastNl);
-    link.buffer
-      ..clear()
-      ..write(raw.substring(lastNl + 1));
-    for (final String piece in complete.split('\n')) {
-      _accept(piece);
-    }
-  }
-
-  void _drainRaw(String chunk) {
-    for (final String piece in chunk.split('\n')) {
-      _accept(piece);
-    }
-  }
-
-  void _accept(String piece) {
     final String trimmed = piece.trim();
     if (trimmed.isEmpty) {
       return;
     }
-    final DispenserTelemetry? packet = _parser.tryParse(trimmed);
+    final PendingEspSale? pending = PendingEspSale.tryParse(trimmed);
+    if (pending != null) {
+      _lastPacketAt[pending.unitId] = DateTime.now();
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.command,
+          payload: trimmed,
+          unitId: pending.unitId,
+        ),
+      );
+      onPendingSale?.call(pending);
+      final DispenserTelemetry? live = _parser.tryParse(trimmed);
+      if (live != null) {
+        onTelemetry(live);
+      }
+      return;
+    }
+    final DispenserTelemetry? packet = _parser.tryParse(
+      trimmed,
+      fallbackUnit: fallbackUnit,
+    );
     if (packet == null) {
       _emitWire(
         DispenserWireFrame(
@@ -143,7 +140,7 @@ class DispenserSocketManager {
           outbound: false,
           kind: DispenserWireKind.error,
           payload: trimmed,
-          unitId: _unitHintFromJson(trimmed),
+          unitId: fallbackUnit > 0 ? fallbackUnit : null,
         ),
       );
       return;
@@ -161,17 +158,42 @@ class DispenserSocketManager {
     onTelemetry(packet);
   }
 
-  int? _unitHintFromJson(String trimmed) {
-    try {
-      final Object? decoded = jsonDecode(trimmed);
-      if (decoded is Map) {
-        final Object? unit = decoded['unit'] ?? decoded['unit_id'];
-        if (unit != null) {
-          return int.tryParse(unit.toString());
-        }
+  /// Keep a 1 s APP_HEARTBEAT while unit sockets are wanted so the ESP can
+  /// tell app-crash from "shift not live". [live] is the shift flag.
+  void setAppHeartbeatEnabled(bool enabled, {bool shiftLive = false}) {
+    _shiftLive = shiftLive;
+    _appHeartbeatEnabled = enabled;
+    if (!enabled || _disposed) {
+      _appHeartbeat?.cancel();
+      _appHeartbeat = null;
+      return;
+    }
+    _appHeartbeat ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      unawaited(_broadcastAppHeartbeat());
+    });
+    unawaited(_broadcastAppHeartbeat());
+  }
+
+  Future<void> _broadcastAppHeartbeat() async {
+    if (!_appHeartbeatEnabled || _disposed) {
+      return;
+    }
+    final String at = DateTime.now().toIso8601String();
+    for (final int unitId in dispenserUnitIds) {
+      final _UnitLink? link = _links[unitId];
+      if (link == null || !link.wanted) {
+        continue;
       }
-    } catch (_) {}
-    return null;
+      await sendCommand(
+        unitId: unitId,
+        payload: <String, Object>{
+          'cmd': 'APP_HEARTBEAT',
+          'unit': unitId,
+          'live': _shiftLive,
+          'at': at,
+        },
+      );
+    }
   }
 
   void _emitWire(DispenserWireFrame frame) {
@@ -198,20 +220,50 @@ class DispenserSocketManager {
         'cmd': 'SET_KEYPAD_LOCK',
         'unit': unitId,
         'lock': lock,
-        'gpio': 23,
+        'gpio': 4,
       },
     );
   }
 
-  Future<void> testBuzzer({required int unitId}) async {
+  Future<void> confirmBay(int unitId) async {
     await sendCommand(
       unitId: unitId,
-      payload: <String, Object>{
-        'cmd': 'BUZZER_TEST',
-        'unit': unitId,
-        'gpio': 19,
-      },
+      payload: <String, Object>{'cmd': 'CONFIRM', 'unit': unitId},
     );
+    await setKeypadRelay(unitId: unitId, lock: false);
+  }
+
+  Future<void> ackTransaction({
+    required int unitId,
+    required String txId,
+  }) async {
+    final _UnitLink? link = _links[unitId];
+    final String frame = '<ACK,TX_ID_$txId>';
+    _emitWire(
+      DispenserWireFrame(
+        at: DateTime.now(),
+        outbound: true,
+        kind: DispenserWireKind.command,
+        payload: frame,
+        unitId: unitId,
+      ),
+    );
+    try {
+      await link?.sendLine(frame);
+    } catch (error) {
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.error,
+          payload: jsonEncode(<String, Object>{
+            'error': error.toString(),
+            'unit': unitId,
+          }),
+          unitId: unitId,
+        ),
+      );
+    }
   }
 
   Future<void> pingUnit({required int unitId}) async {
@@ -226,14 +278,18 @@ class DispenserSocketManager {
     required String host,
     required int port,
   }) async {
+    unawaited(
+      persistEndpoint(unitId: unitId, host: host, port: port),
+    );
     final _UnitLink link = _links.putIfAbsent(
       unitId,
       () => _UnitLink(
         unitId: unitId,
         host: host,
         port: port,
-        onBytes: (Uint8List data) => _ingest(unitId, data),
+        onText: (String text) => _accept(text, fallbackUnit: unitId),
         onOffline: () => onOffline(unitId),
+        onConnected: () => onConnected?.call(unitId),
       ),
     );
     link.host = host;
@@ -252,17 +308,11 @@ class DispenserSocketManager {
   }
 
   Future<void> rescanBayWifi(int unitId) async {
-    await sendCommand(
-      unitId: unitId,
-      payload: <String, Object>{'cmd': 'RESCAN_BAY_WIFI', 'unit': unitId},
-    );
+    await pingUnit(unitId: unitId);
   }
 
   Future<void> flushUartBuffer(int unitId) async {
-    await sendCommand(
-      unitId: unitId,
-      payload: <String, Object>{'cmd': 'FLUSH_UART', 'unit': unitId},
-    );
+    await pingUnit(unitId: unitId);
   }
 
   Future<void> reconnectUnit(int unitId) async {
@@ -270,18 +320,6 @@ class DispenserSocketManager {
     if (link == null) {
       return;
     }
-    _emitWire(
-      DispenserWireFrame(
-        at: DateTime.now(),
-        outbound: true,
-        kind: DispenserWireKind.command,
-        payload: jsonEncode(<String, Object>{
-          'cmd': 'RESET_BAY_SOCKET',
-          'unit': unitId,
-        }),
-        unitId: unitId,
-      ),
-    );
     link.wanted = true;
     await link.reset();
   }
@@ -326,10 +364,8 @@ class DispenserSocketManager {
     _disposed = true;
     _heartbeat?.cancel();
     _heartbeat = null;
-    try {
-      _udp?.close();
-    } catch (_) {}
-    _udp = null;
+    _appHeartbeat?.cancel();
+    _appHeartbeat = null;
     for (final _UnitLink link in _links.values) {
       await link.dispose();
     }
@@ -342,21 +378,22 @@ class _UnitLink {
     required this.unitId,
     required this.host,
     required this.port,
-    required this.onBytes,
+    required this.onText,
     required this.onOffline,
+    required this.onConnected,
   });
 
   final int unitId;
-  final void Function(Uint8List data) onBytes;
+  final void Function(String text) onText;
   final void Function() onOffline;
+  final void Function() onConnected;
 
   String host;
   int port;
   bool wanted = false;
 
-  final StringBuffer buffer = StringBuffer();
-  Socket? _socket;
-  StreamSubscription<Uint8List>? _sub;
+  WebSocket? _socket;
+  StreamSubscription<dynamic>? _sub;
   int _attempts = 0;
   bool _disposed = false;
   bool _connecting = false;
@@ -367,18 +404,20 @@ class _UnitLink {
     }
     _connecting = true;
     try {
-      final Socket socket = await Socket.connect(
-        host,
-        port,
-        timeout: StationNetDefaults.connectTimeout,
-      );
-      try {
-        socket.setOption(SocketOption.tcpNoDelay, true);
-      } catch (_) {}
+      final WebSocket socket = await WebSocket.connect(
+        StationNetDefaults.gatewayUrl(host: host, port: port),
+      ).timeout(StationNetDefaults.connectTimeout);
       _socket = socket;
       _attempts = 0;
+      onConnected();
       _sub = socket.listen(
-        onBytes,
+        (dynamic data) {
+          if (data is String) {
+            onText(data);
+          } else if (data is List<int>) {
+            onText(utf8.decode(data, allowMalformed: true));
+          }
+        },
         onError: (Object error, StackTrace _) {
           unawaited(_handleDrop());
         },
@@ -398,12 +437,11 @@ class _UnitLink {
     if (_socket == null) {
       await connect();
     }
-    final Socket? socket = _socket;
+    final WebSocket? socket = _socket;
     if (socket == null) {
-      throw const SocketException('Unit socket unavailable');
+      throw const SocketException('Unit WebSocket unavailable');
     }
-    socket.writeln(line);
-    await socket.flush();
+    socket.add(line);
   }
 
   Future<void> _handleDrop() async {
@@ -426,14 +464,11 @@ class _UnitLink {
       await _sub?.cancel();
     } catch (_) {}
     _sub = null;
-    final Socket? socket = _socket;
+    final WebSocket? socket = _socket;
     _socket = null;
     if (socket != null) {
       try {
         await socket.close();
-      } catch (_) {}
-      try {
-        socket.destroy();
       } catch (_) {}
     }
   }

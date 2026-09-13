@@ -94,7 +94,10 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
       snapshot: widget.snapshot,
       now: widget.clock,
     );
-    final MonitorBayStatus status = monitorStatusFor(bay);
+    final MonitorBayStatus status = monitorStatusFor(
+      bay,
+      linkOnline: endpoint.connected && !health.muxHeartbeatLost,
+    );
     final Color statusColor = switch (status) {
       MonitorBayStatus.online => tokens.good,
       MonitorBayStatus.dispensing => tokens.coral,
@@ -150,6 +153,8 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
           _SocketFields(
             host: _host,
             port: _port,
+            hintHost: UnitEndpoint.seedFor(bay.unitId).host,
+            hintPort: '${UnitEndpoint.seedFor(bay.unitId).port}',
             connected: endpoint.connected,
             onConnect: () {
               if (_commitEndpoint()) {
@@ -179,10 +184,20 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
               _Field('status', status.label),
               _Field('rssi', '${health.rssiDbm}'),
               _Field('liters', FuelFormatter.lcdVolume(bay.volumeLiters)),
-              _Field('amount_pkr', FuelFormatter.lcdAmount(bay.amountPkr)),
+              _Field('amount_pkr', FuelFormatter.lcdDispenserAmount(bay.amountPkr)),
               _Field('rate_pkr', FuelFormatter.lcdRate(bay.rate)),
-              _Field('total_meter', bay.meterCount.toStringAsFixed(3)),
+              _Field('total_meter', FuelFormatter.lcdVolume(bay.meterCount)),
               _Field('keypad_locked', bay.keypadLocked ? 'true' : 'false'),
+              _Field(
+                'esp_to_board_link',
+                health.serialLive
+                    ? 'true'
+                    : (health.serialStall ? 'false' : '—'),
+              ),
+              _Field(
+                'pending_tx',
+                '${widget.snapshot.pendingTxCount ?? 0}',
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -230,6 +245,8 @@ class _SocketFields extends StatelessWidget {
   const _SocketFields({
     required this.host,
     required this.port,
+    required this.hintHost,
+    required this.hintPort,
     required this.connected,
     required this.onConnect,
     required this.onDisconnect,
@@ -237,6 +254,8 @@ class _SocketFields extends StatelessWidget {
 
   final TextEditingController host;
   final TextEditingController port;
+  final String hintHost;
+  final String hintPort;
   final bool connected;
   final VoidCallback onConnect;
   final VoidCallback onDisconnect;
@@ -251,9 +270,9 @@ class _SocketFields extends StatelessWidget {
               flex: 3,
               child: TextField(
                 controller: host,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'IP',
-                  hintText: '192.168.1.101',
+                  hintText: hintHost,
                   isDense: true,
                 ),
               ),
@@ -267,9 +286,9 @@ class _SocketFields extends StatelessWidget {
                 inputFormatters: <TextInputFormatter>[
                   FilteringTextInputFormatter.digitsOnly,
                 ],
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Port',
-                  hintText: '8080',
+                  hintText: hintPort,
                   isDense: true,
                 ),
               ),
@@ -316,7 +335,7 @@ class _FdxLinkPane extends StatelessWidget {
         : (health.fdxWifiUp ? tokens.good : tokens.inkMuted);
     return _TierPane(
       title: 'FDX LINK',
-      subtitle: 'ESP-01 ↔ Bay ESP-01',
+      subtitle: 'FDX ALPHA ↔ ESP32',
       color: color,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -360,7 +379,7 @@ class _SerialLinkPane extends StatelessWidget {
         : (health.serialLive ? tokens.good : tokens.inkMuted);
     return _TierPane(
       title: 'SERIAL UART',
-      subtitle: 'Bay ESP-01 → ESP32',
+      subtitle: 'GPIO16 RX · 4800',
       color: color,
       child: Row(
         children: <Widget>[

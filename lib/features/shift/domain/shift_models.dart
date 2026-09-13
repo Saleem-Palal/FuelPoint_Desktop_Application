@@ -25,6 +25,7 @@ enum HandoverOutcome {
   unknownManager,
   sameManager,
   alreadyPending,
+  baysDispensing,
 }
 
 /// Default attendant reward until a station setting is persisted.
@@ -193,6 +194,8 @@ class ManagerShiftRecord {
     this.actualCash,
     this.notes = '',
     this.udhaarRecoveryTotal = 0,
+    this.openingMeters = const <int, double>{},
+    this.closingMeters = const <int, double>{},
   });
 
   final String shiftId;
@@ -206,6 +209,8 @@ class ManagerShiftRecord {
   final String notes;
   final ManagerShiftStatus status;
   final double udhaarRecoveryTotal;
+  final Map<int, double> openingMeters;
+  final Map<int, double> closingMeters;
 
   double get discrepancy {
     final double? actual = actualCash;
@@ -227,6 +232,8 @@ class ManagerShiftRecord {
     String? notes,
     ManagerShiftStatus? status,
     double? udhaarRecoveryTotal,
+    Map<int, double>? openingMeters,
+    Map<int, double>? closingMeters,
   }) {
     return ManagerShiftRecord(
       shiftId: shiftId,
@@ -240,6 +247,8 @@ class ManagerShiftRecord {
       notes: notes ?? this.notes,
       status: status ?? this.status,
       udhaarRecoveryTotal: udhaarRecoveryTotal ?? this.udhaarRecoveryTotal,
+      openingMeters: openingMeters ?? this.openingMeters,
+      closingMeters: closingMeters ?? this.closingMeters,
     );
   }
 }
@@ -351,7 +360,6 @@ class ShiftWindowMetrics {
     required this.accountSales,
     required this.udhaarRecoveryTotal,
     required this.totalLiters,
-    this.purchaseTotal = 0,
     this.firstToken,
     this.lastToken,
   });
@@ -362,13 +370,14 @@ class ShiftWindowMetrics {
   final double accountSales;
   final double udhaarRecoveryTotal;
   final double totalLiters;
-  final double purchaseTotal;
   final int? firstToken;
   final int? lastToken;
 
-  /// Cash sales + udhaar settlements − purchases / expenses.
-  double get expectedCashInHand =>
-      fuelCashSales + udhaarRecoveryTotal - purchaseTotal;
+  /// Cash sales + account + udhaar issued.
+  double get totalSale => fuelCashSales + accountSales + udhaarSales;
+
+  /// Cash sales + udhaar recovery collected in cash. Purchases are not shift cash.
+  double get expectedCashInHand => fuelCashSales + udhaarRecoveryTotal;
 
   static const ShiftWindowMetrics empty = ShiftWindowMetrics(
     sales: <HelperSaleRecord>[],
@@ -378,6 +387,14 @@ class ShiftWindowMetrics {
     udhaarRecoveryTotal: 0,
     totalLiters: 0,
   );
+
+  static const String totalSaleFormula =
+      'Cash Sales + Account + Udhaar Issued';
+  static const String expectedCashFormula =
+      'Cash Sales + Udhaar Recovery (Cash)';
+  static const String udhaarIssuedHint = 'Credit sales this shift';
+  static const String udhaarRecoveryHint = 'Cash settlements this shift';
+  static const String accountPaymentsHint = 'Bank / EasyPaisa';
 }
 
 @immutable
@@ -395,11 +412,19 @@ class ShiftSummary {
 
 @immutable
 class ShiftHandoverResult {
-  const ShiftHandoverResult({required this.outcome, this.pending, this.opened});
+  const ShiftHandoverResult({
+    required this.outcome,
+    this.pending,
+    this.opened,
+    this.closed,
+    this.blockedBayId,
+  });
 
   final HandoverOutcome outcome;
   final ReconciliationSnapshot? pending;
   final ManagerShiftRecord? opened;
+  final ManagerShiftRecord? closed;
+  final int? blockedBayId;
 
   bool get isSuccess => outcome == HandoverOutcome.handedOff;
 }
@@ -469,7 +494,7 @@ String helperDutyLabel(HelperProfile helper) {
 String shiftStatusLabel(ManagerShiftStatus status) {
   switch (status) {
     case ManagerShiftStatus.open:
-      return 'Open';
+      return 'Live';
     case ManagerShiftStatus.pendingReconciliation:
       return 'Pending tally';
     case ManagerShiftStatus.closed:
@@ -537,7 +562,6 @@ bool isInShiftWindow(DateTime value, DateTime start, {DateTime? end}) {
 ShiftWindowMetrics metricsForSales(
   List<HelperSaleRecord> rows, {
   double udhaarRecoveryTotal = 0,
-  double purchaseTotal = 0,
 }) {
   final List<HelperSaleRecord> sorted = List<HelperSaleRecord>.from(rows)
     ..sort(
@@ -575,7 +599,6 @@ ShiftWindowMetrics metricsForSales(
     accountSales: account,
     udhaarRecoveryTotal: udhaarRecoveryTotal,
     totalLiters: liters,
-    purchaseTotal: purchaseTotal,
     firstToken: firstToken,
     lastToken: lastToken,
   );

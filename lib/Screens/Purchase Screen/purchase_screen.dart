@@ -7,14 +7,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
 import '../../core/widgets/fuel_point_stat_card.dart';
-import '../../core/widgets/responsive_layout.dart';
 import '../../core/widgets/segment_lcd.dart';
 import '../../features/shift/presentation/shift_providers.dart';
 import '../../features/station/data/purchase_repository.dart';
+import '../../features/station/domain/average_rate.dart';
+import '../../features/station/domain/fuel_precision.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/presentation/workspace_refresh.dart';
 import '../../utils/fuel_formatter.dart';
-import 'Widgets/initial_dip_modal_dialog.dart';
+import '../Ledger Screen/Widgets/edit_purchase_dialog.dart';
 import 'purchase_providers.dart';
 
 class PurchaseScreen extends ConsumerStatefulWidget {
@@ -25,12 +26,12 @@ class PurchaseScreen extends ConsumerStatefulWidget {
 }
 
 class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
-  static final FilteringTextInputFormatter _wholeFormatter =
-      FilteringTextInputFormatter.allow(RegExp(r'^\d*'));
+  static final FilteringTextInputFormatter _litersFormatter =
+      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,13}'));
   static final FilteringTextInputFormatter _amountFormatter =
       FilteringTextInputFormatter.allow(RegExp(r'^[\d,]*'));
   static final FilteringTextInputFormatter _rateFormatter =
-      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,8}'));
+      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,13}'));
 
   final TextEditingController _litersController = TextEditingController();
   final TextEditingController _rateController = TextEditingController();
@@ -43,7 +44,6 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
   final FocusNode tafseelFocus = FocusNode();
   final FocusNode submitFocus = FocusNode();
 
-  bool _draftSaved = false;
   bool _syncing = false;
 
   @override
@@ -52,7 +52,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     _litersController.addListener(_onLitersOrRateChanged);
     _rateController.addListener(_onLitersOrRateChanged);
     _amountController.addListener(_onAmountChanged);
-    _tafseelController.addListener(_onDraftInputsChanged);
+    _tafseelController.addListener(_onInputsChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -67,7 +67,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     _litersController.removeListener(_onLitersOrRateChanged);
     _rateController.removeListener(_onLitersOrRateChanged);
     _amountController.removeListener(_onAmountChanged);
-    _tafseelController.removeListener(_onDraftInputsChanged);
+    _tafseelController.removeListener(_onInputsChanged);
     _litersController.dispose();
     _rateController.dispose();
     _amountController.dispose();
@@ -80,13 +80,11 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     super.dispose();
   }
 
-  void _onDraftInputsChanged() {
+  void _onInputsChanged() {
     if (!mounted) {
       return;
     }
-    setState(() {
-      _draftSaved = false;
-    });
+    setState(() {});
   }
 
   void _onLitersOrRateChanged() {
@@ -97,7 +95,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     _syncing = true;
     _writeField(_amountController, FuelFormatter.fieldAmount(amount));
     _syncing = false;
-    _onDraftInputsChanged();
+    _onInputsChanged();
   }
 
   void _onAmountChanged() {
@@ -114,7 +112,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     }
     _writeField(_amountController, FuelFormatter.fieldAmount(_totalCost));
     _syncing = false;
-    _onDraftInputsChanged();
+    _onInputsChanged();
   }
 
   void _writeField(TextEditingController controller, String next) {
@@ -138,7 +136,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
   _LcdStock _availableOf(PurchaseController controller) {
     return _LcdStock(
       amountPkr: controller.overallStockPkr,
-      volumeLiters: controller.currentDipLiters,
+      volumeLiters: controller.globalStockQuantity,
       rate: controller.weightedAverageRate,
     );
   }
@@ -152,14 +150,16 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
   }
 
   _LcdStock _projectedOf(PurchaseController controller) {
-    final double previousLiters = controller.currentDipLiters;
-    final double previousCost = controller.overallStockPkr;
+    final double previousLiters = controller.globalStockQuantity;
     final double nextLiters = previousLiters + _purchasedLiters;
-    final double nextRate = nextLiters == 0
-        ? 0
-        : (previousCost + _totalCost) / nextLiters;
+    final double nextRate = nextAverageRateFromDoubles(
+      currentLiters: previousLiters,
+      currentStockAmount: controller.overallStockPkr,
+      purchaseLiters: _purchasedLiters,
+      purchaseAmount: _totalCost,
+    );
     return _LcdStock(
-      amountPkr: nextLiters * nextRate,
+      amountPkr: roundRupees(nextLiters * nextRate).toDouble(),
       volumeLiters: nextLiters,
       rate: nextRate,
     );
@@ -169,13 +169,6 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  void _saveDraft() {
-    setState(() {
-      _draftSaved = true;
-    });
-    _snack('Draft saved. Add Stock when the tanker figures are final.');
   }
 
   ({String id, String name, String pin}) _managerCreds() {
@@ -197,6 +190,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
           .read(purchaseControllerProvider)
           .recordPurchase(
             purchasedLiters: _purchasedLiters,
+            purchaseRate: _purchaseRate,
             totalAmountPkr: _totalCost,
             tafseel: _tafseelController.text,
             managerId: manager.id,
@@ -216,7 +210,6 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
       return;
     }
     setState(() {
-      _draftSaved = false;
       _litersController.clear();
       _rateController.clear();
       _amountController.clear();
@@ -226,35 +219,45 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     quantityFocus.requestFocus();
   }
 
-  Future<void> _openInitialDip() async {
-    final InitialDipResult? result = await showInitialDipModal(context);
-    if (!mounted || result == null) {
+  Future<void> _editLastPurchase(PurchaseRecord row) async {
+    final bool saved = await showEditPurchaseDialog(
+      context,
+      invNo: row.invNo,
+      timestamp: row.dateTime,
+      quantity: row.quantity,
+      rate: row.rate,
+      amount: row.amount,
+      tafseel: row.tafseel,
+    );
+    if (!mounted || !saved) {
       return;
     }
-    final ({String id, String name, String pin}) manager = _managerCreds();
-    try {
-      await ref
-          .read(purchaseControllerProvider)
-          .recordInitialDip(
-            liters: result.liters,
-            ratePerLiter: result.rate,
-            tafseel: result.description,
-            managerId: manager.id,
-            managerName: manager.name,
-            managerPin: manager.pin,
-          );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      _snack('Could not save the initial dip. Try again.');
-      return;
-    }
-    if (!mounted) {
-      return;
-    }
-    _snack(
-      'Initial dip saved — ${FuelFormatter.formatVolume(result.liters)} at ${FuelFormatter.formatRate(result.rate)}.',
+    _snack('${row.invNo} updated');
+  }
+
+  void _openValuation(PurchaseController controller) {
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 960),
+            child: _DynamicValuationCard(
+              currentLiters: controller.globalStockQuantity,
+              currentAmount: controller.overallStockPkr,
+              currentRate: controller.weightedAverageRate,
+              purchaseLiters: _purchasedLiters,
+              purchaseAmount: _totalCost,
+              purchaseRate: _purchaseRate,
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -267,8 +270,6 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.enter, control: true):
             _addStock,
-        const SingleActivator(LogicalKeyboardKey.keyS, control: true):
-            _saveDraft,
       },
       child: ColoredBox(
         color: tokens.canvas,
@@ -281,11 +282,6 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
                 title: 'Purchase Screen',
                 icon: Icons.shopping_cart_outlined,
                 invoiceLabel: formatInvoiceNo(controller.nextInvoiceNo),
-                trailingAction: AppHeaderActionButton(
-                  label: 'Initial Dip Setup',
-                  icon: Icons.water_drop_outlined,
-                  onPressed: _openInitialDip,
-                ),
               ),
             ),
             Expanded(
@@ -294,7 +290,10 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
                 child: LayoutBuilder(
                   builder: (BuildContext context, BoxConstraints constraints) {
                     final bool wide = constraints.maxWidth >= 980;
-                    final Widget kpis = _KpiBar(controller: controller);
+                    final Widget kpis = _KpiBar(
+                      controller: controller,
+                      onOpenValuation: () => _openValuation(controller),
+                    );
                     final Widget purchase = _EntryCard(
                       litersController: _litersController,
                       rateController: _rateController,
@@ -304,7 +303,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
                       rateFocus: rateFocus,
                       amountFocus: amountFocus,
                       tafseelFocus: tafseelFocus,
-                      wholeFormatter: _wholeFormatter,
+                      litersFormatter: _litersFormatter,
                       amountFormatter: _amountFormatter,
                       rateFormatter: _rateFormatter,
                       onQuantitySubmitted: () => rateFocus.requestFocus(),
@@ -316,12 +315,13 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
                       available: _availableOf(controller),
                       incoming: _incomingDraft,
                       projected: _projectedOf(controller),
-                      showProjected: _inputsReady,
                     );
                     final Widget history = _LastPurchasesTable(
                       rows: controller.lastTenPurchases,
                       totalCount: controller.purchases.length,
-                      fillHeight: wide,
+                      onEdit: (PurchaseRecord row) {
+                        unawaited(_editLastPurchase(row));
+                      },
                     );
                     if (!wide) {
                       return Column(
@@ -334,7 +334,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
                               children: <Widget>[
                                 purchase,
                                 const SizedBox(height: 10),
-                                preview,
+                                SizedBox(height: 420, child: preview),
                                 const SizedBox(height: 10),
                                 history,
                               ],
@@ -343,33 +343,32 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
                         ],
                       );
                     }
-                    return Column(
+                    return Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: <Widget>[
-                        kpis,
-                        const SizedBox(height: 10),
                         Expanded(
-                          flex: 5,
-                          child: Row(
+                          child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: <Widget>[
+                              kpis,
+                              const SizedBox(height: 10),
                               Expanded(
-                                child: ScrollableConstrainedBody(
-                                  child: purchase,
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: constraints.maxWidth < 1180 ? 280 : 328,
-                                child: ScrollableConstrainedBody(
-                                  child: preview,
+                                child: ListView(
+                                  children: <Widget>[
+                                    purchase,
+                                    const SizedBox(height: 10),
+                                    history,
+                                  ],
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(height: 10),
-                        Expanded(flex: 3, child: history),
+                        const SizedBox(width: 10),
+                        SizedBox(
+                          width: constraints.maxWidth < 1180 ? 280 : 328,
+                          child: preview,
+                        ),
                       ],
                     );
                   },
@@ -378,9 +377,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
             ),
             _PurchaseFooter(
               canAdd: _inputsReady,
-              draftSaved: _draftSaved,
               submitFocus: submitFocus,
-              onSaveDraft: _saveDraft,
               onAddStock: _addStock,
             ),
           ],
@@ -423,41 +420,270 @@ class _LcdStock {
 }
 
 class _KpiBar extends StatelessWidget {
-  const _KpiBar({required this.controller});
+  const _KpiBar({required this.controller, required this.onOpenValuation});
 
   final PurchaseController controller;
+  final VoidCallback onOpenValuation;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    return ExtentWrap(
-      maxCrossAxisExtent: 320,
+    return Row(
       children: <Widget>[
-        FuelPointStatCard(
-          title: 'Overall Stock',
-          value: FuelFormatter.formatCurrency(controller.overallStockPkr),
-          subtitle: FuelFormatter.formatVolume(controller.currentDipLiters),
-          icon: Icons.inventory_2_outlined,
-          badgeBackgroundColor: tokens.good.withValues(alpha: 0.12),
-          badgeIconColor: tokens.good,
+        Expanded(
+          child: FuelPointStatCard(
+            title: 'Overall Stock',
+            value: FuelFormatter.formatCurrency(controller.overallStockPkr),
+            subtitle: FuelFormatter.formatVolume(
+              controller.globalStockQuantity,
+            ),
+            icon: Icons.inventory_2_outlined,
+            badgeBackgroundColor: tokens.good.withValues(alpha: 0.12),
+            badgeIconColor: tokens.good,
+          ),
         ),
-        FuelPointStatCard(
-          title: 'Current Dip',
-          value: FuelFormatter.formatVolume(controller.currentDipLiters),
-          subtitle: 'Tank volume',
-          icon: Icons.water_drop_outlined,
-          badgeBackgroundColor: tokens.coral.withValues(alpha: 0.12),
-          badgeIconColor: tokens.coral,
+        const SizedBox(width: 8),
+        Expanded(
+          child: FuelPointStatCard(
+            title: 'Global Stock Quantity',
+            value: FuelFormatter.formatVolume(controller.globalStockQuantity),
+            subtitle: 'Available liters',
+            icon: Icons.water_drop_outlined,
+            badgeBackgroundColor: tokens.coral.withValues(alpha: 0.12),
+            badgeIconColor: tokens.coral,
+          ),
         ),
-        FuelPointStatCard(
-          title: 'Weighted Average Rate',
-          value: FuelFormatter.formatRate(controller.weightedAverageRate),
-          subtitle: 'WAC',
-          icon: Icons.speed_outlined,
-          badgeBackgroundColor: tokens.warn.withValues(alpha: 0.12),
-          badgeIconColor: tokens.warn,
+        const SizedBox(width: 8),
+        Expanded(
+          child: FuelPointStatCard(
+            title: 'Weighted Average Rate',
+            value: FuelFormatter.formatAverageRate(
+              controller.weightedAverageRate,
+            ),
+            subtitle: 'WAC · tap for formula',
+            icon: Icons.speed_outlined,
+            badgeBackgroundColor: tokens.warn.withValues(alpha: 0.12),
+            badgeIconColor: tokens.warn,
+            onTap: onOpenValuation,
+          ),
         ),
       ],
+    );
+  }
+}
+
+class _DynamicValuationCard extends StatelessWidget {
+  const _DynamicValuationCard({
+    required this.currentLiters,
+    required this.currentAmount,
+    required this.currentRate,
+    required this.purchaseLiters,
+    required this.purchaseAmount,
+    required this.purchaseRate,
+  });
+
+  final double currentLiters;
+  final double currentAmount;
+  final double currentRate;
+  final double purchaseLiters;
+  final double purchaseAmount;
+  final double purchaseRate;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final bool purchaseReady = purchaseLiters > 0 && purchaseRate > 0;
+    final double shownPurchaseLiters = purchaseReady ? purchaseLiters : 0;
+    final double shownPurchaseAmount = purchaseReady ? purchaseAmount : 0;
+    final double nextLiters = purchaseReady
+        ? currentLiters + shownPurchaseLiters
+        : 0;
+    final double nextRate = purchaseReady
+        ? nextAverageRateFromDoubles(
+            currentLiters: currentLiters,
+            currentStockAmount: currentAmount,
+            purchaseLiters: shownPurchaseLiters,
+            purchaseAmount: shownPurchaseAmount,
+          )
+        : 0;
+    final double nextAmount = purchaseReady
+        ? roundRupees(nextLiters * nextRate).toDouble()
+        : 0;
+
+    final TextStyle labelStyle = TextStyle(
+      fontFamily: 'Roboto',
+      fontWeight: FontWeight.w500,
+      fontSize: 9,
+      height: 1.15,
+      color: tokens.inkMuted,
+    );
+    final TextStyle valueStyle = TextStyle(
+      fontFamily: 'Roboto',
+      fontWeight: FontWeight.w700,
+      fontSize: 12,
+      height: 1.15,
+      color: tokens.ink,
+    );
+
+    return Container(
+      width: double.infinity,
+      alignment: Alignment.topLeft,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: tokens.card,
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        border: Border.all(color: tokens.line),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'DYNAMIC STOCK VALUATION & WAC',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w700,
+              fontSize: 9,
+              letterSpacing: 0.8,
+              color: tokens.inkMuted,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Column(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: <Widget>[
+              _FormulaEquation(
+                leading: 'Average Rate =',
+                labelStyle: labelStyle,
+                valueStyle: valueStyle,
+                parts: <_FormulaPart>[
+                  _FormulaPart(
+                    label: '(current stock Amount + this purchase amount)',
+                    value:
+                        '( ${FuelFormatter.formatCurrency(currentAmount)} + ${FuelFormatter.formatCurrency(shownPurchaseAmount)} )',
+                  ),
+                  const _FormulaPart(label: '÷', value: '÷'),
+                  _FormulaPart(
+                    label: '(current Stock Liters + this purchase liters)',
+                    value:
+                        '( ${FuelFormatter.formatVolume(currentLiters)} + ${FuelFormatter.formatVolume(shownPurchaseLiters)} )',
+                  ),
+                  const _FormulaPart(label: '=', value: '='),
+                  _FormulaPart(
+                    label: 'calculated value.',
+                    value: FuelFormatter.formatAverageRate(nextRate),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              _FormulaEquation(
+                leading: 'Stock Quantity =',
+                labelStyle: labelStyle,
+                valueStyle: valueStyle,
+                parts: <_FormulaPart>[
+                  _FormulaPart(
+                    label: 'Current Stock Quantity + This Purchase Quantity',
+                    value:
+                        '${FuelFormatter.formatVolume(currentLiters)} + ${FuelFormatter.formatVolume(shownPurchaseLiters)}',
+                  ),
+                  const _FormulaPart(label: '=', value: '='),
+                  _FormulaPart(
+                    label: 'calculated value.',
+                    value: FuelFormatter.formatVolume(nextLiters),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              _FormulaEquation(
+                leading: 'Stock Amount =',
+                labelStyle: labelStyle,
+                valueStyle: valueStyle,
+                parts: <_FormulaPart>[
+                  _FormulaPart(
+                    label: '(Current Stock Quantity + This Purchase Quantity)',
+                    value:
+                        '( ${FuelFormatter.formatVolume(currentLiters)} + ${FuelFormatter.formatVolume(shownPurchaseLiters)} )',
+                  ),
+                  const _FormulaPart(label: '×', value: '×'),
+                  _FormulaPart(
+                    label: 'Average Rate',
+                    value: FuelFormatter.formatAverageRateValue(nextRate),
+                  ),
+                  const _FormulaPart(label: '=', value: '='),
+                  _FormulaPart(
+                    label: 'calculated value.',
+                    value: FuelFormatter.formatCurrency(nextAmount),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FormulaPart {
+  const _FormulaPart({required this.label, required this.value});
+
+  final String label;
+  final String value;
+}
+
+class _FormulaEquation extends StatelessWidget {
+  const _FormulaEquation({
+    required this.leading,
+    required this.parts,
+    required this.labelStyle,
+    required this.valueStyle,
+  });
+
+  final String leading;
+  final List<_FormulaPart> parts;
+  final TextStyle labelStyle;
+  final TextStyle valueStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Text(leading, style: valueStyle),
+            ),
+            for (int i = 0; i < parts.length; i++) ...<Widget>[
+              if (i > 0) const SizedBox(width: 6),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    parts[i].label,
+                    style: labelStyle,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 1),
+                  Text(
+                    parts[i].value,
+                    style: valueStyle,
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -472,7 +698,7 @@ class _EntryCard extends StatelessWidget {
     required this.rateFocus,
     required this.amountFocus,
     required this.tafseelFocus,
-    required this.wholeFormatter,
+    required this.litersFormatter,
     required this.amountFormatter,
     required this.rateFormatter,
     required this.onQuantitySubmitted,
@@ -489,7 +715,7 @@ class _EntryCard extends StatelessWidget {
   final FocusNode rateFocus;
   final FocusNode amountFocus;
   final FocusNode tafseelFocus;
-  final TextInputFormatter wholeFormatter;
+  final TextInputFormatter litersFormatter;
   final TextInputFormatter amountFormatter;
   final TextInputFormatter rateFormatter;
   final VoidCallback onQuantitySubmitted;
@@ -522,11 +748,11 @@ class _EntryCard extends StatelessWidget {
             urdu: 'مقدار',
             controller: litersController,
             focusNode: quantityFocus,
-            hint: '0',
+            hint: '0.00',
             suffix: 'Ltr',
             autofocus: true,
-            keyboardType: TextInputType.number,
-            inputFormatters: <TextInputFormatter>[wholeFormatter],
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: <TextInputFormatter>[litersFormatter],
             textInputAction: TextInputAction.next,
             onFieldSubmitted: (_) => onQuantitySubmitted(),
           ),
@@ -750,13 +976,11 @@ class _StockPreviewPanel extends StatelessWidget {
     required this.available,
     required this.incoming,
     required this.projected,
-    required this.showProjected,
   });
 
   final _LcdStock available;
   final _LcdStock incoming;
   final _LcdStock projected;
-  final bool showProjected;
 
   @override
   Widget build(BuildContext context) {
@@ -764,8 +988,8 @@ class _StockPreviewPanel extends StatelessWidget {
 
     return Container(
       width: double.infinity,
+      height: double.infinity,
       padding: const EdgeInsets.all(12),
-      alignment: Alignment.topCenter,
       decoration: BoxDecoration(
         color: tokens.card,
         borderRadius: BorderRadius.circular(tokens.radius20),
@@ -773,7 +997,6 @@ class _StockPreviewPanel extends StatelessWidget {
         boxShadow: tokens.cardShadow,
       ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Text(
@@ -787,17 +1010,23 @@ class _StockPreviewPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          _StockLcd(caption: 'Available Stock', stock: available),
+          Expanded(
+            child: _StockLcd(caption: 'Available Stock', stock: available),
+          ),
           const SizedBox(height: 12),
-          _StockLcd(caption: 'New Stock (this purchase)', stock: incoming),
-          if (showProjected)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: _RollingLcdBlock(
-                caption: 'New Available Stock Would be Like',
-                stock: projected,
-              ),
+          Expanded(
+            child: _StockLcd(
+              caption: 'New Stock (this purchase)',
+              stock: incoming,
             ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: _RollingLcdBlock(
+              caption: 'New Available Stock Would be Like',
+              stock: projected,
+            ),
+          ),
         ],
       ),
     );
@@ -889,8 +1118,7 @@ class _StockLcd extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 6),
-        SizedBox(
-          height: 108,
+        Expanded(
           child: SegmentLcd.purchase(
             labelSize: 13,
             valueSize: 22,
@@ -905,7 +1133,7 @@ class _StockLcd extends StatelessWidget {
               ),
               SegmentLcdLine(
                 label: 'RATE',
-                value: FuelFormatter.lcdRate(stock.rate),
+                value: FuelFormatter.lcdAverageRate(stock.rate),
               ),
             ],
           ),
@@ -915,21 +1143,70 @@ class _StockLcd extends StatelessWidget {
   }
 }
 
-class _LastPurchasesTable extends StatelessWidget {
+class _LastPurchasesTable extends StatefulWidget {
   const _LastPurchasesTable({
     required this.rows,
     required this.totalCount,
-    this.fillHeight = false,
+    required this.onEdit,
   });
 
   final List<PurchaseRecord> rows;
   final int totalCount;
-  final bool fillHeight;
+  final ValueChanged<PurchaseRecord> onEdit;
+
+  static const int _rowsPerPage = 5;
+  static const int _maxPages = 2;
+
+  @override
+  State<_LastPurchasesTable> createState() => _LastPurchasesTableState();
+}
+
+class _LastPurchasesTableState extends State<_LastPurchasesTable> {
+  int _page = 0;
+
+  @override
+  void didUpdateWidget(covariant _LastPurchasesTable oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final int lastPage = _pageCount - 1;
+    if (_page > lastPage) {
+      _page = lastPage < 0 ? 0 : lastPage;
+    }
+  }
+
+  int get _pageCount {
+    if (widget.rows.isEmpty) {
+      return 1;
+    }
+    final int needed = (widget.rows.length / _LastPurchasesTable._rowsPerPage)
+        .ceil();
+    if (needed < 1) {
+      return 1;
+    }
+    if (needed > _LastPurchasesTable._maxPages) {
+      return _LastPurchasesTable._maxPages;
+    }
+    return needed;
+  }
+
+  List<PurchaseRecord> get _pageRows {
+    final int start = _page * _LastPurchasesTable._rowsPerPage;
+    if (start >= widget.rows.length) {
+      return const <PurchaseRecord>[];
+    }
+    return widget.rows
+        .skip(start)
+        .take(_LastPurchasesTable._rowsPerPage)
+        .toList();
+  }
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final int shown = rows.length;
+    final int shown = widget.rows.length;
+    final int cap = shown < 10 ? 10 : widget.totalCount;
+    final int pageCount = _pageCount;
+    final bool canPrev = _page > 0;
+    final bool canNext = _page < pageCount - 1;
 
     return Container(
       width: double.infinity,
@@ -958,7 +1235,7 @@ class _LastPurchasesTable extends StatelessWidget {
                 ),
                 const Spacer(),
                 Text(
-                  '$shown of ${totalCount < 10 ? 10 : totalCount}',
+                  '$shown of $cap',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w500,
@@ -970,28 +1247,60 @@ class _LastPurchasesTable extends StatelessWidget {
             ),
           ),
           Divider(color: tokens.line, height: 1),
-          if (fillHeight) Expanded(child: _body(tokens)) else _body(tokens),
+          _body(tokens),
+          Divider(color: tokens.line, height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 8, 6),
+            child: Row(
+              children: <Widget>[
+                Text(
+                  'Page ${_page + 1} of $pageCount · 5 per page',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w500,
+                    fontSize: 12,
+                    color: tokens.inkMuted,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Previous page',
+                  onPressed: canPrev ? () => setState(() => _page -= 1) : null,
+                  icon: const Icon(Icons.chevron_left, size: 22),
+                ),
+                IconButton(
+                  tooltip: 'Next page',
+                  onPressed: canNext ? () => setState(() => _page += 1) : null,
+                  icon: const Icon(Icons.chevron_right, size: 22),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
   Widget _body(DispensrTokens tokens) {
-    if (rows.isEmpty) {
+    if (widget.rows.isEmpty) {
       return Padding(
         padding: const EdgeInsets.all(16),
         child: Text(
-          'No purchases yet. Set Initial Dip or add a purchase.',
+          'No purchases yet. Add a purchase to start the stock record.',
           style: TextStyle(fontFamily: 'Roboto', color: tokens.inkMuted),
         ),
       );
     }
+    final List<PurchaseRecord> pageRows = _pageRows;
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
+        final double minWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : 0;
         return SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: ConstrainedBox(
-            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            constraints: BoxConstraints(minWidth: minWidth),
             child: DataTable(
               headingRowHeight: 32,
               dataRowMinHeight: 36,
@@ -1018,9 +1327,10 @@ class _LastPurchasesTable extends StatelessWidget {
                 DataColumn(label: Text('QUANTITY'), numeric: true),
                 DataColumn(label: Text('RATE'), numeric: true),
                 DataColumn(label: Text('AMOUNT'), numeric: true),
+                DataColumn(label: Text('ACTIONS')),
               ],
               rows: <DataRow>[
-                for (final PurchaseRecord row in rows)
+                for (final PurchaseRecord row in pageRows)
                   DataRow(
                     color: row.isInitialDip
                         ? WidgetStatePropertyAll<Color>(
@@ -1091,6 +1401,23 @@ class _LastPurchasesTable extends StatelessWidget {
                           ),
                         ),
                       ),
+                      DataCell(
+                        IconButton(
+                          tooltip: 'Edit',
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          icon: Icon(
+                            Icons.edit_outlined,
+                            size: 16,
+                            color: tokens.inkMuted,
+                          ),
+                          onPressed: () => widget.onEdit(row),
+                        ),
+                      ),
                     ],
                   ),
               ],
@@ -1133,16 +1460,12 @@ class _DipTag extends StatelessWidget {
 class _PurchaseFooter extends StatelessWidget {
   const _PurchaseFooter({
     required this.canAdd,
-    required this.draftSaved,
     required this.submitFocus,
-    required this.onSaveDraft,
     required this.onAddStock,
   });
 
   final bool canAdd;
-  final bool draftSaved;
   final FocusNode submitFocus;
-  final VoidCallback onSaveDraft;
   final VoidCallback onAddStock;
 
   @override
@@ -1150,8 +1473,6 @@ class _PurchaseFooter extends StatelessWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final String status = !canAdd
         ? 'Enter quantity and rate to continue'
-        : draftSaved
-        ? 'Draft saved — ready to add this purchase to stock'
         : 'Ready to add this purchase to stock';
     final Color statusColor = canAdd ? tokens.good : tokens.inkMuted;
 
@@ -1198,24 +1519,13 @@ class _PurchaseFooter extends StatelessWidget {
                 ),
               ],
             );
-            final Widget actions = Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                DsPillButton(
-                  label: 'Save as Draft',
-                  variant: DsPillVariant.outline,
-                  onPressed: onSaveDraft,
-                ),
-                const SizedBox(width: 8),
-                Focus(
-                  focusNode: submitFocus,
-                  child: DsPillButton(
-                    label: 'Add Stock',
-                    icon: Icons.check,
-                    onPressed: canAdd ? onAddStock : null,
-                  ),
-                ),
-              ],
+            final Widget actions = Focus(
+              focusNode: submitFocus,
+              child: DsPillButton(
+                label: 'Add Stock',
+                icon: Icons.check,
+                onPressed: canAdd ? onAddStock : null,
+              ),
             );
             if (constraints.maxWidth < 640) {
               return Column(

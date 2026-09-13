@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/security/pin_hasher.dart';
 import '../../../providers/auth_provider.dart';
+import '../../../providers/settings_provider.dart';
 import '../../../services/database_helper.dart';
 import '../domain/access_policy.dart';
 
@@ -11,38 +14,66 @@ class AccessState {
   const AccessState({
     required this.isOwnerElevated,
     required this.busy,
+    required this.autoLockMinutes,
     this.errorMessage,
   });
 
   /// In-memory owner elevation. Never persisted; defaults to locked.
   final bool isOwnerElevated;
   final bool busy;
+
+  /// Idle minutes before owner access auto-locks. `0` disables the timer.
+  final int autoLockMinutes;
   final String? errorMessage;
 
   AccessState copyWith({
     bool? isOwnerElevated,
     bool? busy,
+    int? autoLockMinutes,
     String? errorMessage,
     bool clearError = false,
   }) {
     return AccessState(
       isOwnerElevated: isOwnerElevated ?? this.isOwnerElevated,
       busy: busy ?? this.busy,
+      autoLockMinutes: autoLockMinutes ?? this.autoLockMinutes,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
   }
 
   static AccessState locked() {
-    return const AccessState(isOwnerElevated: false, busy: false);
+    return const AccessState(
+      isOwnerElevated: false,
+      busy: false,
+      autoLockMinutes: OwnerAutoLockMinutes.defaultMinutes,
+    );
+  }
+
+  static AccessState unlocked() {
+    return const AccessState(
+      isOwnerElevated: true,
+      busy: false,
+      autoLockMinutes: OwnerAutoLockMinutes.defaultMinutes,
+    );
   }
 }
 
 /// Owner Master PIN verification and elevation. Manager session stays active.
 class AccessController extends Notifier<AccessState> {
   final DatabaseHelper _db = DatabaseHelper.instance;
+  Timer? _autoLockTimer;
 
   @override
   AccessState build() {
+    ref.onDispose(() {
+      _autoLockTimer?.cancel();
+      _autoLockTimer = null;
+    });
+    Future<void>(() => _loadAutoLockMinutes());
+    if (!shouldEnforceOwnerAccessLock) {
+      Future<void>(() => _syncAuthElevation(true));
+      return AccessState.unlocked();
+    }
     return AccessState.locked();
   }
 
@@ -50,8 +81,63 @@ class AccessController extends Notifier<AccessState> {
     ref.read(authProvider.notifier).setOwnerElevated(elevated);
   }
 
+  Future<void> _loadAutoLockMinutes() async {
+    try {
+      final int minutes = OwnerAutoLockMinutes.sanitize(
+        await _db.readOwnerAutoLockMinutes(),
+      );
+      state = state.copyWith(autoLockMinutes: minutes);
+      if (state.isOwnerElevated) {
+        _armAutoLock();
+      }
+    } catch (error, stack) {
+      debugPrint(
+        'AccessController._loadAutoLockMinutes failed: $error\n$stack',
+      );
+    }
+  }
+
+  void _cancelAutoLock() {
+    _autoLockTimer?.cancel();
+    _autoLockTimer = null;
+  }
+
+  void _armAutoLock() {
+    _cancelAutoLock();
+    if (!shouldEnforceOwnerAccessLock) {
+      return;
+    }
+    if (!state.isOwnerElevated) {
+      return;
+    }
+    final int minutes = OwnerAutoLockMinutes.sanitize(state.autoLockMinutes);
+    if (minutes <= OwnerAutoLockMinutes.off) {
+      return;
+    }
+    _autoLockTimer = Timer(Duration(minutes: minutes), () {
+      if (!state.isOwnerElevated) {
+        return;
+      }
+      debugPrint('Access: owner auto-lock after $minutes minute(s)');
+      lockOwnerAccess();
+    });
+  }
+
+  /// Restarts the idle timer while owner access is elevated.
+  void noteActivity() {
+    if (!state.isOwnerElevated) {
+      return;
+    }
+    _armAutoLock();
+  }
+
   /// Sets [isOwnerElevated] to false. Caller navigates back to Sales.
   void lockOwnerAccess() {
+    if (!shouldEnforceOwnerAccessLock) {
+      debugPrint('Access: owner lock skipped (debug)');
+      return;
+    }
+    _cancelAutoLock();
     state = state.copyWith(
       isOwnerElevated: false,
       busy: false,
@@ -59,6 +145,25 @@ class AccessController extends Notifier<AccessState> {
     );
     _syncAuthElevation(false);
     debugPrint('Access: owner access locked');
+  }
+
+  Future<bool> setAutoLockMinutes(int minutes) async {
+    final int safe = OwnerAutoLockMinutes.sanitize(minutes);
+    try {
+      await _db.writeOwnerAutoLockMinutes(safe);
+      state = state.copyWith(autoLockMinutes: safe, clearError: true);
+      if (state.isOwnerElevated) {
+        _armAutoLock();
+      }
+      debugPrint('Access: auto-lock minutes=$safe');
+      return true;
+    } catch (error, stack) {
+      debugPrint('AccessController.setAutoLockMinutes failed: $error\n$stack');
+      state = state.copyWith(
+        errorMessage: 'Could not save auto-lock timer. $error',
+      );
+      return false;
+    }
   }
 
   /// Verifies [rawPin] against SHA-256 `app_settings.owner_master_pin_hash`.
@@ -89,6 +194,15 @@ class AccessController extends Notifier<AccessState> {
         clearError: true,
       );
       _syncAuthElevation(true);
+      _armAutoLock();
+      unawaited(
+        _db.insertAuditLog(
+          actionType: AuditActionType.ownerElevate,
+          details:
+              'Owner Master PIN accepted; administrative screens unlocked.',
+          elevatedByOwner: true,
+        ),
+      );
       debugPrint('Access: owner elevated');
       return true;
     } catch (error, stack) {

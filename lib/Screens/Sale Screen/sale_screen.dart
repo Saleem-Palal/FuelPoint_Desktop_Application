@@ -6,12 +6,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../Shell/shell_navigation.dart';
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
-import '../../core/widgets/responsive_layout.dart';
+import '../../features/access/domain/access_policy.dart';
+import '../../features/shift/presentation/shift_providers.dart';
 import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/presentation/station_providers.dart';
 import '../../features/station/presentation/workspace_refresh.dart';
-import 'Widgets/Services/demo_controls_bar.dart';
+import '../../providers/settings_provider.dart';
+import '../../utils/fuel_formatter.dart';
 import 'Widgets/Services/dispenser_units_widget.dart';
 import 'Widgets/Services/receipt_preview_widget.dart';
 
@@ -24,6 +26,7 @@ class SaleScreen extends ConsumerStatefulWidget {
 
 class _SaleScreenState extends ConsumerState<SaleScreen> {
   final ScrollController _pageScroll = ScrollController();
+  bool _recoveryDialogOpen = false;
 
   @override
   void initState() {
@@ -31,6 +34,7 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         unawaited(refreshSalesFromDatabase(ref));
+        _maybePromptRecovery(ref.read(pendingEspSalesProvider));
       }
     });
   }
@@ -41,11 +45,76 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
     super.dispose();
   }
 
+  void _maybePromptRecovery(List<PendingEspSale> pending) {
+    if (_recoveryDialogOpen || pending.isEmpty || !mounted) {
+      return;
+    }
+    final PendingEspSale sale = pending.first;
+    _recoveryDialogOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _recoveryDialogOpen = false;
+        return;
+      }
+      final bool? save = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: const Text('Incomplete transaction'),
+            content: Text(
+              'This transaction was left incomplete due to connection loss. '
+              'Would you like to save this transaction to the database?\n\n'
+              'Unit ${sale.unitId}  ·  '
+              '${FuelFormatter.lcdVolume(sale.volumeLiters)} L  ·  '
+              'Rs. ${FuelFormatter.lcdDispenserAmount(sale.amountPkr)}'
+              '${sale.isIncomplete ? '\n(Power loss / Incomplete)' : ''}',
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Dismiss'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+      if (!mounted) {
+        _recoveryDialogOpen = false;
+        return;
+      }
+      final StationController ctl = ref.read(stationControllerProvider.notifier);
+      if (save == true) {
+        await ctl.savePendingEspSale(sale);
+      } else {
+        ctl.dismissPendingEspSale(sale);
+      }
+      _recoveryDialogOpen = false;
+      _maybePromptRecovery(ref.read(pendingEspSalesProvider));
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final StationState station = ref.watch(stationControllerProvider);
     final int selected = ref.watch(selectedDispenserIndexProvider);
+    final List<int> unitIds = visibleDispenserUnitIds(
+      showUnit5: ref.watch(settingsProvider).showUnit5,
+    );
+    final bool liveShift =
+        ref.watch(shiftWorkspaceProvider).activeShift?.isOpen == true;
+    final bool hardwareOffline = ref.watch(hardwareOfflineProvider);
+    ref.listen<List<PendingEspSale>>(pendingEspSalesProvider, (
+      List<PendingEspSale>? previous,
+      List<PendingEspSale> next,
+    ) {
+      _maybePromptRecovery(next);
+    });
 
     return ColoredBox(
       color: tokens.canvas,
@@ -73,15 +142,28 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: <Widget>[
-                            if (DemoControlsBar.visible) ...<Widget>[
-                              const DemoControlsBar(),
+                            if (shouldEnforceStationGuards &&
+                                !liveShift) ...<Widget>[
+                              _SaleLockBanner(
+                                color: tokens.warn,
+                                icon: Icons.lock_clock,
+                                message:
+                                    'No LIVE shift — start a manager shift to enable keypads and sales.',
+                              ),
+                              const SizedBox(height: 10),
+                            ],
+                            if (hardwareOffline) ...<Widget>[
+                              _SaleLockBanner(
+                                color: tokens.bad,
+                                icon: Icons.wifi_off,
+                                message:
+                                    'HARDWARE OFFLINE — shift stays live. Waiting for ESP32 reconnect.',
+                              ),
                               const SizedBox(height: 10),
                             ],
                             _UnitsRow(
-                              bays: <DispenserBay>[
-                                for (final int unitId in dispenserUnitIds)
-                                  station.bay(unitId),
-                              ],
+                              station: station,
+                              unitIds: unitIds,
                               selectedUnitId: selected,
                               onSelect: (int unitId) {
                                 ref
@@ -126,7 +208,8 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
 
 class _UnitsRow extends StatelessWidget {
   const _UnitsRow({
-    required this.bays,
+    required this.station,
+    required this.unitIds,
     required this.selectedUnitId,
     required this.onSelect,
     required this.abortNoticeFor,
@@ -134,7 +217,8 @@ class _UnitsRow extends StatelessWidget {
     required this.onDismissReceipt,
   });
 
-  final List<DispenserBay> bays;
+  final StationState station;
+  final List<int> unitIds;
   final int selectedUnitId;
   final ValueChanged<int> onSelect;
   final String? Function(int unitId) abortNoticeFor;
@@ -144,36 +228,40 @@ class _UnitsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    return ExtentWrap(
-      maxCrossAxisExtent: 320,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        for (final DispenserBay bay in bays) _unitCell(tokens, bay),
+        for (int i = 0; i < unitIds.length; i++) ...<Widget>[
+          if (i > 0) const SizedBox(width: 8),
+          Expanded(child: _unitCell(tokens, station.bay(unitIds[i]))),
+        ],
       ],
     );
   }
 
   Widget _unitCell(DispensrTokens tokens, DispenserBay bay) {
-    final DispenserUnitsWidget card = DispenserUnitsWidget(
-      data: DispenserUnitData.fromBay(bay),
-      isSelected: selectedUnitId == bay.unitId,
-      abortNotice: abortNoticeFor(bay.unitId),
-      onSelect: () => onSelect(bay.unitId),
-    );
     final SaleTransaction? receiptTxn = receiptOverlays[bay.unitId];
-    if (receiptTxn == null) {
-      return card;
-    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(tokens.radius20),
       child: Stack(
         children: <Widget>[
-          card,
-          Positioned.fill(
-            child: UnitReceiptOverlay(
-              txn: receiptTxn,
-              onDismiss: () => onDismissReceipt(bay.unitId),
+          DispenserUnitsWidget(
+            key: ValueKey<int>(bay.unitId),
+            data: DispenserUnitData.fromBay(
+              bay,
+              linkOnline: station.isUnitLinkOnline(bay.unitId),
             ),
+            isSelected: selectedUnitId == bay.unitId,
+            abortNotice: abortNoticeFor(bay.unitId),
+            onSelect: () => onSelect(bay.unitId),
           ),
+          if (receiptTxn != null)
+            Positioned.fill(
+              child: UnitReceiptOverlay(
+                txn: receiptTxn,
+                onDismiss: () => onDismissReceipt(bay.unitId),
+              ),
+            ),
         ],
       ),
     );
@@ -288,7 +376,7 @@ class _TransactionsCard extends StatelessWidget {
                         DataColumn(label: Text('CUSTOMER NAME')),
                         DataColumn(label: Text('VEHICLE NO')),
                         DataColumn(label: Text('HELPER')),
-                        DataColumn(label: Text('CASHIER')),
+                        DataColumn(label: Text('MANAGER')),
                       ],
                       rows: <DataRow>[
                         for (final SaleTransaction row in rows)
@@ -320,9 +408,9 @@ class _TransactionsCard extends StatelessWidget {
                                 ),
                               ),
                               DataCell(
-                                Text(row.volumeLiters.toStringAsFixed(2)),
+                                Text(formatTruncatedDecimal(row.volumeLiters)),
                               ),
-                              DataCell(Text(row.rate.toStringAsFixed(2))),
+                              DataCell(Text(formatTruncatedDecimal(row.rate))),
                               DataCell(
                                 Text(formatMeterReading(row.openingMeter)),
                               ),
@@ -364,6 +452,48 @@ class _TransactionsCard extends StatelessWidget {
                 );
               },
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SaleLockBanner extends StatelessWidget {
+  const _SaleLockBanner({
+    required this.color,
+    required this.icon,
+    required this.message,
+  });
+
+  final Color color;
+  final IconData icon;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(tokens.radius12),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: tokens.ink,
+              ),
+            ),
+          ),
         ],
       ),
     );

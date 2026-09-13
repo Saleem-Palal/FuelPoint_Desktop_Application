@@ -16,12 +16,15 @@ import '../Screens/Shift Screen/Widgets/shift_close_actions.dart';
 import '../Screens/Shift Screen/Widgets/shift_handover_dialog.dart';
 import '../features/shift/presentation/shift_providers.dart';
 import '../providers/auth_provider.dart';
+import '../providers/settings_provider.dart';
 import '../providers/shift_provider.dart';
 import '../services/window_lifecycle_service.dart';
 import '../Screens/managers_screen.dart';
 import '../core/constants.dart';
 import '../core/theme/dispensr_theme.dart';
 import '../core/widgets/app_screen_header.dart';
+import '../core/widgets/release_notes_dialog.dart';
+import '../core/widgets/low_stock_toast.dart';
 import '../features/access/domain/access_policy.dart';
 import '../features/access/presentation/access_controller.dart';
 import '../features/access/presentation/owner_access_gate.dart';
@@ -119,12 +122,13 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 
   Widget _workspace(int selectedIndex, {required bool ownerElevated}) {
-    if (AccessPolicy.destinationRequiresOwner(selectedIndex) &&
+    if (shouldEnforceOwnerAccessLock &&
+        AccessPolicy.destinationRequiresOwner(selectedIndex) &&
         !ownerElevated) {
       return const OwnerAccessGate(
         title: 'Owner access required',
         message:
-            'Only Sales and Customers are available during a manager shift. '
+            'Start or continue a shift from Shift Management. '
             'Enter the Owner Master PIN to open this screen.',
       );
     }
@@ -157,7 +161,9 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   Future<void> _select(int index) async {
     final bool elevated = ref.read(accessControllerProvider).isOwnerElevated;
-    if (AccessPolicy.destinationRequiresOwner(index) && !elevated) {
+    if (shouldEnforceOwnerAccessLock &&
+        AccessPolicy.destinationRequiresOwner(index) &&
+        !elevated) {
       final bool unlocked = await showOwnerPinVerificationModal(context);
       if (!unlocked || !mounted) {
         return;
@@ -169,6 +175,13 @@ class _AppShellState extends ConsumerState<AppShell> {
   void _lockOwnerAccess() {
     ref.read(accessControllerProvider.notifier).lockOwnerAccess();
     ref.read(shellDestinationProvider.notifier).state = ShellDestinations.sale;
+  }
+
+  void _noteOwnerActivity() {
+    if (!ref.read(accessControllerProvider).isOwnerElevated) {
+      return;
+    }
+    ref.read(accessControllerProvider.notifier).noteActivity();
   }
 
   static String _initialsOf(String name) {
@@ -199,6 +212,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleSaleKeys);
+    HardwareKeyboard.instance.addHandler(_handleOwnerIdleKeys);
     FocusManager.instance.addListener(_onFocusChange);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -208,16 +222,30 @@ class _AppShellState extends ConsumerState<AppShell> {
         hasActiveShift: () => ref.read(shiftProvider).hasActiveShift,
         activeManagerName: () => ref.read(shiftProvider).liveManagerName,
         onProceedToEndShift: () => promptManualEndShift(context, ref),
-        onForceClose: () => promptForceCloseShift(context, ref),
+        onCleanShutdown: () {
+          return ref
+              .read(shiftWorkspaceProvider.notifier)
+              .markAppCleanShutdown();
+        },
       );
       unawaited(_lifecycle!.attach());
+      unawaited(_routeColdStart());
     });
+  }
+
+  Future<void> _routeColdStart() async {
+    await ref.read(shiftWorkspaceProvider.notifier).ensureReady();
+    if (!mounted) {
+      return;
+    }
+    ref.read(shellDestinationProvider.notifier).state = ShellDestinations.sale;
   }
 
   @override
   void dispose() {
     _lifecycle?.detach();
     FocusManager.instance.removeListener(_onFocusChange);
+    HardwareKeyboard.instance.removeHandler(_handleOwnerIdleKeys);
     HardwareKeyboard.instance.removeHandler(_handleSaleKeys);
     _shellFocus.dispose();
     super.dispose();
@@ -273,11 +301,22 @@ class _AppShellState extends ConsumerState<AppShell> {
     return false;
   }
 
+  bool _handleOwnerIdleKeys(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      _noteOwnerActivity();
+    }
+    return false;
+  }
+
   void _selectUnit(int unitId) {
     if (ref.read(shellDestinationProvider) != ShellDestinations.sale) {
       return;
     }
     if (_editableTextHasFocus()) {
+      return;
+    }
+    if (unitId == kOptionalDispenserUnitId &&
+        !ref.read(settingsProvider).showUnit5) {
       return;
     }
     ref.read(selectedDispenserIndexProvider.notifier).state = unitId;
@@ -307,17 +346,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (!next.isUnverifiedSession) {
         return;
       }
-      final AuthState auth = ref.read(authProvider);
-      final bool alreadyUnlocked =
-          auth.isAuthenticated &&
-          auth.activeManagerId == next.activeShift?.managerId;
-      if (alreadyUnlocked || shouldBypassLogin) {
-        Future<void>(() {
-          if (!mounted) {
-            return;
-          }
-          ref.read(shiftWorkspaceProvider.notifier).markSessionVerified();
-        });
+      if (!shouldEnforceStationGuards) {
+        ref.read(shiftWorkspaceProvider.notifier).markSessionVerified();
         return;
       }
       if (_unverifiedPrompted) {
@@ -329,6 +359,20 @@ class _AppShellState extends ConsumerState<AppShell> {
           unawaited(promptUnverifiedShift(context, ref));
         }
       });
+    });
+    ref.listen<AccessState>(accessControllerProvider, (
+      AccessState? previous,
+      AccessState next,
+    ) {
+      if (previous?.isOwnerElevated != true || next.isOwnerElevated) {
+        return;
+      }
+      final int dest = ref.read(shellDestinationProvider);
+      if (!AccessPolicy.destinationRequiresOwner(dest)) {
+        return;
+      }
+      ref.read(shellDestinationProvider.notifier).state =
+          ShellDestinations.sale;
     });
     final DispensrTokens tokens = DispensrTokens.of(context);
     final int selectedIndex = ref.watch(shellDestinationProvider);
@@ -349,6 +393,7 @@ class _AppShellState extends ConsumerState<AppShell> {
         : (shiftLive ? 'On Shift' : 'No Shift');
     final String operatorInitials = _initialsOf(operatorName);
 
+    final bool hardwareOffline = ref.watch(hardwareOfflineProvider);
     final Map<ShortcutActivator, VoidCallback> bindings =
         <ShortcutActivator, VoidCallback>{
           const SingleActivator(LogicalKeyboardKey.digit1, control: true): () {
@@ -375,42 +420,86 @@ class _AppShellState extends ConsumerState<AppShell> {
       });
     }
 
-    return CallbackShortcuts(
-      bindings: bindings,
-      child: Focus(
-        autofocus: true,
-        focusNode: _shellFocus,
-        child: Scaffold(
-          backgroundColor: tokens.canvas,
-          body: Row(
-            children: <Widget>[
-              _Sidebar(
-                selectedIndex: selectedIndex,
-                collapsed: _sidebarCollapsed,
-                menu: _menu,
-                system: _system,
-                onSelect: (int index) {
-                  unawaited(_select(index));
-                },
-                onToggleCollapsed: _toggleSidebar,
-                operatorName: operatorName,
-                operatorRole: operatorRole,
-                operatorInitials: operatorInitials,
-                shiftLive: shiftLive,
-                ownerElevated: ownerElevated,
-                onLockOwnerAccess: _lockOwnerAccess,
-              ),
-              Expanded(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    _workspace(selectedIndex, ownerElevated: ownerElevated),
-                    const ShiftReconciliationOverlay(),
-                  ],
+    return Listener(
+      onPointerDown: (_) => _noteOwnerActivity(),
+      onPointerSignal: (_) => _noteOwnerActivity(),
+      child: CallbackShortcuts(
+        bindings: bindings,
+        child: Focus(
+          autofocus: true,
+          focusNode: _shellFocus,
+          child: Scaffold(
+            backgroundColor: tokens.canvas,
+            body: Row(
+              children: <Widget>[
+                _Sidebar(
+                  selectedIndex: selectedIndex,
+                  collapsed: _sidebarCollapsed,
+                  menu: _menu,
+                  system: _system,
+                  onSelect: (int index) {
+                    unawaited(_select(index));
+                  },
+                  onToggleCollapsed: _toggleSidebar,
+                  operatorName: operatorName,
+                  operatorRole: operatorRole,
+                  operatorInitials: operatorInitials,
+                  shiftLive: shiftLive,
+                  ownerElevated: ownerElevated,
+                  onLockOwnerAccess: _lockOwnerAccess,
+                ),
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      _workspace(selectedIndex, ownerElevated: ownerElevated),
+                      if (shouldEnforceStationGuards && hardwareOffline)
+                        const Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: _HardwareOfflineBanner(),
+                        ),
+                      const ShiftReconciliationOverlay(),
+                      const LowStockToastHost(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HardwareOfflineBanner extends StatelessWidget {
+  const _HardwareOfflineBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Material(
+      color: tokens.bad,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: <Widget>[
+            Icon(Icons.wifi_off, color: tokens.card, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'HARDWARE OFFLINE — shift stays live. Retrying ESP32 link…',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: tokens.card,
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -631,7 +720,9 @@ class _Sidebar extends StatelessWidget {
                             ),
                           ],
                         ),
-                      if (ownerElevated && showLabels) ...<Widget>[
+                      if (ownerElevated &&
+                          shouldEnforceOwnerAccessLock &&
+                          showLabels) ...<Widget>[
                         const SizedBox(height: 12),
                         Align(
                           alignment: Alignment.centerLeft,
@@ -645,7 +736,8 @@ class _Sidebar extends StatelessWidget {
                             ),
                           ),
                         ),
-                      ] else if (ownerElevated) ...<Widget>[
+                      ] else if (ownerElevated &&
+                          shouldEnforceOwnerAccessLock) ...<Widget>[
                         const SizedBox(height: 10),
                         IconButton(
                           onPressed: onLockOwnerAccess,
@@ -752,14 +844,26 @@ class _SidebarVersion extends StatelessWidget {
     return Align(
       alignment: Alignment.centerLeft,
       child: Tooltip(
-        message: '${AppBrand.name} ${AppBrand.versionLabel}',
-        child: Padding(
-          padding: EdgeInsets.only(left: collapsed ? 6 : 2, bottom: 2),
-          child: Text(
-            AppBrand.versionLabel,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: style,
+        message: 'What\'s new in ${AppBrand.versionLabel}',
+        child: InkWell(
+          onTap: () {
+            unawaited(showReleaseNotesDialog(context));
+          },
+          borderRadius: BorderRadius.circular(tokens.radius12),
+          hoverColor: tokens.canvas,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              collapsed ? 6 : 2,
+              4,
+              collapsed ? 4 : 8,
+              2,
+            ),
+            child: Text(
+              AppBrand.versionLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
           ),
         ),
       ),

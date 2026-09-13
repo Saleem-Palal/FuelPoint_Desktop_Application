@@ -24,7 +24,8 @@ final shellDestinationProvider = StateProvider<int>(
 );
 
 Future<void> openLedgerSales(BuildContext context, WidgetRef ref) async {
-  if (AccessPolicy.destinationRequiresOwner(ShellDestinations.ledger) &&
+  if (shouldEnforceOwnerAccessLock &&
+      AccessPolicy.destinationRequiresOwner(ShellDestinations.ledger) &&
       !ref.read(accessControllerProvider).isOwnerElevated) {
     final bool unlocked = await showOwnerPinVerificationModal(context);
     if (!unlocked) {

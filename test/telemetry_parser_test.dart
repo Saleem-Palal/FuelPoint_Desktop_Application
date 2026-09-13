@@ -62,6 +62,25 @@ void main() {
     expect(frame.pumpStatus, PumpStatus.nozzleActive);
   });
 
+  test('type-33 rupees preset does not divide keypad amount by 100', () {
+    final Type33Frame? frame = decodeType33(
+      type33Payload(status: 'P', amount8: '00000100'),
+    );
+    expect(frame, isNotNull);
+    expect(frame!.pumpStatus, PumpStatus.rupeesPreset);
+    expect(frame.totalAmount, closeTo(100, 0.001));
+  });
+
+  test('type-33 liters preset reads keypad liters from amount field, not /100', () {
+    final Type33Frame? frame = decodeType33(
+      type33Payload(status: 'L', amount8: '00000123'),
+    );
+    expect(frame, isNotNull);
+    expect(frame!.pumpStatus, PumpStatus.litersPreset);
+    expect(frame.totalAmount, closeTo(0, 0.001));
+    expect(frame.volumeLiters, closeTo(123, 0.001));
+  });
+
   test('type-33 does not format total meter as a clock', () {
     final IngestOutcome outcome = TelemetryIngestor().ingest(
       _bytes('<${type33Payload()}>'),

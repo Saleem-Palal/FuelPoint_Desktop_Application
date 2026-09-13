@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../providers/settings_provider.dart';
+import '../../../services/database_helper.dart';
 import '../data/purchase_repository.dart';
 import '../domain/money_format.dart';
 
@@ -15,7 +17,9 @@ class PurchaseController extends ChangeNotifier {
   final VoidCallback? onCommitted;
 
   List<PurchaseRecord> _purchases = const <PurchaseRecord>[];
-  double _stockLiters = 0;
+  double _stockQuantity = 0;
+  double _averageRate = 0;
+  double _stockAmount = 0;
   int _nextInvoice = 1000;
   bool _loading = true;
 
@@ -32,25 +36,16 @@ class PurchaseController extends ChangeNotifier {
 
   bool get loading => _loading;
 
-  /// Current tank volume from `diesel_stock` (full precision).
-  double get currentDipLiters => _stockLiters;
+  /// Current tank liters from `diesel_stock.stock_quantity` (13-place storage).
+  double get globalStockQuantity => _stockQuantity;
 
-  /// Weighted average cost across all purchase lots (full precision).
-  double get weightedAverageRate {
-    double cost = 0;
-    double liters = 0;
-    for (final PurchaseRecord row in _purchases) {
-      cost += row.amount;
-      liters += row.quantity;
-    }
-    if (liters == 0) {
-      return 0;
-    }
-    return cost / liters;
-  }
+  double get currentDipLiters => _stockQuantity;
 
-  /// Stock value = dip × WAC (full precision).
-  double get overallStockPkr => currentDipLiters * weightedAverageRate;
+  /// Running WAC stored on `diesel_stock.Average_rate` (13-place storage).
+  double get weightedAverageRate => _averageRate;
+
+  /// PKR value stored on `diesel_stock.Stock_amount` (rounded quantity × WAC).
+  double get overallStockPkr => _stockAmount;
 
   double get previousTotalCost => overallStockPkr;
 
@@ -59,64 +54,36 @@ class PurchaseController extends ChangeNotifier {
   Future<void> reload() async {
     try {
       final List<PurchaseRecord> rows = await _repository.list();
-      final double stock = await _repository.stockAmount();
+      final ({double quantity, double averageRate, double amount}) stock =
+          await _repository.stock();
       final int nextInv = await _repository.nextInvoiceNo();
       _purchases = rows;
-      _stockLiters = stock;
+      _stockQuantity = stock.quantity;
+      _averageRate = stock.averageRate;
+      _stockAmount = stock.amount;
       _nextInvoice = nextInv;
     } catch (error, stack) {
       debugPrint('PurchaseController.reload failed: $error\n$stack');
-      rethrow;
     } finally {
       _loading = false;
       notifyListeners();
     }
   }
 
-  Future<void> recordInitialDip({
-    required double liters,
-    required double ratePerLiter,
-    required String managerId,
-    required String managerName,
-    required String managerPin,
-    String tafseel = '',
-  }) async {
-    final double totalAmountPkr = liters * ratePerLiter;
-    final String note = tafseel.trim();
-    await _repository.commitPurchase(
-      invNo: formatInvoiceNo(_nextInvoice),
-      timestamp: DateTime.now(),
-      quantity: liters,
-      rate: ratePerLiter,
-      amount: totalAmountPkr,
-      tafseel: note.isEmpty || note.toUpperCase().startsWith('DIP')
-          ? (note.isEmpty ? 'DIP' : note)
-          : 'DIP · $note',
-      managerId: managerId,
-      managerName: managerName,
-      managerPin: managerPin,
-      replaceStock: true,
-    );
-    await reload();
-    onCommitted?.call();
-  }
-
   Future<void> recordPurchase({
     required double purchasedLiters,
+    required double purchaseRate,
     required double totalAmountPkr,
     required String managerId,
     required String managerName,
     required String managerPin,
     String tafseel = '',
   }) async {
-    final double ratePerLiter = purchasedLiters == 0
-        ? 0
-        : totalAmountPkr / purchasedLiters;
     await _repository.commitPurchase(
       invNo: formatInvoiceNo(_nextInvoice),
       timestamp: DateTime.now(),
       quantity: purchasedLiters,
-      rate: ratePerLiter,
+      rate: purchaseRate,
       amount: totalAmountPkr,
       tafseel: tafseel,
       managerId: managerId,
@@ -124,6 +91,45 @@ class PurchaseController extends ChangeNotifier {
       managerPin: managerPin,
     );
     await reload();
+    unawaited(
+      DatabaseHelper.instance.insertAuditLog(
+        actionType: AuditActionType.stockAdjust,
+        details:
+            'Purchase $tafseel qty=$purchasedLiters rate=$purchaseRate '
+            'amount=$totalAmountPkr',
+        managerId: managerId,
+        elevatedByOwner: true,
+      ),
+    );
+    onCommitted?.call();
+  }
+
+  Future<void> updatePurchase({
+    required String invNo,
+    required double purchasedLiters,
+    required double purchaseRate,
+    required double totalAmountPkr,
+    String tafseel = '',
+    String managerId = '',
+  }) async {
+    await _repository.updatePurchase(
+      invNo: invNo,
+      quantity: purchasedLiters,
+      rate: purchaseRate,
+      amount: totalAmountPkr,
+      tafseel: tafseel,
+    );
+    await reload();
+    unawaited(
+      DatabaseHelper.instance.insertAuditLog(
+        actionType: AuditActionType.stockAdjust,
+        details:
+            'Edit $invNo qty=$purchasedLiters rate=$purchaseRate '
+            'amount=$totalAmountPkr',
+        managerId: managerId,
+        elevatedByOwner: true,
+      ),
+    );
     onCommitted?.call();
   }
 }

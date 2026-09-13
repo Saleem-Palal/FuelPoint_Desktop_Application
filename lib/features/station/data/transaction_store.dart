@@ -1,3 +1,4 @@
+import '../domain/average_rate.dart';
 import '../domain/dispenser_models.dart';
 
 /// In-memory system logs. Committed sales and purchases live in SQLite.
@@ -37,6 +38,15 @@ class SalesLedgerSnapshot {
     required this.udhaarCount,
   });
 
+  static const SalesLedgerSnapshot empty = SalesLedgerSnapshot(
+    rows: <SaleTransaction>[],
+    totalCount: 0,
+    totalAmountPkr: 0,
+    totalVolumeLiters: 0,
+    udhaarAmountPkr: 0,
+    udhaarCount: 0,
+  );
+
   final List<SaleTransaction> rows;
   final int totalCount;
   final double totalAmountPkr;
@@ -61,9 +71,18 @@ class PurchaseLedgerSnapshot {
   final double largestDeliveryLiters;
 
   double get averageRate {
-    if (totalVolumeLiters <= 0) {
+    double cost = 0;
+    double liters = 0;
+    for (final PurchaseTransaction row in rows) {
+      if (isInitialDipTafseel(row.tafseel)) {
+        continue;
+      }
+      cost += row.totalAmount;
+      liters += row.netLiters;
+    }
+    if (liters <= 0) {
       return 0;
     }
-    return totalAmountPkr / totalVolumeLiters;
+    return cost / liters;
   }
 }

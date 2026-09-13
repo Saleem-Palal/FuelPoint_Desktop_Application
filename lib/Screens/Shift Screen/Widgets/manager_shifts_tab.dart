@@ -6,14 +6,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../Shell/shell_navigation.dart';
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../core/widgets/responsive_layout.dart';
+import '../../../features/access/domain/access_policy.dart';
 import '../../../features/access/presentation/access_controller.dart';
 import '../../../features/access/presentation/owner_access_gate.dart';
+import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/presentation/shift_hardware.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
 import '../../../features/station/domain/money_format.dart';
 import 'add_profile_dialogs.dart';
 import 'active_shift_banner.dart';
 import 'shift_close_actions.dart';
+import 'shift_close_warning_dialog.dart';
 import 'shift_handover_dialog.dart';
 import 'start_shift_dialog.dart';
 import 'shift_ui_kit.dart';
@@ -39,6 +43,46 @@ class ManagerShiftsTab extends ConsumerWidget {
     if (shift == null) {
       return;
     }
+    final int? blockingBay = shouldEnforceStationGuards
+        ? dispensingBayIdOf(ref)
+        : null;
+    if (blockingBay != null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ShiftLifecycleGuard.handoverBlockedMessage(blockingBay),
+            ),
+            backgroundColor: DispensrTokens.of(context).warn,
+          ),
+        );
+      }
+      return;
+    }
+    final String? outgoingPin = await showManagerPinDialog(
+      context,
+      managerName: shift.managerName,
+      title: 'End Shift & Handover',
+      message:
+          'Enter ${shift.managerName}\'s PIN to freeze ${shift.shiftId} for '
+          'cash tally, then authenticate the incoming manager.',
+    );
+    if (outgoingPin == null || !context.mounted) {
+      return;
+    }
+    final bool outgoingOk = await ref
+        .read(shiftWorkspaceProvider.notifier)
+        .verifyActiveManagerPin(outgoingPin);
+    if (!outgoingOk) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('PIN does not match the on-duty manager.'),
+          ),
+        );
+      }
+      return;
+    }
     try {
       final ShiftHandoverResult? result = await showIncomingManagerAuthDialog(
         context,
@@ -58,21 +102,39 @@ class ManagerShiftsTab extends ConsumerWidget {
                     incomingManagerId: incomingManagerId,
                     pin: pin,
                     unitAssignments: unitAssignments,
+                    blockingDispensingBay: shouldEnforceStationGuards
+                        ? dispensingBayIdOf(ref)
+                        : null,
+                    closingMeters: currentBayMetersOf(ref),
+                    openingMeters: currentBayMetersOf(ref),
                   );
             },
       );
       if (result == null || !context.mounted) {
         return;
       }
+      if (result.outcome == HandoverOutcome.baysDispensing && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ShiftLifecycleGuard.handoverBlockedMessage(
+                result.blockedBayId ?? 0,
+              ),
+            ),
+          ),
+        );
+        return;
+      }
       final ManagerShiftRecord? opened = result.opened;
       if (result.isSuccess && opened != null) {
         ref.read(accessControllerProvider.notifier).lockOwnerAccess();
         ref.read(shellDestinationProvider.notifier).state =
-            ShellDestinations.sale;
+            ShellDestinations.shifts;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '${shift.shiftId} is pending tally. ${opened.managerName} is live on ${opened.shiftId}.',
+              '${shift.shiftId} is pending tally. ${opened.managerName} is '
+              'live on ${opened.shiftId}. Enter counted cash in the sidebar.',
             ),
           ),
         );
@@ -205,16 +267,14 @@ class _ManagerProfilePanel extends ConsumerWidget {
       helpers: workspace.assignableHelpers,
       currentAssignments: unitHelperAssignmentsOf(workspace.helpers),
       onConfirm:
-          ({
-            required String pin,
-            required Map<int, String?> unitAssignments,
-          }) {
+          ({required String pin, required Map<int, String?> unitAssignments}) {
             return ref
                 .read(shiftWorkspaceProvider.notifier)
                 .startShift(
                   manager.id,
                   pin: pin,
                   unitAssignments: unitAssignments,
+                  openingMeters: currentBayMetersOf(ref),
                 );
           },
     );
@@ -223,6 +283,8 @@ class _ManagerProfilePanel extends ConsumerWidget {
     }
     switch (outcome) {
       case StartShiftOutcome.started:
+        ref.read(shellDestinationProvider.notifier).state =
+            ShellDestinations.sale;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${manager.name} is now on shift')),
         );
@@ -443,6 +505,10 @@ class ShiftTallySidebar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final ShiftWorkspaceState workspace = ref.watch(shiftWorkspaceProvider);
+    if (workspace.pendingReconciliation != null) {
+      return const _ShiftHandoverPanel();
+    }
     final bool elevated = ref.watch(accessControllerProvider).isOwnerElevated;
     if (!elevated) {
       return const OwnerLockedTallyPanel();
@@ -457,7 +523,13 @@ class _ShiftHandoverPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ShiftWorkspaceState workspace = ref.watch(shiftWorkspaceProvider);
-    final ShiftWindowMetrics metrics = ref.watch(activeShiftMetricsProvider);
+    final ShiftWindowMetrics liveMetrics = ref.watch(
+      activeShiftMetricsProvider,
+    );
+    final ReconciliationSnapshot? pending = workspace.pendingReconciliation;
+    final ManagerShiftRecord? displayShift =
+        pending?.shift ?? workspace.activeShift;
+    final ShiftWindowMetrics displayMetrics = pending?.metrics ?? liveMetrics;
 
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
@@ -466,12 +538,13 @@ class _ShiftHandoverPanel extends ConsumerWidget {
           children: <Widget>[
             ConstrainedBox(
               constraints: BoxConstraints(
-                maxHeight: constraints.maxHeight * 0.58,
+                maxHeight: constraints.maxHeight * 0.68,
               ),
               child: SingleChildScrollView(
                 child: _ActiveShiftCard(
-                  shift: workspace.activeShift,
-                  metrics: metrics,
+                  shift: displayShift,
+                  metrics: displayMetrics,
+                  pendingTally: pending != null,
                 ),
               ),
             ),
@@ -479,8 +552,8 @@ class _ShiftHandoverPanel extends ConsumerWidget {
             Expanded(
               child: workspace.tallyPane == ManagerTallyPane.todaySales
                   ? _TodaySalesCard(
-                      metrics: metrics,
-                      hasShift: workspace.activeShift != null,
+                      metrics: displayMetrics,
+                      hasShift: displayShift != null,
                     )
                   : _HistoricalShiftsCard(rows: workspace.closedShifts),
             ),
@@ -492,10 +565,15 @@ class _ShiftHandoverPanel extends ConsumerWidget {
 }
 
 class _ActiveShiftCard extends ConsumerWidget {
-  const _ActiveShiftCard({required this.shift, required this.metrics});
+  const _ActiveShiftCard({
+    required this.shift,
+    required this.metrics,
+    this.pendingTally = false,
+  });
 
   final ManagerShiftRecord? shift;
   final ShiftWindowMetrics metrics;
+  final bool pendingTally;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -512,7 +590,7 @@ class _ActiveShiftCard extends ConsumerWidget {
         children: <Widget>[
           if (open == null)
             Text(
-              'No open shift — tap a manager to start. Expected cash equals fuel cash sales.',
+              'No open shift — tap a manager to start. Expected cash is fuel cash + udhaar recovery + account payments − udhaar issued.',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w500,
@@ -525,7 +603,7 @@ class _ActiveShiftCard extends ConsumerWidget {
               children: <Widget>[
                 Flexible(
                   child: Text(
-                    'Active Shift',
+                    pendingTally ? 'Pending tally' : 'Active Shift',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -548,10 +626,13 @@ class _ActiveShiftCard extends ConsumerWidget {
                 ),
                 const SizedBox(width: 8),
                 DsStatusPill(
-                  label: 'Open',
-                  foreground: tokens.good,
-                  background: tokens.good.withValues(alpha: 0.12),
-                  border: tokens.good.withValues(alpha: 0.4),
+                  label: pendingTally ? 'Pending' : 'Open',
+                  foreground: pendingTally ? tokens.warn : tokens.good,
+                  background: (pendingTally ? tokens.warn : tokens.good)
+                      .withValues(alpha: 0.12),
+                  border: (pendingTally ? tokens.warn : tokens.good).withValues(
+                    alpha: 0.4,
+                  ),
                 ),
               ],
             ),
@@ -570,9 +651,9 @@ class _ActiveShiftCard extends ConsumerWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: ShiftKpiCard(
-                    label: 'Total Fuel Cash Sales',
-                    value: formatPkr(metrics.fuelCashSales),
-                    hint: '${metrics.sales.length} transactions',
+                    label: 'Total Sale',
+                    value: formatPkr(metrics.totalSale),
+                    hint: ShiftWindowMetrics.totalSaleFormula,
                     icon: Icons.local_gas_station_outlined,
                     tint: tokens.good,
                   ),
@@ -584,9 +665,33 @@ class _ActiveShiftCard extends ConsumerWidget {
               children: <Widget>[
                 Expanded(
                   child: ShiftKpiCard(
+                    label: 'Udhaar Issued',
+                    value: formatPkr(metrics.udhaarSales),
+                    hint: ShiftWindowMetrics.udhaarIssuedHint,
+                    icon: Icons.receipt_long_outlined,
+                    tint: tokens.warn,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ShiftKpiCard(
+                    label: 'Account Payments',
+                    value: formatPkr(metrics.accountSales),
+                    hint: ShiftWindowMetrics.accountPaymentsHint,
+                    icon: Icons.account_balance_outlined,
+                    tint: tokens.coral,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: ShiftKpiCard(
                     label: 'Udhaar Recovery',
                     value: formatPkr(metrics.udhaarRecoveryTotal),
-                    hint: 'Cash settlements this shift',
+                    hint: ShiftWindowMetrics.udhaarRecoveryHint,
                     icon: Icons.handshake_outlined,
                     tint: tokens.coral,
                   ),
@@ -596,7 +701,7 @@ class _ActiveShiftCard extends ConsumerWidget {
                   child: ShiftKpiCard(
                     label: 'Expected Cash in Hand',
                     value: formatPkr(metrics.expectedCashInHand),
-                    hint: 'Fuel cash + Udhaar recovery',
+                    hint: ShiftWindowMetrics.expectedCashFormula,
                     icon: Icons.payments_outlined,
                     tint: tokens.warn,
                   ),

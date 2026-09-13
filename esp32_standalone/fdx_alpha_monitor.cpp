@@ -14,7 +14,7 @@
  * Framing/decode matches the Flutter tester:
  *   - buffer bytes, extract <...> frames
  *   - strip < > spaces CR LF
- *   - route by payload length 33 / 37 / 29 / 36
+ *   - route by payload length 33 / 37 / 30 / 36
  *   - Type-33 Java Mid map (1-based):
  *       status Mid(1,1), product Mid(4,1)
  *       amount Mid(5,8)/100, liters Mid(13,8)/100
@@ -115,9 +115,11 @@ static void setStatus(char code) {
       break;
     case 'P':
     case 'p':
+      strncpy(statusLabel, "Rupees preset", sizeof(statusLabel) - 1);
+      break;
     case 'L':
     case 'l':
-      strncpy(statusLabel, "Preset mode", sizeof(statusLabel) - 1);
+      strncpy(statusLabel, "Liters preset", sizeof(statusLabel) - 1);
       break;
     default:
       strncpy(statusLabel, "-", sizeof(statusLabel) - 1);
@@ -164,6 +166,12 @@ static bool decodeType33(const String &payload) {
   setStatus(status[0]);
   totalAmount = amount;
   volumeLiters = liters;
+  if (status[0] == 'P' || status[0] == 'p') {
+    totalAmount = amount * 100.0;
+  } else if (status[0] == 'L' || status[0] == 'l') {
+    totalAmount = 0;
+    volumeLiters = amount * 100.0;
+  }
   unitRate = rate;
   totalMeter = meter;
   haveLive = true;
@@ -220,7 +228,7 @@ static bool decodeType37(const String &payload) {
 }
 
 static bool decodeType29(const String &payload) {
-  if (payload.length() != 29) {
+  if (payload.length() != 30) {
     return false;
   }
   const char *s = payload.c_str();
@@ -284,7 +292,7 @@ static void routePayload(String payload) {
     case 37:
       decodeType37(payload);
       break;
-    case 29:
+    case 30:
       decodeType29(payload);
       break;
     case 36:

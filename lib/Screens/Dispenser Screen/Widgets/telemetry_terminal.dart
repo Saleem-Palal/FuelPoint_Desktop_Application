@@ -112,7 +112,7 @@ class _TelemetryTerminalState extends State<TelemetryTerminal> {
                       selected: widget.monitor.unitFilter == null,
                       onTap: () => widget.onUnitFilter(null),
                     ),
-                    for (final int unitId in dispenserUnitIds)
+                    for (int unitId = 1; unitId <= kHardwareDispenserUnitCount; unitId++)
                       _FilterChip(
                         label: 'Unit $unitId',
                         selected: widget.monitor.unitFilter == unitId,

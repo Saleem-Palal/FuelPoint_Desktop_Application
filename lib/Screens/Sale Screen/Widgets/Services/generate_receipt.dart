@@ -13,9 +13,10 @@ import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../../../core/constants.dart';
+import '../../../../features/station/data/windows_escpos_spooler.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/domain/money_format.dart';
+import '../../../../utils/fuel_formatter.dart';
 
 /// Station copy, PDF layout, print, and share for the sale receipt.
 class ReceiptCopy {
@@ -28,14 +29,18 @@ class ReceiptCopy {
   static const String thankYouUrdu =
       'آپ کا شکریہ — آپ کا بھروسہ ہماری اولین ترجیح۔';
 
-  static const String developerName = AppBrand.developer;
-  static const String developerFooter =
-      'Developer: ${AppBrand.developer} · WhatsApp Support: 0331 245518';
-  static const String developerPitchUrdu =
-      'کسی بھی قسم کا سافٹ ویئر بنوانے کے لیے رابطہ کریں';
-
   static const String customerCopyBanner = 'COPY 1: CUSTOMER RECEIPT';
   static const String stationCopyBanner = 'COPY 2: STATION RECORD';
+
+  static String? bannerFor({
+    required PaymentMethod payment,
+    required bool stationCopy,
+  }) {
+    if (!payment.printsTwoCopies) {
+      return null;
+    }
+    return stationCopy ? stationCopyBanner : customerCopyBanner;
+  }
 
   static const String urduFontFamily = 'NotoNastaliqUrdu';
   static const String latinFontFamily = 'Roboto';
@@ -64,6 +69,7 @@ class ReceiptTicket {
     required this.rate,
     required this.amount,
     required this.cashierName,
+    this.helperName = '',
     required this.customerName,
     required this.vehicleNo,
     required this.payment,
@@ -80,7 +86,7 @@ class ReceiptTicket {
       fuelType: bay.fuelType,
       tokenNo: tokenNo,
       liters: _lcdDigits(bay.lastLiters),
-      rate: bay.rate.toStringAsFixed(2),
+      rate: FuelFormatter.lcdAverageRate(bay.rate),
       amount: _lcdDigits(bay.lastRupees),
       cashierName: bay.lastCashier,
       customerName: bay.lastCustomer,
@@ -95,10 +101,11 @@ class ReceiptTicket {
       unitId: txn.unitId,
       fuelType: txn.fuelType,
       tokenNo: txn.tokenNo,
-      liters: txn.volumeLiters.toStringAsFixed(2),
-      rate: txn.rate.toStringAsFixed(2),
-      amount: txn.amountPkr.toStringAsFixed(2),
+      liters: FuelFormatter.lcdVolume(txn.volumeLiters),
+      rate: FuelFormatter.lcdAverageRate(txn.rate),
+      amount: FuelFormatter.lcdDispenserAmount(txn.amountPkr),
       cashierName: txn.cashierName,
+      helperName: txn.helperName,
       customerName: txn.customerName,
       vehicleNo: txn.vehicleNo,
       payment: txn.payment,
@@ -113,6 +120,7 @@ class ReceiptTicket {
   final String rate;
   final String amount;
   final String cashierName;
+  final String helperName;
   final String customerName;
   final String vehicleNo;
   final PaymentMethod payment;
@@ -137,6 +145,14 @@ class ReceiptTicket {
     return trimmed;
   }
 
+  String get helperDisplay {
+    final String trimmed = helperName.trim();
+    if (trimmed.isEmpty) {
+      return '—';
+    }
+    return trimmed;
+  }
+
   String get paymentLabel => payment.label;
 
   String get tokenLabel => formatTokenNo(tokenNo);
@@ -145,10 +161,12 @@ class ReceiptTicket {
 
   String get pngFileName => 'receipt-$tokenLabel.png';
 
-  List<String> get udhaarCopyFileNames => <String>[
+  List<String> get dualCopyFileNames => <String>[
     'receipt-$tokenLabel-customer.pdf',
     'receipt-$tokenLabel-station.pdf',
   ];
+
+  List<String> get udhaarCopyFileNames => dualCopyFileNames;
 
   static String _lcdDigits(String raw) {
     return raw
@@ -163,6 +181,13 @@ class ReceiptGenerator {
 
   static final ReceiptGenerator instance = ReceiptGenerator._();
 
+  /// Fallback PDF envelope if RAW ESC/POS is unavailable.
+  static const PdfPageFormat thermal80 = PdfPageFormat(
+    80 * PdfPageFormat.mm,
+    double.infinity,
+    marginAll: 3 * PdfPageFormat.mm,
+  );
+
   /// Snapshot of the on-screen [ThermalReceiptView] — same fonts and layout.
   Future<Uint8List> capturePreview(
     GlobalKey previewKey, {
@@ -176,9 +201,6 @@ class ReceiptGenerator {
     final RenderObject? box = context.findRenderObject();
     if (box is! RenderRepaintBoundary) {
       throw StateError('Receipt preview cannot be captured');
-    }
-    if (box.debugNeedsPaint) {
-      await Future<void>.delayed(const Duration(milliseconds: 16));
     }
     final ui.Image image = await box.toImage(pixelRatio: pixelRatio);
     try {
@@ -200,31 +222,20 @@ class ReceiptGenerator {
     }
     final pw.Document pdf = pw.Document();
     for (final Uint8List png in pngs) {
-      final ui.Codec codec = await ui.instantiateImageCodec(png);
-      final ui.FrameInfo frame = await codec.getNextFrame();
-      final int widthPx = frame.image.width;
-      final int heightPx = frame.image.height;
-      frame.image.dispose();
-      if (widthPx <= 0 || heightPx <= 0) {
-        throw StateError('Receipt snapshot is empty');
-      }
-      final double pageWidth = 80 * PdfPageFormat.mm;
-      final double pageHeight = pageWidth * (heightPx / widthPx);
       final pw.MemoryImage image = pw.MemoryImage(png);
       pdf.addPage(
         pw.Page(
-          pageFormat: PdfPageFormat(pageWidth, pageHeight, marginAll: 0),
+          pageFormat: thermal80,
           build: (pw.Context context) {
-            return pw.Image(image, fit: pw.BoxFit.fill);
+            return pw.Align(
+              alignment: pw.Alignment.topCenter,
+              child: pw.Image(image, fit: pw.BoxFit.fitWidth),
+            );
           },
         ),
       );
     }
     return pdf.save();
-  }
-
-  Future<Uint8List> _pdfFromPng(Uint8List png) async {
-    return _pdfFromPngs(<Uint8List>[png]);
   }
 
   String _whatsAppCaption(ReceiptTicket ticket) {
@@ -239,7 +250,8 @@ class ReceiptGenerator {
       'Customer  ${ticket.customerName}',
       'Vehicle  ${ticket.vehicleDisplay}',
       'Payment  ${ticket.paymentLabel}',
-      'Cashier  ${ticket.cashierName}',
+      'Manager  ${ticket.cashierName}',
+      'Helper  ${ticket.helperDisplay}',
     ].join('\n');
   }
 
@@ -304,15 +316,27 @@ class ReceiptGenerator {
   }
 
   Future<void> printCapturedPng(Uint8List png, ReceiptTicket ticket) async {
-    if (ticket.payment == PaymentMethod.udhaar) {
-      await printPngJobs(
-        <Uint8List>[png, png],
-        fileNames: ticket.udhaarCopyFileNames,
-        parallel: true,
+    if (ticket.payment.printsTwoCopies) {
+      await printDualCopies(
+        customerPng: png,
+        stationPng: png,
+        ticket: ticket,
       );
       return;
     }
     await printPng(png, fileName: ticket.fileName);
+  }
+
+  Future<void> printDualCopies({
+    required Uint8List customerPng,
+    required Uint8List stationPng,
+    required ReceiptTicket ticket,
+  }) async {
+    await printPngJobs(
+      <Uint8List>[customerPng, stationPng],
+      fileNames: ticket.dualCopyFileNames,
+      parallel: true,
+    );
   }
 
   Future<void> printUdhaarCopies({
@@ -320,10 +344,10 @@ class ReceiptGenerator {
     required Uint8List stationPng,
     required ReceiptTicket ticket,
   }) async {
-    await printPngJobs(
-      <Uint8List>[customerPng, stationPng],
-      fileNames: ticket.udhaarCopyFileNames,
-      parallel: true,
+    await printDualCopies(
+      customerPng: customerPng,
+      stationPng: stationPng,
+      ticket: ticket,
     );
   }
 
@@ -331,23 +355,23 @@ class ReceiptGenerator {
     List<Uint8List> pngs, {
     required String fileName,
   }) async {
-    final Uint8List pdfBytes = await _pdfFromPngs(pngs);
-    try {
-      await Printing.layoutPdf(
-        onLayout: (PdfPageFormat format) async => pdfBytes,
-        name: fileName,
-      );
-      return;
-    } catch (error, stack) {
-      debugPrint('Print layout failed: $error\n$stack');
+    if (!kIsWeb && Platform.isWindows) {
+      try {
+        await WindowsEscPosSpooler.instance.printPngs(pngs);
+        return;
+      } catch (error, stack) {
+        debugPrint('ESC/POS spool failed: $error\n$stack');
+      }
     }
-    final File file = await _writeTempFile(fileName, pdfBytes);
-    final bool opened = await launchUrl(
-      Uri.file(file.path),
-      mode: LaunchMode.externalApplication,
+    final Uint8List pdfBytes = await _pdfFromPngs(pngs);
+    final bool printed = await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => pdfBytes,
+      name: fileName,
+      format: thermal80,
+      dynamicLayout: false,
     );
-    if (!opened) {
-      throw Exception('Could not open the print dialog');
+    if (!printed) {
+      throw Exception('Print cancelled or the printer did not accept the job');
     }
   }
 

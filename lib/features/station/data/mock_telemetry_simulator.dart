@@ -4,8 +4,8 @@ import '../domain/dispenser_models.dart';
 
 /// Hardware-less telemetry source for live client demos.
 ///
-/// Emits the same [DispenserTelemetry] packets the ESP32/ESP-01 bridge will
-/// send, so [StationController] has a single ingest path for mock and live wire.
+/// Emits the same [DispenserTelemetry] packets the ESP32 bridge will send,
+/// so [StationController] has a single ingest path for mock and live wire.
 class MockTelemetrySimulator {
   MockTelemetrySimulator({required this.emit});
 
@@ -33,7 +33,7 @@ class MockTelemetrySimulator {
     required int unitId,
     required double rate,
     required double targetLiters,
-    required int meterCount,
+    required double meterCount,
     required bool keypadLocked,
   }) {
     cancel(unitId);
@@ -71,11 +71,11 @@ class MockTelemetrySimulator {
     });
   }
 
-  /// DISPENSING at 0.00 L for ~12s, then IDLE hang-up (zero-volume abort).
+  /// DISPENSING at 0.00 L, then IDLE hang-up (zero-volume abort).
   void simulateZeroVolumeAbort({
     required int unitId,
     required double rate,
-    required int meterCount,
+    required double meterCount,
     required bool keypadLocked,
   }) {
     cancel(unitId);

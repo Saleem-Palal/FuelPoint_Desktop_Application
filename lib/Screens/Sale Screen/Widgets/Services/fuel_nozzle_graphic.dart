@@ -17,9 +17,11 @@ class FuelNozzleGraphic extends StatelessWidget {
   /// Increase to move the nozzle in that direction (pixels).
   static const double up = 0;
   static const double down = 0;
-  static const double left = 2;
+  static const double left = 4;
   static const double right = 0;
-  // -------------------
+
+  /// Returns an Offset that can be used to move the nozzle image.
+  static Offset get nozzleOffset => Offset(right - left, down - up);
 
   static const ColorFilter _offlineFilter = ColorFilter.matrix(<double>[
     0.2126,
@@ -54,6 +56,7 @@ class FuelNozzleGraphic extends StatelessWidget {
       asset,
       width: width,
       height: height,
+      alignment: Alignment(nozzleOffset.dx, nozzleOffset.dy),
       fit: BoxFit.fill,
       filterQuality: FilterQuality.medium,
     );

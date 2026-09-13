@@ -266,15 +266,15 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
 
     final String actionLabel;
     final bool actionEnabled;
-    if (bay.isOffline) {
-      actionLabel = 'Unit Offline';
-      actionEnabled = false;
+    if (bay.canConfirmPayment) {
+      actionLabel = 'Confirm';
+      actionEnabled = _canSubmit(bay);
     } else if (bay.isDispensing) {
       actionLabel = 'Confirm';
       actionEnabled = false;
-    } else if (bay.canConfirmPayment) {
-      actionLabel = 'Confirm';
-      actionEnabled = _canSubmit(bay);
+    } else if (bay.isOffline) {
+      actionLabel = 'Unit Offline';
+      actionEnabled = false;
     } else {
       actionLabel = 'Waiting';
       actionEnabled = false;

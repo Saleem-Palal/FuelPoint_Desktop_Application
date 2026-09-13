@@ -2,8 +2,25 @@ class AppBrand {
   static const String name = 'FuelPoint';
   static const String tagline = 'Station Control';
   static const String developer = 'RetroSoft';
-  static const String version = '1.0.0.1';
+  static const String version = '1.0.0.7';
   static const String versionLabel = 'v$version';
+
+  static const List<String> releaseNotes = <String>[
+    'Shift Management Cashier Issue & Workflow',
+    'Timer for Auto Lock Owner Access',
+    'LCD Font Size Increase',
+    'Toggle Show/Hide 5th Unit in Settings',
+    'Shift Wise Data Filter in Sale Ledger',
+    'Sale Receipt Cashier Name Fix. And helper name.',
+    'Remove Save as Draft from Purchase Screen',
+    'Purchase Calculations fix',
+    'Add Edit button in purchase Screen',
+    'Remove Purchase Details from Reconciliation Sidebar and Amount should not be in decimal',
+    'Remove Initial Dip',
+    'Low Stock Threshold Notification Alert',
+    'Owner Access Lock applies to all screens except Sale and Customers (Udhaar)',
+    'Simulation demo removed from the release build',
+  ];
 }
 
 class FdxDefaults {
@@ -27,10 +44,4 @@ class FdxDefaults {
   ];
 
   static const String boardSsidPrefix = 'FDX-ALPHA';
-}
-
-/// Office-router bridge (ESP32-2). Separate from the dispenser AP defaults.
-class Esp32BridgeDefaults {
-  static const String defaultIp = '192.168.100.253';
-  static const int defaultPort = 9877;
 }

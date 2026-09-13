@@ -6,44 +6,47 @@ import 'package:fuel_dispenser/features/access/domain/access_policy.dart';
 
 void main() {
   group('AccessPolicy', () {
-    test('locks every screen except sales and customers', () {
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.dashboard),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.purchase),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.ledger),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.reports),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.shifts),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(
-          ShellDestinations.dispenserMonitor,
-        ),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.settings),
-        isTrue,
-      );
-      expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.managers),
-        isTrue,
-      );
-    });
+    test(
+      'locks owner-only screens and keeps sale and customers open',
+      () {
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.dashboard),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.purchase),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.ledger),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.reports),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(
+            ShellDestinations.dispenserMonitor,
+          ),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.settings),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.managers),
+          isTrue,
+        );
+        expect(
+          AccessPolicy.destinationRequiresOwner(ShellDestinations.shifts),
+          isTrue,
+        );
+      },
+    );
 
-    test('keeps sales and customers unlocked', () {
+    test('keeps sale and customers unlocked; shifts requires owner', () {
       expect(
         AccessPolicy.isManagerUnlockedDestination(ShellDestinations.sale),
         isTrue,
@@ -53,12 +56,20 @@ void main() {
         isTrue,
       );
       expect(
+        AccessPolicy.isManagerUnlockedDestination(ShellDestinations.shifts),
+        isFalse,
+      );
+      expect(
         AccessPolicy.destinationRequiresOwner(ShellDestinations.sale),
         isFalse,
       );
       expect(
         AccessPolicy.destinationRequiresOwner(ShellDestinations.customers),
         isFalse,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.shifts),
+        isTrue,
       );
     });
   });
@@ -105,6 +116,16 @@ void main() {
         isNull,
       );
     });
+  });
+
+  test('default owner auto-lock is 5 minutes', () {
+    expect(OwnerAutoLockMinutes.defaultMinutes, 5);
+    expect(OwnerAutoLockMinutes.sanitize(null), 5);
+    expect(OwnerAutoLockMinutes.sanitize(7), 5);
+    expect(OwnerAutoLockMinutes.parse('5'), 5);
+    expect(OwnerAutoLockMinutes.parse('0'), OwnerAutoLockMinutes.off);
+    expect(OwnerAutoLockMinutes.label(5), '5 minutes');
+    expect(OwnerAutoLockMinutes.label(0), 'Off');
   });
 
   test('default owner PIN hashes with SHA-256', () {

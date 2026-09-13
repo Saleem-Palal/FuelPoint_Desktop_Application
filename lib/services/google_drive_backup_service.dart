@@ -41,6 +41,22 @@ class GoogleDriveAccount {
   }
 }
 
+/// A `.db` snapshot stored in Drive folder `FuelPoint_Backups`.
+@immutable
+class GoogleDriveRemoteFile {
+  const GoogleDriveRemoteFile({
+    required this.id,
+    required this.name,
+    this.modifiedAt,
+    this.sizeBytes,
+  });
+
+  final String id;
+  final String name;
+  final DateTime? modifiedAt;
+  final int? sizeBytes;
+}
+
 /// Windows desktop Google Sign-In + Drive API v3 (`drive.file`).
 ///
 /// Official `google_sign_in` is not supported on Windows, and
@@ -237,6 +253,107 @@ class GoogleDriveBackupService {
       gdrive.DriveApi(client),
       knownFolderId: knownFolderId,
     );
+  }
+
+  /// Lists SQLite snapshots in `FuelPoint_Backups`, newest first.
+  Future<List<GoogleDriveRemoteFile>> listDatabaseBackups({
+    String? knownFolderId,
+  }) async {
+    try {
+      final AutoRefreshingAuthClient client = await _requireClient();
+      final gdrive.DriveApi api = gdrive.DriveApi(client);
+      final String folderId = await _ensureBackupFolder(
+        api,
+        knownFolderId: knownFolderId,
+      );
+      final gdrive.FileList listed = await _guardNetwork(() {
+        return api.files.list(
+          q: "'$folderId' in parents and trashed=false",
+          spaces: 'drive',
+          pageSize: 100,
+          orderBy: 'modifiedTime desc',
+          $fields: 'files(id,name,modifiedTime,size)',
+        );
+      });
+      final List<GoogleDriveRemoteFile> backups = <GoogleDriveRemoteFile>[];
+      for (final gdrive.File file in listed.files ?? const <gdrive.File>[]) {
+        final String id = (file.id ?? '').trim();
+        final String name = (file.name ?? '').trim();
+        if (id.isEmpty || name.isEmpty) {
+          continue;
+        }
+        if (!name.toLowerCase().endsWith('.db')) {
+          continue;
+        }
+        backups.add(
+          GoogleDriveRemoteFile(
+            id: id,
+            name: name,
+            modifiedAt: file.modifiedTime,
+            sizeBytes: int.tryParse('${file.size ?? ''}'),
+          ),
+        );
+      }
+      return backups;
+    } catch (error, stack) {
+      debugPrint(
+        'GoogleDriveBackupService.listDatabaseBackups failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
+  /// Downloads a Drive file to [destPath], replacing any existing file.
+  Future<File> downloadFile({
+    required String fileId,
+    required String destPath,
+  }) async {
+    try {
+      final String id = fileId.trim();
+      if (id.isEmpty) {
+        throw StateError('Google Drive file id is missing.');
+      }
+      final AutoRefreshingAuthClient client = await _requireClient();
+      final gdrive.DriveApi api = gdrive.DriveApi(client);
+      final Object media = await _guardNetwork(() {
+        return api.files.get(
+          id,
+          downloadOptions: gdrive.DownloadOptions.fullMedia,
+        );
+      });
+      if (media is! gdrive.Media) {
+        throw StateError('Google Drive did not return file bytes.');
+      }
+      final File dest = File(destPath);
+      final Directory parent = dest.parent;
+      if (!await parent.exists()) {
+        await parent.create(recursive: true);
+      }
+      if (await dest.exists()) {
+        await dest.delete();
+      }
+      final IOSink sink = dest.openWrite();
+      try {
+        await for (final List<int> chunk in media.stream.timeout(
+          networkTimeout,
+        )) {
+          sink.add(chunk);
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
+      if (!await dest.exists() || await dest.length() <= 0) {
+        throw StateError('Downloaded backup was empty.');
+      }
+      debugPrint('GoogleDriveBackupService: downloaded $id -> $destPath');
+      return dest;
+    } catch (error, stack) {
+      debugPrint(
+        'GoogleDriveBackupService.downloadFile failed: $error\n$stack',
+      );
+      rethrow;
+    }
   }
 
   Future<void> _promptBrowser(String url) async {

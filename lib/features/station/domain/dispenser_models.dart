@@ -1,4 +1,13 @@
-enum DispenserRunState { idle, dispensing, cycleComplete, offline }
+import 'dart:convert';
+
+enum DispenserRunState {
+  idle,
+  dispensing,
+  cycleComplete,
+  offline,
+  rupeesPreset,
+  litersPreset,
+}
 
 enum PaymentMethod { cash, udhaar, bankAccount, easyPaisa }
 
@@ -28,12 +37,39 @@ extension PaymentMethodX on PaymentMethod {
         return 'BANK / DIGITAL';
     }
   }
+
+  /// Udhaar and Account (bank / EasyPaisa) print customer + station copies.
+  bool get printsTwoCopies {
+    switch (this) {
+      case PaymentMethod.udhaar:
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+        return true;
+      case PaymentMethod.cash:
+        return false;
+    }
+  }
 }
 
 DispenserRunState dispenserStatusFromWire(String? raw) {
-  switch ((raw ?? '').trim().toUpperCase()) {
-    case 'DISPENSING':
-      return DispenserRunState.dispensing;
+  final String key = (raw ?? '').trim().toUpperCase();
+  if (key.contains('PUMP') || key == 'DISPENSING' || key == 'ACTIVE') {
+    return DispenserRunState.dispensing;
+  }
+  if (key.contains('LITER') && key.contains('PRESET')) {
+    return DispenserRunState.litersPreset;
+  }
+  if ((key.contains('RUPEE') || key.contains('AMOUNT')) &&
+      key.contains('PRESET')) {
+    return DispenserRunState.rupeesPreset;
+  }
+  if (key == 'P') {
+    return DispenserRunState.rupeesPreset;
+  }
+  if (key == 'L') {
+    return DispenserRunState.litersPreset;
+  }
+  switch (key) {
     case 'OFFLINE':
       return DispenserRunState.offline;
     case 'CYCLE_COMPLETE':
@@ -66,6 +102,7 @@ class DispenserBay {
     this.lastVehicleNo = '',
     this.lastPayment = PaymentMethod.cash,
     this.lastPacketAt,
+    this.lastEspTxId = '',
   });
 
   final int unitId;
@@ -75,16 +112,19 @@ class DispenserBay {
   final double amountPkr;
   final double volumeLiters;
   final double rate;
-  final int meterCount;
+  final double meterCount;
   final bool keypadLocked;
   final String lastRupees;
   final String lastLiters;
   final String lastTime;
+
+  /// Manager on the latest `sales_transactions` row for this unit.
   final String lastCashier;
   final String lastCustomer;
   final String lastVehicleNo;
   final PaymentMethod lastPayment;
   final DateTime? lastPacketAt;
+  final String lastEspTxId;
 
   static const double zeroVolumeEpsilon = 0.005;
 
@@ -93,7 +133,7 @@ class DispenserBay {
   bool get isOnline => !isOffline;
   bool get isCycleComplete => status == DispenserRunState.cycleComplete;
   bool get isZeroVolume => volumeLiters.abs() < zeroVolumeEpsilon;
-  bool get canConfirmPayment => isOnline && isCycleComplete && !isZeroVolume;
+  bool get canConfirmPayment => isCycleComplete && !isZeroVolume;
 
   String get productLabel => fuelType.toUpperCase();
 
@@ -102,7 +142,7 @@ class DispenserBay {
     double? amountPkr,
     double? volumeLiters,
     double? rate,
-    int? meterCount,
+    double? meterCount,
     bool? keypadLocked,
     String? lastRupees,
     String? lastLiters,
@@ -112,6 +152,7 @@ class DispenserBay {
     String? lastVehicleNo,
     PaymentMethod? lastPayment,
     DateTime? lastPacketAt,
+    String? lastEspTxId,
     bool clearLastPacket = false,
   }) {
     return DispenserBay(
@@ -134,6 +175,7 @@ class DispenserBay {
       lastPacketAt: clearLastPacket
           ? null
           : (lastPacketAt ?? this.lastPacketAt),
+      lastEspTxId: lastEspTxId ?? this.lastEspTxId,
     );
   }
 }
@@ -149,23 +191,140 @@ class DispenserTelemetry {
     required this.keypadLocked,
     this.rssiDbm,
     this.pulseCount,
+    this.txId = '',
+    this.cmd = '',
+    this.espToBoardLink,
+    this.pendingTxCount,
+    this.product = '',
   });
 
   final int unitId;
   final double amountPkr;
   final double volumeLiters;
   final double rate;
-  final int meterCount;
+  final double meterCount;
   final DispenserRunState status;
   final bool keypadLocked;
 
-  /// ESP-01 Wi-Fi RSSI in dBm when the gateway includes it.
+  /// ESP32 Wi-Fi RSSI in dBm when the heartbeat includes it.
   final int? rssiDbm;
 
   /// Raw GPIO 14 pulse encoder ticks. Falls back to [meterCount] in the UI.
   final int? pulseCount;
+  final String txId;
+  final String cmd;
+  final bool? espToBoardLink;
+  final int? pendingTxCount;
+  final String product;
 
-  int get encoderPulses => pulseCount ?? meterCount;
+  int get encoderPulses => pulseCount ?? meterCount.round();
+
+  bool get isNoSaleCmd {
+    final String upper = cmd.toUpperCase();
+    return upper == 'NO_SALE' || upper == 'ZERO_HANGUP';
+  }
+}
+
+/// FDX idle Type-33 redisplays the last sale. Confirm / relay / buzzer must
+/// use liters from the pumping window, not the idle LCD.
+double dispenserCycleLiters({
+  required double? lastPumpingLiters,
+  required double packetLiters,
+}) {
+  return lastPumpingLiters ?? packetLiters;
+}
+
+bool isNullHangupCycle({
+  required double? lastPumpingLiters,
+  required double packetLiters,
+}) {
+  return dispenserCycleLiters(
+        lastPumpingLiters: lastPumpingLiters,
+        packetLiters: packetLiters,
+      ).abs() <
+      DispenserBay.zeroVolumeEpsilon;
+}
+
+class PendingEspSale {
+  const PendingEspSale({
+    required this.txId,
+    required this.unitId,
+    required this.kind,
+    required this.amountPkr,
+    required this.volumeLiters,
+    required this.rate,
+    required this.meterCount,
+    this.product = '',
+  });
+
+  final String txId;
+  final int unitId;
+  final String kind;
+  final double amountPkr;
+  final double volumeLiters;
+  final double rate;
+  final double meterCount;
+  final String product;
+
+  bool get isIncomplete => kind.toLowerCase().contains('incomplete');
+
+  static PendingEspSale? tryParse(String raw) {
+    try {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return null;
+      }
+      final Map<String, dynamic> map = Map<String, dynamic>.from(decoded);
+      final String cmd = '${map['cmd'] ?? ''}'.toUpperCase();
+      if (cmd != 'QUEUE_REPLAY' &&
+          cmd != 'INTERRUPTED_TX' &&
+          cmd != 'INTERRUPTED_TRANSACTION') {
+        return null;
+      }
+      final String txId = '${map['tx_id'] ?? map['ack_tx_id'] ?? ''}'.trim();
+      if (txId.isEmpty) {
+        return null;
+      }
+      final Map<String, dynamic> tel = map['telemetry'] is Map
+          ? Map<String, dynamic>.from(map['telemetry'] as Map)
+          : map;
+      return PendingEspSale(
+        txId: txId,
+        unitId: int.tryParse('${map['unit'] ?? map['unit_id'] ?? '0'}') ?? 0,
+        kind: '${map['kind'] ?? map['status'] ?? 'UNSYNCED'}',
+        amountPkr: _espHundredths(
+          tel['amount'] ?? tel['amount_pkr'],
+          tel['amount_cents'],
+        ),
+        volumeLiters: _espHundredths(tel['liters'], tel['liter_cents']),
+        rate: _espHundredths(
+          tel['rate'] ?? tel['rate_pkr'],
+          tel['rate_cents'],
+        ),
+        meterCount: _espHundredths(
+          tel['meter'] ?? tel['total_meter'],
+          tel['meter_cents'],
+        ),
+        product: '${tel['product'] ?? ''}',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+double _espHundredths(Object? value, Object? cents) {
+  if (cents is int) {
+    return cents / 100.0;
+  }
+  if (cents is num) {
+    return cents.toInt() / 100.0;
+  }
+  final int? parsed = int.tryParse('${cents ?? ''}'.trim());
+  if (parsed != null) {
+    return parsed / 100.0;
+  }
+  return double.tryParse('${value ?? 0}') ?? 0;
 }
 
 class SystemLog {
@@ -207,11 +366,13 @@ class SaleTransaction {
     this.payment = PaymentMethod.cash,
     this.cashierName = 'Cashier',
     this.helperName = '',
+    this.shiftId = '',
     this.shiftName = 'Morning',
     this.notes = '',
     this.udhaarSettled = false,
     this.settledAmount = 0,
     this.settledAt,
+    this.espTxId = '',
   });
 
   final int? id;
@@ -230,11 +391,13 @@ class SaleTransaction {
   final PaymentMethod payment;
   final String cashierName;
   final String helperName;
+  final String shiftId;
   final String shiftName;
   final String notes;
   final bool udhaarSettled;
   final double settledAmount;
   final DateTime? settledAt;
+  final String espTxId;
 
   bool get isUnsettledUdhaar {
     return payment == PaymentMethod.udhaar && !udhaarSettled;
@@ -257,11 +420,13 @@ class SaleTransaction {
     PaymentMethod? payment,
     String? cashierName,
     String? helperName,
+    String? shiftId,
     String? shiftName,
     String? notes,
     bool? udhaarSettled,
     double? settledAmount,
     DateTime? settledAt,
+    String? espTxId,
   }) {
     return SaleTransaction(
       id: id ?? this.id,
@@ -280,11 +445,13 @@ class SaleTransaction {
       payment: payment ?? this.payment,
       cashierName: cashierName ?? this.cashierName,
       helperName: helperName ?? this.helperName,
+      shiftId: shiftId ?? this.shiftId,
       shiftName: shiftName ?? this.shiftName,
       notes: notes ?? this.notes,
       udhaarSettled: udhaarSettled ?? this.udhaarSettled,
       settledAmount: settledAmount ?? this.settledAmount,
       settledAt: settledAt ?? this.settledAt,
+      espTxId: espTxId ?? this.espTxId,
     );
   }
 }
@@ -341,8 +508,23 @@ class PurchaseTransaction {
 /// Active dispenser bays on the sale workspace (Unit 1 … Unit N).
 const int kDispenserUnitCount = 5;
 
+/// Hardware bays on Tenda System (Unit 5 stays hidden unless Settings enables it).
+const int kHardwareDispenserUnitCount = 4;
+
+/// Optional extra bay. Hidden on the Sale screen unless enabled in Settings.
+const int kOptionalDispenserUnitId = 5;
+
 List<int> get dispenserUnitIds =>
     List<int>.generate(kDispenserUnitCount, (int i) => i + 1);
+
+List<int> visibleDispenserUnitIds({required bool showUnit5}) {
+  if (showUnit5) {
+    return dispenserUnitIds;
+  }
+  return dispenserUnitIds
+      .where((int id) => id != kOptionalDispenserUnitId)
+      .toList();
+}
 
 class UnitEndpoint {
   const UnitEndpoint({
@@ -364,7 +546,10 @@ class UnitEndpoint {
   }
 
   static UnitEndpoint seedFor(int unitId) {
-    return UnitEndpoint(host: '192.168.1.${100 + unitId}', port: 8080);
+    return UnitEndpoint(
+      host: '192.168.0.${100 + (10 * unitId)}',
+      port: 81,
+    );
   }
 }
 
@@ -391,6 +576,20 @@ class StationState {
   final Map<int, String> abortNotices;
 
   String? abortNoticeFor(int unitId) => abortNotices[unitId];
+
+  /// WebSocket is open and the last JSON frame is younger than 3 s.
+  bool isUnitLinkOnline(int unitId, {DateTime? now}) {
+    final UnitEndpoint ep = endpoint(unitId);
+    if (!ep.connected) {
+      return false;
+    }
+    final DateTime? at = bay(unitId).lastPacketAt;
+    if (at == null) {
+      return true;
+    }
+    return (now ?? DateTime.now()).difference(at) <
+        const Duration(seconds: 3);
+  }
 
   UnitEndpoint endpoint(int unitId) {
     final UnitEndpoint? found = endpoints[unitId];
@@ -419,12 +618,12 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 150,
-          meterCount: 13454719,
+          meterCount: 13454719.863,
           keypadLocked: false,
-          lastRupees: 'Rs. 1,200.00',
-          lastLiters: '8.00 Ltr',
-          lastTime: '12:40 PM',
-          lastCashier: 'Ali',
+          lastRupees: '',
+          lastLiters: '',
+          lastTime: '',
+          lastCashier: '',
         );
       case 3:
         return const DispenserBay(
@@ -435,12 +634,12 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 200,
-          meterCount: 13450108,
+          meterCount: 13450108.004,
           keypadLocked: false,
-          lastRupees: 'Rs. 800.00',
-          lastLiters: '4.00 Ltr',
-          lastTime: '11:55 AM',
-          lastCashier: 'Cashier',
+          lastRupees: '',
+          lastLiters: '',
+          lastTime: '',
+          lastCashier: '',
         );
       case 4:
         return const DispenserBay(
@@ -451,12 +650,12 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 150,
-          meterCount: 13449880,
+          meterCount: 13449880.55,
           keypadLocked: false,
-          lastRupees: 'Rs. 600.00',
-          lastLiters: '4.00 Ltr',
-          lastTime: '11:30 AM',
-          lastCashier: 'Usman',
+          lastRupees: '',
+          lastLiters: '',
+          lastTime: '',
+          lastCashier: '',
         );
       case 5:
         return const DispenserBay(
@@ -467,12 +666,12 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 200,
-          meterCount: 13451200,
+          meterCount: 13451200.21,
           keypadLocked: false,
-          lastRupees: 'Rs. 900.00',
-          lastLiters: '4.50 Ltr',
-          lastTime: '11:10 AM',
-          lastCashier: 'Cashier',
+          lastRupees: '',
+          lastLiters: '',
+          lastTime: '',
+          lastCashier: '',
         );
       case 1:
       default:
@@ -484,12 +683,12 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 200,
-          meterCount: 13452342,
+          meterCount: 13452342.143,
           keypadLocked: false,
-          lastRupees: 'Rs. 1,500.00',
-          lastLiters: '7.50 Ltr',
-          lastTime: '12:30 PM',
-          lastCashier: 'Cashier',
+          lastRupees: '',
+          lastLiters: '',
+          lastTime: '',
+          lastCashier: '',
         );
     }
   }

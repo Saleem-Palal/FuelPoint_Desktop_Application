@@ -1,9 +1,20 @@
+import 'package:flutter/foundation.dart';
+
 import '../../../Shell/shell_navigation.dart';
+
+/// Production interlocks (owner PIN, LIVE-shift sales, ESP, crash recovery).
+/// Debug (`flutter run`) stays open so local coding is not blocked.
+/// Release / MSIX builds always enforce these guards.
+bool get shouldEnforceStationGuards => !kDebugMode;
+
+/// Owner Master PIN gate, Lock Owner Access, and idle auto-lock.
+/// Always on in the release MSIX so client demos include the lock workflow.
+bool get shouldEnforceOwnerAccessLock => !kDebugMode;
 
 /// Manager-first, owner-elevated destination policy.
 ///
-/// Only Sales and Customers stay unlocked for the on-duty manager. Every
-/// other shell destination requires [isOwnerElevated].
+/// Sale and Customers (Udhaar) stay unlocked for the on-duty manager.
+/// Every other shell destination requires [isOwnerElevated].
 class AccessPolicy {
   AccessPolicy._();
 
@@ -18,6 +29,36 @@ class AccessPolicy {
 
   static bool destinationRequiresOwner(int index) {
     return !isManagerUnlockedDestination(index);
+  }
+}
+
+/// Idle timeout for owner elevation. `0` disables auto-lock.
+class OwnerAutoLockMinutes {
+  OwnerAutoLockMinutes._();
+
+  static const int off = 0;
+  static const int defaultMinutes = 5;
+  static const List<int> choices = <int>[off, 1, 2, 5, 10, 15, 30];
+
+  static String label(int minutes) {
+    if (minutes <= 0) {
+      return 'Off';
+    }
+    if (minutes == 1) {
+      return '1 minute';
+    }
+    return '$minutes minutes';
+  }
+
+  static int sanitize(int? minutes) {
+    if (minutes != null && choices.contains(minutes)) {
+      return minutes;
+    }
+    return defaultMinutes;
+  }
+
+  static int parse(String? raw) {
+    return sanitize(int.tryParse(raw?.trim() ?? ''));
   }
 }
 

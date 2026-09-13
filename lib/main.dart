@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart'
     hide ChangeNotifierProvider;
@@ -10,7 +13,6 @@ import 'Shell/shell_navigation.dart';
 import 'core/constants.dart';
 import 'core/theme/dispensr_theme.dart';
 import 'features/dashboard/dashboard_controller.dart';
-import 'features/esp32_bridge/presentation/esp32_bridge_controller.dart';
 import 'providers/auth_provider.dart';
 import 'providers/onboarding_provider.dart';
 import 'services/database_helper.dart';
@@ -49,21 +51,22 @@ class FdxApp extends StatefulWidget {
 
 class _FdxAppState extends State<FdxApp> {
   late final DashboardController _controller;
-  late final Esp32BridgeController _bridgeController;
 
   @override
   void initState() {
     super.initState();
     _controller = DashboardController();
     _controller.start();
-    _bridgeController = Esp32BridgeController();
   }
 
   @override
   void dispose() {
     _controller.dispose();
-    _bridgeController.dispose();
-    DatabaseHelper.instance.close();
+    // Do not close SQLite on debug dispose — hot restart reopens the same
+    // file from a new isolate while this close() is still holding the lock.
+    if (!kDebugMode) {
+      unawaited(DatabaseHelper.instance.close());
+    }
     super.dispose();
   }
 
@@ -72,9 +75,6 @@ class _FdxAppState extends State<FdxApp> {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<DashboardController>.value(value: _controller),
-        ChangeNotifierProvider<Esp32BridgeController>.value(
-          value: _bridgeController,
-        ),
       ],
       child: MaterialApp(
         title: AppBrand.name,

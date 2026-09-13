@@ -5,7 +5,6 @@ import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/station/data/dispenser_socket_manager.dart';
 import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/dispenser_monitor_models.dart';
-import '../../../features/station/presentation/station_providers.dart';
 
 class GatewayHeaderCard extends StatelessWidget {
   const GatewayHeaderCard({
@@ -22,8 +21,11 @@ class GatewayHeaderCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final int active = station.endpoints.values
-        .where((UnitEndpoint endpoint) => endpoint.connected)
+    final int active = station.endpoints.entries
+        .where(
+          (MapEntry<int, UnitEndpoint> row) =>
+              row.key != kOptionalDispenserUnitId && row.value.connected,
+        )
         .length;
     final bool muxUp = active > 0;
     final bool heartbeatLost = station.bays.values.any((DispenserBay bay) {
@@ -50,7 +52,7 @@ class GatewayHeaderCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Text(
-            'FDX ALPHA  →  FDX ESP-01  →  Bay ESP-01  →  UART TX/RX  →  ESP32  →  ${StationNetDefaults.officeSsid}  →  App',
+            'FDX ALPHA  →  ESP32  →  Tenda System  →  App',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -87,7 +89,7 @@ class GatewayHeaderCard extends StatelessWidget {
                         _MetricChip(
                           icon: Icons.dns_outlined,
                           label: 'Bay sockets',
-                          value: '$active / $kDispenserUnitCount Connected',
+                          value: '$active / $kHardwareDispenserUnitCount Connected',
                           good: active > 0,
                         ),
                       ],
@@ -110,7 +112,7 @@ class GatewayHeaderCard extends StatelessWidget {
                           child: _MetricChip(
                             icon: Icons.dns_outlined,
                             label: 'Bay sockets',
-                            value: '$active / $kDispenserUnitCount Connected',
+                            value: '$active / $kHardwareDispenserUnitCount Connected',
                             good: active > 0,
                           ),
                         ),
@@ -187,7 +189,7 @@ class _GatewayStatusBlock extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                'CENTRAL ESP32 · ${StationNetDefaults.officeSsid}',
+                'UNIT ESP32 · ${StationNetDefaults.officeSsid}',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w700,

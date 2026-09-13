@@ -5,8 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
-import '../../../features/access/presentation/access_controller.dart';
-import '../../../features/access/presentation/owner_pin_verification_modal.dart';
 import '../../../features/shift/data/shift_summary_export.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
@@ -140,6 +138,14 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
       setState(() {
         _busy = false;
         _pinError = 'PIN does not match the selected manager.';
+      });
+      return;
+    }
+    if (result.outcome == HandoverOutcome.baysDispensing) {
+      setState(() {
+        _busy = false;
+        _pinError =
+            'Handover Blocked: Bay #${result.blockedBayId ?? 0} is actively dispensing. Wait for nozzle stowage.';
       });
       return;
     }
@@ -418,26 +424,13 @@ class _ShiftReconciliationOverlayState
       _busy = true;
     });
     try {
-      final ShiftPdfShareResult result = await ShiftSummaryExport.instance
-          .sharePdfViaWhatsApp(_preview(snapshot));
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result.shared
-                ? 'Frozen shift report saved and ready to share.\n${result.file.path}'
-                : 'Frozen shift report saved.\n${result.file.path}',
-          ),
-        ),
-      );
+      await ShiftSummaryExport.instance.printPdf(_preview(snapshot));
     } catch (error) {
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not export shift report: $error')),
+        SnackBar(content: Text('Could not generate PDF: $error')),
       );
     } finally {
       if (mounted) {
@@ -486,57 +479,24 @@ class _ShiftReconciliationOverlayState
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<ReconciliationSnapshot?>(reconciliationShiftNotifierProvider, (
+      ReconciliationSnapshot? previous,
+      ReconciliationSnapshot? next,
+    ) {
+      if (previous == null && next != null && _collapsed) {
+        setState(() {
+          _collapsed = false;
+        });
+      }
+    });
     final ReconciliationSnapshot? snapshot = ref.watch(
       reconciliationShiftNotifierProvider,
     );
     if (snapshot == null) {
       return const SizedBox.shrink();
     }
-    final bool ownerElevated = ref
-        .watch(accessControllerProvider)
-        .isOwnerElevated;
     final ManagerShiftRecord? live = ref.watch(activeShiftNotifierProvider);
     final DispensrTokens tokens = DispensrTokens.of(context);
-    if (!ownerElevated) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: Material(
-          color: tokens.card,
-          elevation: 16,
-          shadowColor: tokens.ink.withValues(alpha: 0.18),
-          child: InkWell(
-            onTap: () {
-              unawaited(showOwnerPinVerificationModal(context));
-            },
-            child: SizedBox(
-              width: 56,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Column(
-                  children: <Widget>[
-                    Icon(Icons.lock_outline, color: tokens.coralPressed),
-                    const SizedBox(height: 12),
-                    RotatedBox(
-                      quarterTurns: 1,
-                      child: Text(
-                        'Tally locked · ${snapshot.shift.shiftId}',
-                        maxLines: 1,
-                        style: TextStyle(
-                          fontFamily: 'Roboto',
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                          color: tokens.ink,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
     final double? actual = _actualCashOf();
     final double? variance = actual == null
         ? null
@@ -549,45 +509,74 @@ class _ShiftReconciliationOverlayState
 
     return Align(
       alignment: Alignment.centerRight,
-      child: Material(
-        color: tokens.card,
-        elevation: 16,
-        shadowColor: tokens.ink.withValues(alpha: 0.18),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          width: _collapsed ? 56 : 540,
-          child: _collapsed
-              ? _CollapsedRail(
-                  tokens: tokens,
-                  shift: snapshot.shift,
-                  onExpand: () {
-                    setState(() {
-                      _collapsed = false;
-                    });
-                  },
-                )
-              : _ReconciliationBody(
-                  tokens: tokens,
-                  snapshot: snapshot,
-                  live: live,
-                  variance: variance,
-                  varianceColor: varianceColor,
-                  actualController: _actual,
-                  notesController: _notes,
-                  decimalFormatter: _decimalFormatter,
-                  busy: _busy,
-                  canFinalize: actual != null && actual >= 0 && !_busy,
-                  onCollapse: () {
-                    setState(() {
-                      _collapsed = true;
-                    });
-                  },
-                  onExport: () {
-                    unawaited(_export(snapshot));
-                  },
-                  onFinalize: _finalize,
-                ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(0, 12, 12, 12),
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final double panelHeight = constraints.maxHeight;
+            return Material(
+              color: tokens.card,
+              elevation: 16,
+              shadowColor: tokens.ink.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(tokens.radius20),
+              clipBehavior: Clip.antiAlias,
+              child: TweenAnimationBuilder<double>(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                tween: Tween<double>(end: _collapsed ? 52 : 400),
+                builder: (BuildContext context, double width, Widget? child) {
+                  return SizedBox(
+                    width: width,
+                    height: panelHeight,
+                    child: child,
+                  );
+                },
+                child: _collapsed
+                    ? _CollapsedRail(
+                        tokens: tokens,
+                        shift: snapshot.shift,
+                        onExpand: () {
+                          setState(() {
+                            _collapsed = false;
+                          });
+                        },
+                      )
+                    : OverflowBox(
+                        alignment: Alignment.topLeft,
+                        minWidth: 400,
+                        maxWidth: 400,
+                        minHeight: panelHeight,
+                        maxHeight: panelHeight,
+                        child: SizedBox(
+                          width: 400,
+                          height: panelHeight,
+                          child: _ReconciliationBody(
+                            tokens: tokens,
+                            snapshot: snapshot,
+                            live: live,
+                            variance: variance,
+                            varianceColor: varianceColor,
+                            actualController: _actual,
+                            notesController: _notes,
+                            decimalFormatter: _decimalFormatter,
+                            busy: _busy,
+                            canFinalize:
+                                actual != null && actual >= 0 && !_busy,
+                            onCollapse: () {
+                              setState(() {
+                                _collapsed = true;
+                              });
+                            },
+                            onExport: () {
+                              unawaited(_export(snapshot));
+                            },
+                            onFinalize: _finalize,
+                          ),
+                        ),
+                      ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -610,21 +599,26 @@ class _CollapsedRail extends StatelessWidget {
     return InkWell(
       onTap: onExpand,
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        padding: const EdgeInsets.symmetric(vertical: 12),
         child: Column(
           children: <Widget>[
             Icon(Icons.account_balance_wallet_outlined, color: tokens.coral),
-            const SizedBox(height: 12),
-            RotatedBox(
-              quarterTurns: 1,
-              child: Text(
-                'Pending tally · ${shift.shiftId}',
-                maxLines: 1,
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 12,
-                  color: tokens.ink,
+            const SizedBox(height: 10),
+            Expanded(
+              child: Center(
+                child: RotatedBox(
+                  quarterTurns: 1,
+                  child: Text(
+                    'Pending tally · ${shift.shiftId}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: 'Roboto',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                      color: tokens.ink,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -673,18 +667,27 @@ class _ReconciliationBody extends StatelessWidget {
     final ManagerShiftRecord? liveShift = live;
     final double? varianceAmount = variance;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Row(
             children: <Widget>[
-              Icon(
-                Icons.account_balance_wallet_outlined,
-                size: 20,
-                color: tokens.coral,
+              Container(
+                width: 32,
+                height: 32,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: tokens.coral.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(tokens.radius12),
+                ),
+                child: Icon(
+                  Icons.account_balance_wallet_outlined,
+                  size: 16,
+                  color: tokens.coral,
+                ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -693,16 +696,17 @@ class _ReconciliationBody extends StatelessWidget {
                       'Deferred cash tally',
                       style: TextStyle(
                         fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                         fontSize: 15,
                         color: tokens.ink,
                       ),
                     ),
+                    const SizedBox(height: 2),
                     Text(
                       '${shift.shiftId} · ${shift.managerName} · frozen',
                       style: TextStyle(
                         fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w400,
                         fontSize: 12,
                         color: tokens.inkMuted,
                       ),
@@ -712,6 +716,9 @@ class _ReconciliationBody extends StatelessWidget {
               ),
               IconButton(
                 tooltip: 'Collapse — station stays live',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                 onPressed: onCollapse,
                 icon: Icon(Icons.chevron_right, color: tokens.inkMuted),
               ),
@@ -719,66 +726,141 @@ class _ReconciliationBody extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
             decoration: BoxDecoration(
-              color: tokens.good.withValues(alpha: 0.10),
+              color: tokens.good.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(tokens.radius12),
-              border: Border.all(color: tokens.good.withValues(alpha: 0.35)),
             ),
-            child: Text(
-              liveShift == null
-                  ? 'This table is frozen. New sales will not appear here.'
-                  : 'Live ops: ${liveShift.shiftId} · ${liveShift.managerName}. This tally will not receive those sales.',
-              style: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w500,
-                fontSize: 11,
-                color: tokens.ink,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              _MiniKpi(
-                label: 'Direct cash',
-                value: formatPkr(metrics.fuelCashSales),
-              ),
-              _MiniKpi(
-                label: 'Udhaar issued',
-                value: formatPkr(metrics.udhaarSales),
-              ),
-              _MiniKpi(
-                label: 'Bank payments',
-                value: formatPkr(metrics.accountSales),
-              ),
-              _MiniKpi(
-                label: 'Udhaar recovery',
-                value: formatPkr(metrics.udhaarRecoveryTotal),
-              ),
-              _MiniKpi(
-                label: 'Purchases / expenses',
-                value: formatPkr(metrics.purchaseTotal),
-              ),
-              _MiniKpi(
-                label: 'Expected cash',
-                value: formatPkr(metrics.expectedCashInHand),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Actual Physical Cash Collected (PKR)',
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w600,
-              fontSize: 12,
-              color: tokens.inkMuted,
+            child: Row(
+              children: <Widget>[
+                Icon(Icons.info_outline, size: 14, color: tokens.good),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    liveShift == null
+                        ? 'This table is frozen. New sales will not appear here.'
+                        : 'Live ops: ${liveShift.shiftId} · ${liveShift.managerName}. This tally will not receive those sales.',
+                    style: TextStyle(
+                      fontFamily: 'Roboto',
+                      fontWeight: FontWeight.w500,
+                      fontSize: 11.5,
+                      color: tokens.good,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 6),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: _MiniKpi(
+                  label: 'Total sale',
+                  value: formatPkr(metrics.totalSale),
+                  icon: Icons.payments_outlined,
+                  tint: tokens.good,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _MiniKpi(
+                  label: 'Udhaar issued',
+                  value: formatPkr(metrics.udhaarSales),
+                  icon: Icons.credit_card_off_outlined,
+                  tint: tokens.coral,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: _MiniKpi(
+                  label: 'Account payments',
+                  value: formatPkr(metrics.accountSales),
+                  icon: Icons.account_balance_outlined,
+                  tint: tokens.inkMuted,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _MiniKpi(
+                  label: 'Udhaar recovery',
+                  value: formatPkr(metrics.udhaarRecoveryTotal),
+                  icon: Icons.replay_outlined,
+                  tint: tokens.warn,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+            decoration: BoxDecoration(
+              color: tokens.coral.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(tokens.radius12),
+              border: Border.all(color: tokens.coral, width: 1.5),
+            ),
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        'Expected cash in hand',
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w500,
+                          fontSize: 10,
+                          color: tokens.coralPressed,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        formatPkr(metrics.expectedCashInHand),
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                          height: 1.1,
+                          color: tokens.coralPressed,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        ShiftWindowMetrics.expectedCashFormula,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w400,
+                          fontSize: 10,
+                          color: tokens.coralPressed.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.account_balance_wallet_outlined,
+                  size: 19,
+                  color: tokens.coral,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Actual physical cash collected (PKR)',
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w500,
+              fontSize: 12.5,
+              color: tokens.ink,
+            ),
+          ),
+          const SizedBox(height: 4),
           TextField(
             controller: actualController,
             enabled: !busy,
@@ -787,22 +869,23 @@ class _ReconciliationBody extends StatelessWidget {
             style: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w600,
-              fontSize: 14,
+              fontSize: 13.5,
               color: tokens.ink,
             ),
             decoration: const InputDecoration(
               hintText: '0.00',
-              suffixText: 'Rs',
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Container(
-            height: 44,
+            height: 34,
             padding: const EdgeInsets.symmetric(horizontal: 12),
             decoration: BoxDecoration(
-              color: varianceColor.withValues(alpha: 0.08),
+              color: tokens.canvas,
               borderRadius: BorderRadius.circular(tokens.radius12),
-              border: Border.all(color: varianceColor.withValues(alpha: 0.35)),
+              border: Border.all(color: tokens.line),
             ),
             child: Row(
               children: <Widget>[
@@ -816,77 +899,97 @@ class _ReconciliationBody extends StatelessWidget {
                       : 'MATCHED',
                   style: TextStyle(
                     fontFamily: 'Roboto',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 10,
-                    letterSpacing: 0.8,
-                    color: varianceColor,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13.5,
+                    color: varianceAmount == null
+                        ? tokens.inkMuted
+                        : varianceColor,
                   ),
                 ),
                 const Spacer(),
-                Text(
-                  varianceAmount == null
-                      ? '—'
-                      : formatSignedPkr(varianceAmount),
-                  style: TextStyle(
-                    fontFamily: 'Roboto',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
-                    color: varianceColor,
+                if (varianceAmount == null)
+                  Icon(Icons.expand_more, size: 16, color: tokens.inkMuted)
+                else
+                  Text(
+                    formatSignedPkr(varianceAmount),
+                    style: TextStyle(
+                      fontFamily: 'Roboto',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                      color: varianceColor,
+                    ),
                   ),
-                ),
               ],
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           TextField(
             controller: notesController,
             enabled: !busy,
             style: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w500,
-              fontSize: 13,
+              fontSize: 13.5,
               color: tokens.ink,
             ),
-            decoration: const InputDecoration(hintText: 'Handover remarks…'),
+            decoration: const InputDecoration(
+              hintText: 'Handover remarks…',
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Text(
             'Frozen sales · ${shift.shiftId}',
             style: TextStyle(
               fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              fontSize: 12.5,
               color: tokens.ink,
             ),
           ),
           const SizedBox(height: 6),
           Expanded(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(tokens.radius12),
-                border: Border.all(color: tokens.line),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(tokens.radius12),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(tokens.radius12),
+                  border: Border.all(color: tokens.line),
+                ),
+                child: metrics.sales.isEmpty
+                    ? const ShiftEmptyHint(
+                        message: 'No fuel sales tagged to this manager shift.',
+                      )
+                    : ShiftSalesTable(
+                        rows: metrics.sales,
+                        showFooter: true,
+                        compact: true,
+                      ),
               ),
-              child: metrics.sales.isEmpty
-                  ? const ShiftEmptyHint(
-                      message: 'No fuel sales tagged to this manager shift.',
-                    )
-                  : ShiftSalesTable(rows: metrics.sales, showFooter: true),
             ),
           ),
-          const SizedBox(height: 10),
-          DsPillButton(
-            label: busy ? 'Exporting…' : 'Export PDF to WhatsApp',
-            variant: DsPillVariant.good,
-            compact: true,
-            icon: Icons.picture_as_pdf_outlined,
-            onPressed: busy ? null : onExport,
-          ),
           const SizedBox(height: 8),
-          DsPillButton(
-            label: 'Finalize & Save Shift Data',
-            compact: true,
-            icon: Icons.lock_outline,
-            onPressed: canFinalize ? onFinalize : null,
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: DsPillButton(
+                  label: busy ? 'Generating…' : 'Generate PDF',
+                  compact: true,
+                  icon: Icons.picture_as_pdf_outlined,
+                  onPressed: busy ? null : onExport,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DsPillButton(
+                  label: 'Finalize',
+                  compact: true,
+                  icon: Icons.lock_outline,
+                  onPressed: canFinalize ? onFinalize : null,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -895,47 +998,69 @@ class _ReconciliationBody extends StatelessWidget {
 }
 
 class _MiniKpi extends StatelessWidget {
-  const _MiniKpi({required this.label, required this.value});
+  const _MiniKpi({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.tint,
+  });
 
   final String label;
   final String value;
+  final IconData icon;
+  final Color tint;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     return Container(
-      width: 156,
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
       decoration: BoxDecoration(
         color: tokens.canvas,
         borderRadius: BorderRadius.circular(tokens.radius12),
         border: Border.all(color: tokens.line),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: <Widget>[
-          Text(
-            label.toUpperCase(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 9,
-              letterSpacing: 0.6,
-              color: tokens.inkMuted,
+          Container(
+            width: 22,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: tint.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(6),
             ),
+            child: Icon(icon, size: 13, color: tint),
           ),
-          const SizedBox(height: 2),
-          Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-              color: tokens.ink,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w500,
+                    fontSize: 10,
+                    color: tokens.inkMuted,
+                  ),
+                ),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    height: 1.15,
+                    color: tokens.ink,
+                  ),
+                ),
+              ],
             ),
           ),
         ],

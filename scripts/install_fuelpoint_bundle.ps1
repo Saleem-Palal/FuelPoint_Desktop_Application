@@ -4,11 +4,11 @@
   Installs the FuelPoint certificate and the MSIX in one step.
 
 .DESCRIPTION
-  Used by Install.cmd (double-click). Imports FuelPointDevCert.cer into
+  Used by install.bat (double-click). Imports FuelPointDevCert.cer into
   LocalMachine\TrustedPeople and LocalMachine\Root, enables sideloading,
   then installs or updates FuelPoint Station OS.msix.
 
-  Must run as Administrator. Install.cmd requests elevation automatically.
+  Must run as Administrator. install.bat requests elevation automatically.
 #>
 [CmdletBinding()]
 param(
@@ -59,7 +59,7 @@ function Find-Payload {
       return (Resolve-Path -LiteralPath $candidate).Path
     }
   }
-  throw "Could not find $FileName. Keep Install.cmd, the .cer, and the .msix in the same folder."
+  throw "Could not find $FileName. Keep install.bat, the .cer, and the .msix in the same folder."
 }
 
 function Install-SideloadPolicy {
@@ -112,7 +112,7 @@ try {
   Write-Host 'This will trust the RetroSoft certificate and install the application.'
 
   if (-not (Test-Administrator)) {
-    throw 'This installer must run as Administrator. Close this window and double-click Install.cmd, then click Yes.'
+    throw 'This installer must run as Administrator. Close this window and double-click install.bat, then click Yes.'
   }
 
   $cerPath = Find-Payload -FileName 'FuelPointDevCert.cer'
@@ -145,7 +145,7 @@ try {
   Write-Host 'Setup failed.' -ForegroundColor Red
   Write-Host $_.Exception.Message
   Write-Host ''
-  Write-Host 'If Windows blocked the app, turn on Developer Mode or Sideload apps in Windows Settings, then double-click Install.cmd again.'
+  Write-Host 'If Windows blocked the app, turn on Developer Mode or Sideload apps in Windows Settings, then double-click install.bat again.'
 }
 
 if (-not $NoPause) {

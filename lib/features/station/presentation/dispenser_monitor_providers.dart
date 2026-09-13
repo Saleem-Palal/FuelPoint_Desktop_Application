@@ -51,6 +51,8 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
       rssiDbm: packet.rssiDbm ?? previous.rssiDbm,
       latencyMs: latency,
       lastRxAt: now,
+      espToBoardLink: packet.espToBoardLink ?? previous.espToBoardLink,
+      pendingTxCount: packet.pendingTxCount ?? previous.pendingTxCount,
     );
     int? gatewayMs = state.gatewayLatencyMs;
     if (latency != null) {

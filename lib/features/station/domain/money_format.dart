@@ -1,3 +1,5 @@
+import '../../../core/decimal_display.dart';
+
 String formatSignedPkr(double value) {
   if (value == 0) {
     return formatPkr(0);
@@ -19,11 +21,12 @@ String _groupThousands(String whole) {
 }
 
 String formatPkr(double value) {
-  final String raw = value.toStringAsFixed(2);
-  final List<String> parts = raw.split('.');
-  final String whole = parts[0];
-  final String fraction = parts.length > 1 ? parts[1] : '00';
-  return 'Rs. ${_groupThousands(whole)}.$fraction';
+  return formatPkrWhole(value);
+}
+
+/// Live dispenser PKR (`Rs. 6,618.50`). Truncates, never rounds.
+String formatDispenserPkr(double value) {
+  return 'Rs. ${groupTruncatedDecimal(value)}';
 }
 
 /// Whole-rupee PKR label (`Rs. 1,235`).
@@ -46,11 +49,25 @@ String formatPkrStatementWhole(double value) {
 }
 
 String formatLiters(double value) {
-  return '${value.toStringAsFixed(2)} Ltr';
+  return '${groupTruncatedDecimal(value)} Ltr';
+}
+
+/// Two decimal digits, truncated, no unit. For table cells and tickets.
+String formatTruncatedDecimal(double value) {
+  return groupTruncatedDecimal(value);
+}
+
+/// Average rate / WAC for UI: two decimals, truncated, never rounded.
+String formatAverageRateValue(double value) {
+  return 'Rs. ${groupTruncatedDecimal(value)}';
+}
+
+String formatAverageRate(double value) {
+  return '${formatAverageRateValue(value)} / L';
 }
 
 String formatRate(double value) {
-  return '${formatPkr(value)} / L';
+  return formatAverageRate(value);
 }
 
 String formatClock(DateTime time) {

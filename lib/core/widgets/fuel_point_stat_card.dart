@@ -16,6 +16,7 @@ class FuelPointStatCard extends StatelessWidget {
     this.borderColor,
     this.valueColor,
     this.onTap,
+    this.fillHeight = false,
   });
 
   final String title;
@@ -27,6 +28,7 @@ class FuelPointStatCard extends StatelessWidget {
   final Color? borderColor;
   final Color? valueColor;
   final VoidCallback? onTap;
+  final bool fillHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -78,15 +80,16 @@ class FuelPointStatCard extends StatelessWidget {
                 ),
                 if (subtitle != null && subtitle!.trim().isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(top: 1),
+                    padding: const EdgeInsets.only(top: 2),
                     child: Text(
                       subtitle!,
-                      maxLines: 1,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w500,
-                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
+                        fontSize: 10,
+                        height: 1.25,
                         color: colors.onSurfaceVariant,
                       ),
                     ),
@@ -101,6 +104,8 @@ class FuelPointStatCard extends StatelessWidget {
     final BorderRadius radii = BorderRadius.circular(tokens.radius20);
 
     return Container(
+      width: double.infinity,
+      alignment: fillHeight ? Alignment.centerLeft : null,
       decoration: BoxDecoration(
         color: tokens.card,
         borderRadius: radii,

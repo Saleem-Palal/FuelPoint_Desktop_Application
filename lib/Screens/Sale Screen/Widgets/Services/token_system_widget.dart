@@ -134,7 +134,7 @@ class TokenSystemWidget extends ConsumerWidget {
                 const SizedBox(height: 6),
                 _TelemetryLine(
                   label: 'Amount',
-                  value: formatPkr(bay.amountPkr),
+                  value: formatDispenserPkr(bay.amountPkr),
                 ),
               ],
             ),

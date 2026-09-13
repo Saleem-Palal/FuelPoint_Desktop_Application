@@ -1,4 +1,5 @@
 import '../../../services/database_helper.dart';
+import '../../station/domain/fuel_precision.dart';
 import '../domain/customer_models.dart';
 import '../domain/customer_repository.dart';
 
@@ -10,7 +11,8 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
 
   @override
   Future<List<UnifiedUdhaarRow>> list() async {
-    final List<Map<String, Object?>> rows = await _db.queryUnifiedUdhaarLedger();
+    final List<Map<String, Object?>> rows = await _db
+        .queryUnifiedUdhaarLedger();
     return rows.map(fromRow).toList();
   }
 
@@ -80,12 +82,6 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
   }
 
   static double _asDouble(Object? value) {
-    if (value is double) {
-      return value;
-    }
-    if (value is num) {
-      return value.toDouble();
-    }
-    return 0.0;
+    return storedNumberToDouble(value);
   }
 }

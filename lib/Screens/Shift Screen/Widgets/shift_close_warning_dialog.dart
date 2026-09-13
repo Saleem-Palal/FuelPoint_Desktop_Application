@@ -6,7 +6,7 @@ import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import 'shift_ui_kit.dart';
 
-enum ShiftCloseWarningAction { stay, proceedEndShift, forceClosed }
+enum ShiftCloseWarningAction { stay, proceedEndShift }
 
 Future<String?> showManagerPinDialog(
   BuildContext context, {
@@ -43,12 +43,13 @@ Future<ShiftCloseWarningAction?> showShiftCloseWarningDialog(
 Future<UnverifiedShiftAction?> showUnverifiedShiftDialog(
   BuildContext context, {
   required ManagerShiftRecord shift,
+  DateTime? uncleanExitAt,
 }) {
   return showDialog<UnverifiedShiftAction>(
     context: context,
     barrierDismissible: false,
     builder: (BuildContext context) {
-      return _UnverifiedShiftDialog(shift: shift);
+      return _UnverifiedShiftDialog(shift: shift, uncleanExitAt: uncleanExitAt);
     },
   );
 }
@@ -208,9 +209,8 @@ class _ShiftCloseWarningDialog extends StatelessWidget {
       content: SizedBox(
         width: 520,
         child: Text(
-          'A shift is currently LIVE under Manager $managerName. '
-          'Closing the application will terminate live telemetry. '
-          'Are you sure you want to exit?',
+          'Live Shift Under Manager $managerName Active. '
+          'Closing app will suspend telemetry.',
           style: TextStyle(
             fontFamily: 'Roboto',
             fontWeight: FontWeight.w500,
@@ -235,23 +235,13 @@ class _ShiftCloseWarningDialog extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             DsPillButton(
-              label: 'Proceed to End Shift',
+              label: 'End Shift & Reconcile',
               compact: true,
               icon: Icons.account_balance_wallet_outlined,
               onPressed: () {
                 Navigator.of(
                   context,
                 ).pop(ShiftCloseWarningAction.proceedEndShift);
-              },
-            ),
-            const SizedBox(height: 8),
-            DsPillButton(
-              label: 'Force Close Application',
-              variant: DsPillVariant.danger,
-              compact: true,
-              icon: Icons.power_settings_new,
-              onPressed: () {
-                Navigator.of(context).pop(ShiftCloseWarningAction.forceClosed);
               },
             ),
           ],
@@ -262,9 +252,10 @@ class _ShiftCloseWarningDialog extends StatelessWidget {
 }
 
 class _UnverifiedShiftDialog extends StatelessWidget {
-  const _UnverifiedShiftDialog({required this.shift});
+  const _UnverifiedShiftDialog({required this.shift, this.uncleanExitAt});
 
   final ManagerShiftRecord shift;
+  final DateTime? uncleanExitAt;
 
   @override
   Widget build(BuildContext context) {
@@ -277,7 +268,7 @@ class _UnverifiedShiftDialog extends StatelessWidget {
         side: BorderSide(color: tokens.coral),
       ),
       title: Text(
-        'Unverified open shift',
+        'Crash recovery',
         style: TextStyle(
           fontFamily: 'Roboto',
           fontWeight: FontWeight.w700,
@@ -288,9 +279,11 @@ class _UnverifiedShiftDialog extends StatelessWidget {
       content: SizedBox(
         width: 480,
         child: Text(
-          '${shift.shiftId} is still OPEN from a previous session under '
-          '${shift.managerName}. Enter that manager PIN to resume telemetry, '
-          'or reconcile and close the shift. A new shift will not be created.',
+          '${shift.shiftId} is still LIVE under ${shift.managerName} after an '
+          'unclean exit'
+          '${uncleanExitAt == null ? '' : ' at ${_formatStamp(uncleanExitAt!)}'}'
+          '. Enter that manager PIN to resume telemetry and re-enable keypads, '
+          'or force-end and reconcile using last hardware meters.',
           style: TextStyle(
             fontFamily: 'Roboto',
             fontWeight: FontWeight.w500,
@@ -302,7 +295,7 @@ class _UnverifiedShiftDialog extends StatelessWidget {
       ),
       actions: <Widget>[
         DsPillButton(
-          label: 'Reconcile & End',
+          label: 'Force End & Reconcile',
           variant: DsPillVariant.outline,
           compact: true,
           onPressed: () {
@@ -319,4 +312,13 @@ class _UnverifiedShiftDialog extends StatelessWidget {
       ],
     );
   }
+}
+
+String _formatStamp(DateTime value) {
+  final String y = value.year.toString().padLeft(4, '0');
+  final String m = value.month.toString().padLeft(2, '0');
+  final String d = value.day.toString().padLeft(2, '0');
+  final String hh = value.hour.toString().padLeft(2, '0');
+  final String mm = value.minute.toString().padLeft(2, '0');
+  return '$y-$m-$d $hh:$mm';
 }

@@ -19,6 +19,7 @@ class LedgerPdfExport {
     int? unitId,
     DateTimeRange? range,
     String search = '',
+    String? shiftLabel,
   }) async {
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) {
@@ -27,11 +28,14 @@ class LedgerPdfExport {
           unitId: unitId,
           range: range,
           search: search,
+          shiftLabel: shiftLabel,
           pageFormat: format.landscape,
         );
       },
       format: PdfPageFormat.a4.landscape,
-      name: 'sales-ledger.pdf',
+      name: shiftLabel == null || shiftLabel.trim().isEmpty
+          ? 'sales-ledger.pdf'
+          : 'sales-ledger-${shiftLabel.split(' · ').first}.pdf',
     );
   }
 
@@ -57,6 +61,7 @@ class LedgerPdfExport {
     required int? unitId,
     required DateTimeRange? range,
     required String search,
+    required String? shiftLabel,
     required PdfPageFormat pageFormat,
   }) async {
     final _PdfTheme theme = await _PdfTheme.load();
@@ -105,6 +110,8 @@ class LedgerPdfExport {
             title: 'Sales Ledger',
             filters: <String>[
               unitId == null ? 'All Units' : formatUnitLabel(unitId),
+              if (shiftLabel != null && shiftLabel.trim().isNotEmpty)
+                shiftLabel.trim(),
               _rangeLabel(range),
               if (search.trim().isNotEmpty) 'Search: ${search.trim()}',
             ],
@@ -171,7 +178,7 @@ class LedgerPdfExport {
           formatInvoiceNo(row.refNo),
           formatDateTime(row.timestamp),
           formatLiters(row.netLiters),
-          row.ratePerLiter.toStringAsFixed(2),
+          formatTruncatedDecimal(row.ratePerLiter),
           formatPkr(row.totalAmount),
           row.tafseelDisplay,
           row.user,
@@ -197,7 +204,7 @@ class LedgerPdfExport {
             _kpiRow(theme, <_KpiLine>[
               _KpiLine('Total Amount', formatPkr(slice.totalAmountPkr)),
               _KpiLine('Net Volume', formatLiters(slice.totalVolumeLiters)),
-              _KpiLine('Avg Rate', formatPkr(slice.averageRate)),
+              _KpiLine('Avg Rate', formatAverageRateValue(slice.averageRate)),
               _KpiLine(
                 'Largest Delivery',
                 formatLiters(slice.largestDeliveryLiters),

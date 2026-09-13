@@ -6,14 +6,9 @@ import '../../../features/customer/domain/customer_models.dart';
 import '../../../features/station/domain/money_format.dart';
 
 class SettleBillDraft {
-  const SettleBillDraft({
-    required this.amountPkr,
-    required this.paymentMode,
-    required this.notes,
-  });
+  const SettleBillDraft({required this.amountPkr, required this.notes});
 
   final double amountPkr;
-  final SettlementPaymentMode paymentMode;
   final String notes;
 }
 
@@ -44,7 +39,6 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
 
   late final TextEditingController _amount;
   late final TextEditingController _notes;
-  SettlementPaymentMode _mode = SettlementPaymentMode.cash;
   bool _saving = false;
 
   @override
@@ -53,7 +47,7 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
     final double outstanding = widget.account.outstanding < 0
         ? 0
         : widget.account.outstanding;
-    _amount = TextEditingController(text: outstanding.toStringAsFixed(2));
+    _amount = TextEditingController(text: outstanding.round().toString());
     _notes = TextEditingController();
   }
 
@@ -79,11 +73,7 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
       _saving = true;
     });
     Navigator.of(context).pop(
-      SettleBillDraft(
-        amountPkr: value,
-        paymentMode: _mode,
-        notes: _notes.text.trim(),
-      ),
+      SettleBillDraft(amountPkr: value, notes: _notes.text.trim()),
     );
   }
 
@@ -175,53 +165,6 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
                   hintText: '0.00',
                   suffixText: 'Rs',
                 ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'PAYMENT MODE',
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 9,
-                  letterSpacing: 0.8,
-                  color: tokens.inkMuted,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: DsPillButton(
-                      label: 'Cash',
-                      icon: Icons.payments_outlined,
-                      compact: true,
-                      variant: _mode == SettlementPaymentMode.cash
-                          ? DsPillVariant.coral
-                          : DsPillVariant.outline,
-                      onPressed: () {
-                        setState(() {
-                          _mode = SettlementPaymentMode.cash;
-                        });
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DsPillButton(
-                      label: 'Bank Transfer',
-                      icon: Icons.account_balance_outlined,
-                      compact: true,
-                      variant: _mode == SettlementPaymentMode.bankTransfer
-                          ? DsPillVariant.coral
-                          : DsPillVariant.outline,
-                      onPressed: () {
-                        setState(() {
-                          _mode = SettlementPaymentMode.bankTransfer;
-                        });
-                      },
-                    ),
-                  ),
-                ],
               ),
               const SizedBox(height: 10),
               TextField(

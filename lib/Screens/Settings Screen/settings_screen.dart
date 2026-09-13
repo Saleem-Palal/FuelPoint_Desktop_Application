@@ -2,14 +2,19 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/decimal_display.dart';
+import '../../core/constants.dart';
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
 import '../../core/widgets/fuel_point_stat_card.dart';
+import '../../core/widgets/release_notes_dialog.dart';
 import '../../core/widgets/responsive_layout.dart';
 import '../../features/access/presentation/master_pin_settings_card.dart';
 import '../../features/shift/presentation/shift_providers.dart';
+import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/presentation/purchase_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
@@ -90,6 +95,70 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       return;
     }
     bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
+    await ref.read(shiftWorkspaceProvider.notifier).reload();
+    await ref.read(managersProvider.notifier).reload();
+  }
+
+  Future<void> _restoreFromGoogleDrive() async {
+    final int openCount = ref.read(shiftWorkspaceProvider).activeShift == null
+        ? 0
+        : 1;
+    if (openCount > 0) {
+      await _showMessageDialog(
+        title: 'Open shift on duty',
+        body:
+            'Close the live OPEN shift before restoring a Google Drive snapshot. '
+            'Restoring now would replace cash, stock, and sales mid-shift.',
+      );
+      return;
+    }
+    if (ref.read(settingsProvider).account == null) {
+      await _showMessageDialog(
+        title: 'Google Drive not connected',
+        body: 'Sign in to Google Drive first, then restore a cloud backup.',
+      );
+      return;
+    }
+    final List<GoogleDriveRemoteFile> files = await ref
+        .read(settingsProvider.notifier)
+        .listDriveDatabaseBackups();
+    if (!mounted) {
+      return;
+    }
+    if (files.isEmpty) {
+      await _showMessageDialog(
+        title: 'No Drive backups',
+        body:
+            'No .db snapshots were found in FuelPoint_Backups. '
+            'Run Backup Database Now first.',
+      );
+      return;
+    }
+    final GoogleDriveRemoteFile? picked =
+        await showDialog<GoogleDriveRemoteFile>(
+          context: context,
+          builder: (BuildContext context) {
+            return _DriveBackupPickerDialog(files: files);
+          },
+        );
+    if (picked == null || !mounted) {
+      return;
+    }
+    final bool? confirmed = await _confirmRestore(
+      'Google Drive / FuelPoint_Backups / ${picked.name}',
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    final bool ok = await ref
+        .read(settingsProvider.notifier)
+        .restoreFromGoogleDrive(picked);
+    if (!ok || !mounted) {
+      return;
+    }
+    bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
+    await ref.read(stationControllerProvider.notifier).reloadPersistedData();
+    await ref.read(purchaseControllerProvider).reload();
     await ref.read(shiftWorkspaceProvider.notifier).reload();
     await ref.read(managersProvider.notifier).reload();
   }
@@ -288,6 +357,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   final Widget drive = _DriveCard(
                     settings: settings,
                     enabled: !settings.busy,
+                    onRestoreFromDrive: _restoreFromGoogleDrive,
                   );
                   final Widget sqlite = _SqliteCard(
                     settings: settings,
@@ -320,11 +390,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       children: <Widget>[
                         const MasterPinSettingsCard(),
                         const SizedBox(height: 10),
+                        _SaleFloorCard(
+                          settings: settings,
+                          enabled: !settings.busy,
+                        ),
+                        const SizedBox(height: 10),
                         drive,
                         const SizedBox(height: 10),
                         sqlite,
                         const SizedBox(height: 10),
                         audit,
+                        const SizedBox(height: 10),
+                        const _ReleaseNotesCard(),
                       ],
                     ),
                   );
@@ -448,11 +525,213 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-class _DriveCard extends ConsumerStatefulWidget {
-  const _DriveCard({required this.settings, required this.enabled});
+class _ReleaseNotesCard extends StatelessWidget {
+  const _ReleaseNotesCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionCard(
+      title: 'Release notes',
+      subtitle: 'FuelPoint Station OS ${AppBrand.versionLabel}',
+      icon: Icons.new_releases_outlined,
+      child: const Padding(
+        padding: EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: ReleaseNotesList(dense: true),
+      ),
+    );
+  }
+}
+
+class _SaleFloorCard extends ConsumerStatefulWidget {
+  const _SaleFloorCard({required this.settings, required this.enabled});
 
   final SettingsState settings;
   final bool enabled;
+
+  @override
+  ConsumerState<_SaleFloorCard> createState() => _SaleFloorCardState();
+}
+
+class _SaleFloorCardState extends ConsumerState<_SaleFloorCard> {
+  static final FilteringTextInputFormatter _litersFormatter =
+      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'));
+
+  late final TextEditingController _threshold;
+  late final FocusNode _thresholdFocus;
+
+  SettingsState get settings => widget.settings;
+
+  @override
+  void initState() {
+    super.initState();
+    _threshold = TextEditingController(text: _thresholdLabel(settings));
+    _thresholdFocus = FocusNode();
+    _thresholdFocus.addListener(_onThresholdFocus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SaleFloorCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (settings.lowStockThresholdLiters ==
+        oldWidget.settings.lowStockThresholdLiters) {
+      return;
+    }
+    final String next = _thresholdLabel(settings);
+    if (_threshold.text != next) {
+      _threshold.text = next;
+    }
+  }
+
+  @override
+  void dispose() {
+    _thresholdFocus
+      ..removeListener(_onThresholdFocus)
+      ..dispose();
+    _threshold.dispose();
+    super.dispose();
+  }
+
+  void _onThresholdFocus() {
+    if (!_thresholdFocus.hasFocus) {
+      unawaited(_saveThreshold());
+    }
+  }
+
+  String _thresholdLabel(SettingsState value) {
+    if (value.lowStockThresholdLiters <= 0) {
+      return '';
+    }
+    return truncateToDecimalPlaces(value.lowStockThresholdLiters, 2);
+  }
+
+  Future<void> _saveThreshold() async {
+    final String raw = _threshold.text.trim().replaceAll(',', '');
+    final double parsed = raw.isEmpty
+        ? 0
+        : (double.tryParse(raw) ?? settings.lowStockThresholdLiters);
+    await ref
+        .read(settingsProvider.notifier)
+        .setLowStockThresholdLiters(parsed);
+    if (!mounted) {
+      return;
+    }
+    final String next = _thresholdLabel(ref.read(settingsProvider));
+    if (_threshold.text != next) {
+      _threshold.text = next;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return _SectionCard(
+      title: 'Sale floor',
+      subtitle: 'Dispenser cards and diesel tank alert.',
+      icon: Icons.local_gas_station_outlined,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: settings.showUnit5,
+              activeThumbColor: tokens.good,
+              onChanged: widget.enabled
+                  ? (bool value) {
+                      unawaited(
+                        ref.read(settingsProvider.notifier).setShowUnit5(value),
+                      );
+                      if (!value &&
+                          ref.read(selectedDispenserIndexProvider) ==
+                              kOptionalDispenserUnitId) {
+                        ref
+                                .read(selectedDispenserIndexProvider.notifier)
+                                .state =
+                            1;
+                      }
+                    }
+                  : null,
+              title: Text(
+                'Show Unit 5',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+              subtitle: Text(
+                'Hidden by default. Turn on when a fifth dispenser is in service. '
+                'The other units expand to fill the row when this is off.',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 11,
+                  color: tokens.inkMuted,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Low stock alert',
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: tokens.ink,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Warn after every sale when remaining diesel liters fall below this '
+              'amount. Leave empty or 0 to turn the alert off.',
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 11,
+                color: tokens.inkMuted,
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _threshold,
+              focusNode: _thresholdFocus,
+              enabled: widget.enabled,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              inputFormatters: <TextInputFormatter>[_litersFormatter],
+              style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
+              onEditingComplete: () {
+                unawaited(_saveThreshold());
+                FocusScope.of(context).unfocus();
+              },
+              onSubmitted: (_) {
+                unawaited(_saveThreshold());
+              },
+              decoration: InputDecoration(
+                labelText: 'Diesel tank threshold (Ltr)',
+                hintText: '0 = off',
+                suffixText: 'Ltr',
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DriveCard extends ConsumerStatefulWidget {
+  const _DriveCard({
+    required this.settings,
+    required this.enabled,
+    required this.onRestoreFromDrive,
+  });
+
+  final SettingsState settings;
+  final bool enabled;
+  final VoidCallback onRestoreFromDrive;
 
   @override
   ConsumerState<_DriveCard> createState() => _DriveCardState();
@@ -687,6 +966,14 @@ class _DriveCardState extends ConsumerState<_DriveCard> {
                       ? () {
                           unawaited(notifier.uploadBackupToGoogleDrive());
                         }
+                      : null,
+                ),
+                DsPillButton(
+                  label: 'Restore from Google Drive',
+                  icon: Icons.cloud_download_outlined,
+                  variant: DsPillVariant.danger,
+                  onPressed: _actionsEnabled && connected
+                      ? widget.onRestoreFromDrive
                       : null,
                 ),
                 if (settings.backingUp)
@@ -1242,6 +1529,116 @@ class _TwoAxisScroll extends StatelessWidget {
   }
 }
 
+class _DriveBackupPickerDialog extends StatelessWidget {
+  const _DriveBackupPickerDialog({required this.files});
+
+  final List<GoogleDriveRemoteFile> files;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return AlertDialog(
+      backgroundColor: tokens.card,
+      surfaceTintColor: tokens.card,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        side: BorderSide(color: tokens.line),
+      ),
+      title: Text(
+        'Restore from Google Drive',
+        style: TextStyle(
+          fontFamily: 'Roboto',
+          fontWeight: FontWeight.w700,
+          fontSize: 16,
+          color: tokens.ink,
+        ),
+      ),
+      content: SizedBox(
+        width: 520,
+        height: (MediaQuery.sizeOf(context).height * 0.5).clamp(280.0, 460.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              'Choose a snapshot from FuelPoint_Backups. The live database '
+              'will be replaced. Google Drive login stays on this station.',
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 13,
+                height: 1.4,
+                color: tokens.inkMuted,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: Material(
+                color: tokens.canvas,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(tokens.radius12),
+                  side: BorderSide(color: tokens.line),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: ListView.separated(
+                  itemCount: files.length,
+                  separatorBuilder: (BuildContext context, int index) {
+                    return Divider(height: 1, color: tokens.line);
+                  },
+                  itemBuilder: (BuildContext context, int index) {
+                    final GoogleDriveRemoteFile file = files[index];
+                    final DateTime? modified = file.modifiedAt;
+                    final int? bytes = file.sizeBytes;
+                    final String subtitle = <String>[
+                      if (modified != null) formatDateTime(modified),
+                      if (bytes != null && bytes > 0)
+                        DatabaseMetrics.formatBytesAsMb(bytes),
+                    ].join('  ·  ');
+                    return ListTile(
+                      leading: Icon(
+                        Icons.sd_storage_outlined,
+                        color: tokens.coralPressed,
+                      ),
+                      title: Text(
+                        file.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: tokens.ink,
+                        ),
+                      ),
+                      subtitle: subtitle.isEmpty
+                          ? null
+                          : Text(
+                              subtitle,
+                              style: TextStyle(
+                                fontFamily: 'Roboto',
+                                fontSize: 11,
+                                color: tokens.inkMuted,
+                              ),
+                            ),
+                      onTap: () => Navigator.of(context).pop(file),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        DsPillButton(
+          label: 'Cancel',
+          variant: DsPillVariant.outline,
+          compact: true,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ],
+    );
+  }
+}
+
 class _EraseTablesDialog extends StatefulWidget {
   const _EraseTablesDialog({required this.tables, required this.hasOpenShift});
 
@@ -1302,106 +1699,101 @@ class _EraseTablesDialogState extends State<_EraseTablesDialog> {
           color: tokens.ink,
         ),
       ),
-      content: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: 460,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.7,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                'Choose which SQLite tables to empty. Selected tables are '
-                'truncated (all rows deleted). This cannot be undone.',
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontSize: 13,
-                  height: 1.4,
-                  color: tokens.inkMuted,
-                ),
+      content: SizedBox(
+        width: 460,
+        height: (MediaQuery.sizeOf(context).height * 0.55).clamp(320.0, 520.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              'Choose which SQLite tables to empty. Selected tables are '
+              'truncated (all rows deleted). This cannot be undone.\n\n'
+              'Google Drive Client ID, Client Secret, and the signed-in '
+              'Google account are never erased.',
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 13,
+                height: 1.4,
+                color: tokens.inkMuted,
               ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(
-                  onPressed: _toggleAll,
-                  child: Text(_allSelected ? 'Clear selection' : 'Select all'),
-                ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: _toggleAll,
+                child: Text(_allSelected ? 'Clear selection' : 'Select all'),
               ),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 360),
-                child: Material(
-                  color: tokens.canvas,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(tokens.radius12),
-                    side: BorderSide(color: tokens.line),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: widget.tables.length,
-                    separatorBuilder: (BuildContext context, int index) {
-                      return Divider(height: 1, color: tokens.line);
-                    },
-                    itemBuilder: (BuildContext context, int index) {
-                      final StationTableInfo table = widget.tables[index];
-                      final bool checked = _selected.contains(table.name);
-                      return CheckboxListTile(
-                        value: checked,
-                        dense: true,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        activeColor: tokens.coral,
-                        hoverColor: tokens.ink.withValues(alpha: 0.04),
-                        title: Text(
-                          table.label,
-                          style: TextStyle(
-                            fontFamily: 'Roboto',
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
-                            color: tokens.ink,
-                          ),
+            ),
+            Expanded(
+              child: Material(
+                color: tokens.canvas,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(tokens.radius12),
+                  side: BorderSide(color: tokens.line),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: ListView.separated(
+                  itemCount: widget.tables.length,
+                  separatorBuilder: (BuildContext context, int index) {
+                    return Divider(height: 1, color: tokens.line);
+                  },
+                  itemBuilder: (BuildContext context, int index) {
+                    final StationTableInfo table = widget.tables[index];
+                    final bool checked = _selected.contains(table.name);
+                    return CheckboxListTile(
+                      value: checked,
+                      dense: true,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      activeColor: tokens.coral,
+                      hoverColor: tokens.ink.withValues(alpha: 0.04),
+                      title: Text(
+                        table.label,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: tokens.ink,
                         ),
-                        subtitle: Text(
-                          '${table.name}  ·  ${table.rowCount} row${table.rowCount == 1 ? '' : 's'}',
-                          style: TextStyle(
-                            fontFamily: 'Roboto',
-                            fontSize: 11,
-                            color: tokens.inkMuted,
-                          ),
+                      ),
+                      subtitle: Text(
+                        '${table.name}  ·  ${table.rowCount} row${table.rowCount == 1 ? '' : 's'}',
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: 11,
+                          color: tokens.inkMuted,
                         ),
-                        onChanged: (bool? value) {
-                          setState(() {
-                            if (value == true) {
-                              _selected.add(table.name);
-                            } else {
-                              _selected.remove(table.name);
-                            }
-                          });
-                        },
-                      );
-                    },
+                      ),
+                      onChanged: (bool? value) {
+                        setState(() {
+                          if (value == true) {
+                            _selected.add(table.name);
+                          } else {
+                            _selected.remove(table.name);
+                          }
+                        });
+                      },
+                    );
+                  },
+                ),
+              ),
+            ),
+            if (_touchesLiveShift)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  'An OPEN shift is live. Erasing shifts, sales, or managers '
+                  'will drop in-progress station data.',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    height: 1.35,
+                    color: tokens.bad,
                   ),
                 ),
               ),
-              if (_touchesLiveShift)
-                Padding(
-                  padding: const EdgeInsets.only(top: 10),
-                  child: Text(
-                    'An OPEN shift is live. Erasing shifts, sales, or managers '
-                    'will drop in-progress station data.',
-                    style: TextStyle(
-                      fontFamily: 'Roboto',
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                      height: 1.35,
-                      color: tokens.bad,
-                    ),
-                  ),
-                ),
-            ],
-          ),
+          ],
         ),
       ),
       actions: <Widget>[

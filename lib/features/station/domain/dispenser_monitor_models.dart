@@ -72,6 +72,8 @@ class BayDiagnosticSnapshot {
     this.lastRxAt,
     this.lastTxAt,
     this.socketOpenedAt,
+    this.espToBoardLink,
+    this.pendingTxCount,
   });
 
   final int? rssiDbm;
@@ -80,6 +82,8 @@ class BayDiagnosticSnapshot {
   final DateTime? lastRxAt;
   final DateTime? lastTxAt;
   final DateTime? socketOpenedAt;
+  final bool? espToBoardLink;
+  final int? pendingTxCount;
 
   BayDiagnosticSnapshot copyWith({
     int? rssiDbm,
@@ -88,6 +92,8 @@ class BayDiagnosticSnapshot {
     DateTime? lastRxAt,
     DateTime? lastTxAt,
     DateTime? socketOpenedAt,
+    bool? espToBoardLink,
+    int? pendingTxCount,
     bool clearSocketOpened = false,
   }) {
     return BayDiagnosticSnapshot(
@@ -99,6 +105,8 @@ class BayDiagnosticSnapshot {
       socketOpenedAt: clearSocketOpened
           ? null
           : (socketOpenedAt ?? this.socketOpenedAt),
+      espToBoardLink: espToBoardLink ?? this.espToBoardLink,
+      pendingTxCount: pendingTxCount ?? this.pendingTxCount,
     );
   }
 }
@@ -132,19 +140,13 @@ class BayLinkHealth {
   static const Duration _heartbeat = Duration(milliseconds: 3000);
   static const Duration _serialStall = Duration(milliseconds: 1500);
 
-  static const List<int> demoRssi = <int>[-52, -61, -68, -74, -81];
-
   static BayLinkHealth evaluate({
     required DispenserBay bay,
     required UnitEndpoint endpoint,
     required BayDiagnosticSnapshot snapshot,
     required DateTime now,
   }) {
-    final int rssi =
-        snapshot.rssiDbm ??
-        (bay.isOffline || !endpoint.connected
-            ? -95
-            : demoRssi[(bay.unitId - 1).clamp(0, demoRssi.length - 1)]);
+    final int rssi = snapshot.rssiDbm ?? -95;
     final DateTime? lastActivity = snapshot.lastRxAt ?? bay.lastPacketAt;
     final Duration? silence = lastActivity == null
         ? null
@@ -159,23 +161,26 @@ class BayLinkHealth {
         muxSocketUp &&
         (silence == null ? sinceOpen >= _heartbeat : silence >= _heartbeat);
 
-    final bool serialStall =
-        muxSocketUp &&
-        !muxHeartbeatLost &&
-        (silence == null ? sinceOpen >= _serialStall : silence >= _serialStall);
+    final bool serialStall = snapshot.espToBoardLink == false
+        ? muxSocketUp && !muxHeartbeatLost
+        : muxSocketUp &&
+            !muxHeartbeatLost &&
+            (silence == null
+                ? sinceOpen >= _serialStall
+                : silence >= _serialStall);
 
-    final bool fdxWifiDrop =
-        muxSocketUp && (rssi <= -88 || (bay.isOffline && !muxHeartbeatLost));
-    final bool fdxWifiUp = muxSocketUp && !fdxWifiDrop && rssi > -88;
+    final bool fdxWifiDrop = muxSocketUp && rssi <= -88;
+    final bool fdxWifiUp = muxSocketUp && !muxHeartbeatLost && rssi > -88;
 
     final bool txHot =
         snapshot.lastTxAt != null && now.difference(snapshot.lastTxAt!) < _lamp;
     final bool rxHot =
         snapshot.lastRxAt != null && now.difference(snapshot.lastRxAt!) < _lamp;
-    final bool serialLive =
-        muxSocketUp &&
-        !serialStall &&
-        (rxHot || txHot || (silence != null && silence < _serialStall));
+    final bool serialLive = snapshot.espToBoardLink == true
+        ? muxSocketUp && !muxHeartbeatLost
+        : muxSocketUp &&
+            !serialStall &&
+            (rxHot || txHot || (silence != null && silence < _serialStall));
 
     return BayLinkHealth(
       rssiDbm: rssi,
@@ -262,8 +267,11 @@ class DispenserMonitorState {
 
 enum MonitorBayStatus { online, dispensing, keypadLocked, offline }
 
-MonitorBayStatus monitorStatusFor(DispenserBay bay) {
-  if (bay.isOffline) {
+MonitorBayStatus monitorStatusFor(
+  DispenserBay bay, {
+  bool linkOnline = true,
+}) {
+  if (!linkOnline || bay.isOffline) {
     return MonitorBayStatus.offline;
   }
   if (bay.isDispensing) {

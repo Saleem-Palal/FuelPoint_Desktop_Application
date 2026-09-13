@@ -5,19 +5,25 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'package:decimal/decimal.dart';
+
 import '../core/security/pin_hasher.dart';
+import '../features/shift/domain/shift_lifecycle.dart';
+import '../features/station/domain/average_rate.dart';
+import '../features/station/domain/fuel_precision.dart';
 
 /// Singleton SQLite access for FuelPoint (`fuel_point_system.db`).
 ///
 /// Uses `sqflite_common_ffi` + WAL so high-frequency ESP telemetry writes do
-/// not lock the file. Financial columns are stored as REAL with no rounding.
+/// not lock the file. Liters and rate are TEXT at 13 fractional digits.
+/// PKR amounts are whole rupees.
 class DatabaseHelper {
   DatabaseHelper._init();
 
   static final DatabaseHelper instance = DatabaseHelper._init();
 
   static const String dbName = 'fuel_point_system.db';
-  static const int dbVersion = 1;
+  static const int dbVersion = 2;
 
   static const String tableManagers = 'managers';
   static const String tableHelpers = 'helpers';
@@ -31,6 +37,7 @@ class DatabaseHelper {
   static const String tableCloudBackupLogs = 'cloud_backup_logs';
   static const String tableStationSettings = 'station_settings';
   static const String tableAppSettings = 'app_settings';
+  static const String tableAppSessionState = 'app_session_state';
 
   /// Preferred Windows data root. Falls back to app-support if unwritable.
   static const String windowsDataDirectory = r'C:\FuelPointData';
@@ -49,6 +56,18 @@ class DatabaseHelper {
       'last_backup_drive_file_id';
   static const String settingOwnerMasterPinHash = 'owner_master_pin_hash';
   static const String defaultOwnerMasterPin = '1234';
+  static const String settingOwnerAutoLockMinutes = 'owner_auto_lock_minutes';
+  static const int defaultOwnerAutoLockMinutes = 5;
+  static const String settingShowUnit5 = 'show_unit_5';
+  static const String settingLowStockThresholdLiters =
+      'low_stock_threshold_liters';
+
+  /// Keys kept when `station_settings` is truncated so Drive OAuth survives.
+  static const List<String> googleIdentitySettingKeys = <String>[
+    settingGoogleOauthClientId,
+    settingGoogleOauthClientSecret,
+    settingDriveBackupFolderId,
+  ];
 
   Database? _database;
   Future<Database>? _opening;
@@ -67,12 +86,14 @@ class DatabaseHelper {
   /// singleton `diesel_stock` row (`id = 1`, `Stock_amount = 0.0`).
   Future<Database> initializeStationDatabase() async {
     final Database db = await database;
-    await db.insert(tableDieselStock, const <String, Object?>{
+    await db.insert(tableDieselStock, <String, Object?>{
       'id': 1,
-      'Stock_amount': 0.0,
+      'stock_quantity': zeroFuelText,
+      'Average_rate': zeroFuelText,
+      'Stock_amount': 0,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     debugPrint(
-      'DatabaseHelper: schema ready; diesel_stock singleton seeded (id=1, 0.0 L)',
+      'DatabaseHelper: schema ready; diesel_stock singleton seeded (id=1)',
     );
     return db;
   }
@@ -87,6 +108,7 @@ class DatabaseHelper {
           version: dbVersion,
           onConfigure: _onConfigure,
           onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
           onOpen: _onOpen,
         ),
       );
@@ -180,13 +202,22 @@ class DatabaseHelper {
     await db.execute('PRAGMA synchronous = NORMAL;');
     await db.execute('PRAGMA busy_timeout = 5000;');
     await _createSchema(db);
-    await _seedOwnerMasterPin(db);
+    await _ensureDieselStockSchema(db);
+    await _ensureFuelPrecisionSchema(db);
+    await _ensureSalesTransactionDutyIds(db);
+    await _ensureShiftWorkflowSchema(db);
+    await _seedOwnerAccessSettings(db);
     await _purgeLegacyDemoHelpers(db);
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    await _ensureShiftWorkflowSchema(db);
   }
 
   Future<void> _onCreate(Database db, int version) async {
     await _createSchema(db);
-    await _seedOwnerMasterPin(db);
+    await _ensureShiftWorkflowSchema(db);
+    await _seedOwnerAccessSettings(db);
   }
 
   Future<void> _createSchema(Database db) async {
@@ -217,7 +248,9 @@ CREATE TABLE IF NOT EXISTS $tableCustomers (
     batch.execute('''
 CREATE TABLE IF NOT EXISTS $tableDieselStock (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  Stock_amount REAL NOT NULL DEFAULT 0.0
+  stock_quantity TEXT NOT NULL DEFAULT '0.0000000000000',
+  Average_rate TEXT NOT NULL DEFAULT '0.0000000000000',
+  Stock_amount REAL NOT NULL DEFAULT 0
 );
 ''');
 
@@ -231,7 +264,10 @@ CREATE TABLE IF NOT EXISTS $tableShifts (
   EXPECTED_CASH REAL DEFAULT 0.0,
   ACTUAL_CASH REAL DEFAULT 0.0,
   DISCREPANCY REAL DEFAULT 0.0,
-  STATUS TEXT NOT NULL DEFAULT 'OPEN',
+  STATUS TEXT NOT NULL DEFAULT 'LIVE',
+  NOTES TEXT NOT NULL DEFAULT '',
+  OPENING_METERS TEXT NOT NULL DEFAULT '{}',
+  CLOSING_METERS TEXT NOT NULL DEFAULT '{}',
   FOREIGN KEY (MANAGER) REFERENCES $tableManagers (manager_ID),
   FOREIGN KEY (Helper) REFERENCES $tableHelpers (Helper_ID)
 );
@@ -243,8 +279,8 @@ CREATE TABLE IF NOT EXISTS $tableSalesTransactions (
   DATE_TIME TEXT NOT NULL,
   UNIT_NO INTEGER NOT NULL,
   AMOUNT REAL NOT NULL,
-  LITERS REAL NOT NULL,
-  RATE REAL NOT NULL,
+  LITERS TEXT NOT NULL,
+  RATE TEXT NOT NULL,
   OPENING_READING REAL NOT NULL,
   CLOSING_READING REAL NOT NULL,
   PAYMENT_METHOD TEXT NOT NULL,
@@ -252,9 +288,16 @@ CREATE TABLE IF NOT EXISTS $tableSalesTransactions (
   VEHICLE_NO TEXT,
   HELPER TEXT,
   Manager TEXT NOT NULL,
+  SHIFT_ID INTEGER,
+  MANAGER_ID TEXT,
+  HELPER_ID TEXT,
   ACTIONS TEXT,
+  ESP_TX_ID TEXT,
   FOREIGN KEY (HELPER) REFERENCES $tableHelpers (Helper_ID),
-  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID)
+  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (SHIFT_ID) REFERENCES $tableShifts (SHIFT_ID),
+  FOREIGN KEY (MANAGER_ID) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (HELPER_ID) REFERENCES $tableHelpers (Helper_ID)
 );
 ''');
 
@@ -262,8 +305,8 @@ CREATE TABLE IF NOT EXISTS $tableSalesTransactions (
 CREATE TABLE IF NOT EXISTS $tablePurchases (
   INV_NO TEXT PRIMARY KEY,
   DATETIME TEXT NOT NULL,
-  QUANTITY REAL NOT NULL,
-  RATE REAL NOT NULL,
+  QUANTITY TEXT NOT NULL,
+  RATE TEXT NOT NULL,
   AMOUNT REAL NOT NULL,
   TAFSEEL TEXT,
   Manager TEXT NOT NULL,
@@ -279,8 +322,8 @@ CREATE TABLE IF NOT EXISTS $tableUnifiedUdhaarLedger (
   DATE_TIME TEXT NOT NULL,
   Customer_name TEXT NOT NULL,
   Customer_ID TEXT NOT NULL,
-  LITERS REAL DEFAULT 0.0,
-  RATE REAL DEFAULT 0.0,
+  LITERS TEXT DEFAULT '0.0000000000000',
+  RATE TEXT DEFAULT '0.0000000000000',
   AMOUNT REAL NOT NULL,
   DESCRIPTION TEXT,
   VEHICLE TEXT,
@@ -294,17 +337,14 @@ CREATE TABLE IF NOT EXISTS $tableUnifiedUdhaarLedger (
 );
 ''');
 
-    batch.execute(
-      'INSERT OR IGNORE INTO $tableDieselStock (id, Stock_amount) VALUES (1, 0.0);',
-    );
-
     batch.execute('''
 CREATE TABLE IF NOT EXISTS $tableAuditLogs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp TEXT NOT NULL,
   manager_ID TEXT,
   action_type TEXT NOT NULL,
-  details TEXT
+  details TEXT,
+  elevated_by_owner INTEGER NOT NULL DEFAULT 0
 );
 ''');
 
@@ -348,7 +388,399 @@ CREATE TABLE IF NOT EXISTS $tableAppSettings (
 );
 ''');
 
+    batch.execute('''
+CREATE TABLE IF NOT EXISTS $tableAppSessionState (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  is_clean_shutdown INTEGER NOT NULL DEFAULT 1,
+  last_heartbeat_at TEXT,
+  unclean_exit_at TEXT
+);
+''');
+
     await batch.commit(noResult: true);
+  }
+
+  /// Adds SHIFT_ID / MANAGER_ID / HELPER_ID on existing `sales_transactions`.
+  Future<void> _ensureSalesTransactionDutyIds(Database db) async {
+    try {
+      final List<Map<String, Object?>> cols = await db.rawQuery(
+        'PRAGMA table_info($tableSalesTransactions)',
+      );
+      final Set<String> names = <String>{
+        for (final Map<String, Object?> col in cols) '${col['name']}',
+      };
+      if (!names.contains('SHIFT_ID')) {
+        await db.execute(
+          'ALTER TABLE $tableSalesTransactions ADD COLUMN SHIFT_ID INTEGER',
+        );
+      }
+      if (!names.contains('MANAGER_ID')) {
+        await db.execute(
+          'ALTER TABLE $tableSalesTransactions ADD COLUMN MANAGER_ID TEXT',
+        );
+        await db.execute('''
+UPDATE $tableSalesTransactions
+SET MANAGER_ID = Manager
+WHERE MANAGER_ID IS NULL OR TRIM(MANAGER_ID) = ''
+''');
+      }
+      if (!names.contains('HELPER_ID')) {
+        await db.execute(
+          'ALTER TABLE $tableSalesTransactions ADD COLUMN HELPER_ID TEXT',
+        );
+        await db.execute('''
+UPDATE $tableSalesTransactions
+SET HELPER_ID = HELPER
+WHERE HELPER_ID IS NULL OR TRIM(HELPER_ID) = ''
+''');
+      }
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_sales_transactions_shift_id '
+        'ON $tableSalesTransactions (SHIFT_ID)',
+      );
+      if (!names.contains('ESP_TX_ID')) {
+        await db.execute(
+          'ALTER TABLE $tableSalesTransactions ADD COLUMN ESP_TX_ID TEXT',
+        );
+      }
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_transactions_esp_tx_id '
+        'ON $tableSalesTransactions (ESP_TX_ID) '
+        "WHERE ESP_TX_ID IS NOT NULL AND TRIM(ESP_TX_ID) != ''",
+      );
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._ensureSalesTransactionDutyIds failed: $error\n$stack',
+      );
+    }
+  }
+
+  /// LIVE status, session heartbeat, shift notes/meters, owner-elevation audit.
+  Future<void> _ensureShiftWorkflowSchema(Database db) async {
+    try {
+      await db.execute('''
+CREATE TABLE IF NOT EXISTS $tableAppSessionState (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  is_clean_shutdown INTEGER NOT NULL DEFAULT 1,
+  last_heartbeat_at TEXT,
+  unclean_exit_at TEXT
+);
+''');
+      await db.insert(tableAppSessionState, <String, Object?>{
+        'id': 1,
+        'is_clean_shutdown': 1,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+
+      final List<Map<String, Object?>> shiftCols = await db.rawQuery(
+        'PRAGMA table_info($tableShifts)',
+      );
+      final Set<String> shiftNames = <String>{
+        for (final Map<String, Object?> col in shiftCols) '${col['name']}',
+      };
+      if (!shiftNames.contains('NOTES')) {
+        await db.execute(
+          "ALTER TABLE $tableShifts ADD COLUMN NOTES TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!shiftNames.contains('OPENING_METERS')) {
+        await db.execute(
+          "ALTER TABLE $tableShifts ADD COLUMN OPENING_METERS TEXT NOT NULL DEFAULT '{}'",
+        );
+      }
+      if (!shiftNames.contains('CLOSING_METERS')) {
+        await db.execute(
+          "ALTER TABLE $tableShifts ADD COLUMN CLOSING_METERS TEXT NOT NULL DEFAULT '{}'",
+        );
+      }
+      await db.execute(
+        "UPDATE $tableShifts SET STATUS = 'LIVE' "
+        "WHERE UPPER(TRIM(STATUS)) = 'OPEN'",
+      );
+
+      final List<Map<String, Object?>> auditCols = await db.rawQuery(
+        'PRAGMA table_info($tableAuditLogs)',
+      );
+      final Set<String> auditNames = <String>{
+        for (final Map<String, Object?> col in auditCols) '${col['name']}',
+      };
+      if (!auditNames.contains('elevated_by_owner')) {
+        await db.execute(
+          'ALTER TABLE $tableAuditLogs ADD COLUMN elevated_by_owner '
+          'INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._ensureShiftWorkflowSchema failed: $error\n$stack',
+      );
+    }
+  }
+
+  /// Ensures the singleton `diesel_stock` row (`id = 1`) has
+  /// `stock_quantity`, `Average_rate`, and `Stock_amount`.
+  ///
+  /// Existing DBs stored liters in `Stock_amount`. That volume is copied into
+  /// `stock_quantity`, then `Stock_amount` becomes quantity × average rate.
+  Future<void> _ensureDieselStockSchema(Database db) async {
+    try {
+      final List<Map<String, Object?>> cols = await db.rawQuery(
+        'PRAGMA table_info($tableDieselStock)',
+      );
+      final Set<String> names = <String>{
+        for (final Map<String, Object?> col in cols) '${col['name']}',
+      };
+      if (!names.contains('Average_rate')) {
+        await db.execute(
+          'ALTER TABLE $tableDieselStock '
+          'ADD COLUMN Average_rate REAL NOT NULL DEFAULT 0.0',
+        );
+        names.add('Average_rate');
+        await db.execute('''
+UPDATE $tableDieselStock
+SET Average_rate = (
+  SELECT CASE
+    WHEN COALESCE(SUM(QUANTITY), 0) = 0 THEN 0
+    ELSE SUM(AMOUNT) / SUM(QUANTITY)
+  END
+  FROM $tablePurchases
+  WHERE UPPER(TRIM(COALESCE(TAFSEEL, ''))) NOT LIKE 'DIP%'
+)
+WHERE id = 1
+''');
+      }
+      if (!names.contains('stock_quantity')) {
+        await db.execute(
+          'ALTER TABLE $tableDieselStock '
+          'ADD COLUMN stock_quantity REAL NOT NULL DEFAULT 0.0',
+        );
+        names.add('stock_quantity');
+        await db.execute(
+          'UPDATE $tableDieselStock SET stock_quantity = Stock_amount WHERE id = 1',
+        );
+        await db.execute(
+          'UPDATE $tableDieselStock '
+          'SET Stock_amount = stock_quantity * Average_rate WHERE id = 1',
+        );
+      }
+      await db.insert(tableDieselStock, <String, Object?>{
+        'id': 1,
+        'stock_quantity': zeroFuelText,
+        'Average_rate': zeroFuelText,
+        'Stock_amount': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._ensureDieselStockSchema failed: $error\n$stack',
+      );
+    }
+  }
+
+  /// Rebuilds liters/rate columns to TEXT (13-place) when an older REAL
+  /// schema is still on disk. SQLite will not change affinity in place.
+  Future<void> _ensureFuelPrecisionSchema(Database db) async {
+    try {
+      await db.execute('PRAGMA foreign_keys = OFF');
+      if (!await _columnIsText(db, tableDieselStock, 'stock_quantity')) {
+        await _rebuildTable(
+          db,
+          table: tableDieselStock,
+          createSql:
+              '''
+CREATE TABLE ${tableDieselStock}__precision (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  stock_quantity TEXT NOT NULL DEFAULT '0.0000000000000',
+  Average_rate TEXT NOT NULL DEFAULT '0.0000000000000',
+  Stock_amount REAL NOT NULL DEFAULT 0
+)
+''',
+          transform: (Map<String, Object?> row) {
+            final Decimal qty = parseFuel(row['stock_quantity']);
+            final Decimal rate = parseFuel(row['Average_rate']);
+            return <String, Object?>{
+              'id': row['id'] ?? 1,
+              'stock_quantity': fuelToText(qty),
+              'Average_rate': fuelToText(rate),
+              'Stock_amount': roundRupees(qty * rate),
+            };
+          },
+        );
+      }
+      if (!await _columnIsText(db, tablePurchases, 'QUANTITY')) {
+        await _rebuildTable(
+          db,
+          table: tablePurchases,
+          createSql:
+              '''
+CREATE TABLE ${tablePurchases}__precision (
+  INV_NO TEXT PRIMARY KEY,
+  DATETIME TEXT NOT NULL,
+  QUANTITY TEXT NOT NULL,
+  RATE TEXT NOT NULL,
+  AMOUNT REAL NOT NULL,
+  TAFSEEL TEXT,
+  Manager TEXT NOT NULL,
+  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID)
+)
+''',
+          transform: (Map<String, Object?> row) {
+            return <String, Object?>{
+              'INV_NO': row['INV_NO'],
+              'DATETIME': row['DATETIME'],
+              'QUANTITY': fuelToText(row['QUANTITY']),
+              'RATE': fuelToText(row['RATE']),
+              'AMOUNT': roundRupees(row['AMOUNT']),
+              'TAFSEEL': row['TAFSEEL'],
+              'Manager': row['Manager'],
+            };
+          },
+        );
+      }
+      if (!await _columnIsText(db, tableSalesTransactions, 'LITERS')) {
+        await _rebuildTable(
+          db,
+          table: tableSalesTransactions,
+          createSql:
+              '''
+CREATE TABLE ${tableSalesTransactions}__precision (
+  TOKEN TEXT PRIMARY KEY,
+  DATE_TIME TEXT NOT NULL,
+  UNIT_NO INTEGER NOT NULL,
+  AMOUNT REAL NOT NULL,
+  LITERS TEXT NOT NULL,
+  RATE TEXT NOT NULL,
+  OPENING_READING REAL NOT NULL,
+  CLOSING_READING REAL NOT NULL,
+  PAYMENT_METHOD TEXT NOT NULL,
+  CUSTOMER_NAME TEXT,
+  VEHICLE_NO TEXT,
+  HELPER TEXT,
+  Manager TEXT NOT NULL,
+  SHIFT_ID INTEGER,
+  MANAGER_ID TEXT,
+  HELPER_ID TEXT,
+  ACTIONS TEXT,
+  FOREIGN KEY (HELPER) REFERENCES $tableHelpers (Helper_ID),
+  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (SHIFT_ID) REFERENCES $tableShifts (SHIFT_ID),
+  FOREIGN KEY (MANAGER_ID) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (HELPER_ID) REFERENCES $tableHelpers (Helper_ID)
+)
+''',
+          transform: (Map<String, Object?> row) {
+            return <String, Object?>{
+              'TOKEN': row['TOKEN'],
+              'DATE_TIME': row['DATE_TIME'],
+              'UNIT_NO': row['UNIT_NO'],
+              'AMOUNT': roundRupees(row['AMOUNT']),
+              'LITERS': fuelToText(row['LITERS']),
+              'RATE': fuelToText(row['RATE']),
+              'OPENING_READING': row['OPENING_READING'],
+              'CLOSING_READING': row['CLOSING_READING'],
+              'PAYMENT_METHOD': row['PAYMENT_METHOD'],
+              'CUSTOMER_NAME': row['CUSTOMER_NAME'],
+              'VEHICLE_NO': row['VEHICLE_NO'],
+              'HELPER': row['HELPER'],
+              'Manager': row['Manager'],
+              'SHIFT_ID': row['SHIFT_ID'],
+              'MANAGER_ID': row['MANAGER_ID'],
+              'HELPER_ID': row['HELPER_ID'],
+              'ACTIONS': row['ACTIONS'],
+            };
+          },
+        );
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_sales_transactions_shift_id '
+          'ON $tableSalesTransactions (SHIFT_ID)',
+        );
+      }
+      if (!await _columnIsText(db, tableUnifiedUdhaarLedger, 'LITERS')) {
+        await _rebuildTable(
+          db,
+          table: tableUnifiedUdhaarLedger,
+          createSql:
+              '''
+CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
+  PRIMARY_KEY TEXT PRIMARY KEY,
+  TYPE TEXT NOT NULL CHECK (TYPE IN ('SALE', 'SETTLEMENT')),
+  TKN TEXT,
+  DATE_TIME TEXT NOT NULL,
+  Customer_name TEXT NOT NULL,
+  Customer_ID TEXT NOT NULL,
+  LITERS TEXT DEFAULT '0.0000000000000',
+  RATE TEXT DEFAULT '0.0000000000000',
+  AMOUNT REAL NOT NULL,
+  DESCRIPTION TEXT,
+  VEHICLE TEXT,
+  UDHAAR REAL DEFAULT 0.0,
+  PAID REAL DEFAULT 0.0,
+  REMAINING REAL NOT NULL,
+  Status TEXT NOT NULL DEFAULT 'Unpaid'
+    CHECK (Status IN ('Unpaid', 'Partially Paid', 'Paid')),
+  FOREIGN KEY (TKN) REFERENCES $tableSalesTransactions (TOKEN),
+  FOREIGN KEY (Customer_ID) REFERENCES $tableCustomers (customer_ID)
+)
+''',
+          transform: (Map<String, Object?> row) {
+            return <String, Object?>{
+              'PRIMARY_KEY': row['PRIMARY_KEY'],
+              'TYPE': row['TYPE'],
+              'TKN': row['TKN'],
+              'DATE_TIME': row['DATE_TIME'],
+              'Customer_name': row['Customer_name'],
+              'Customer_ID': row['Customer_ID'],
+              'LITERS': fuelToText(row['LITERS']),
+              'RATE': fuelToText(row['RATE']),
+              'AMOUNT': roundRupees(row['AMOUNT']),
+              'DESCRIPTION': row['DESCRIPTION'],
+              'VEHICLE': row['VEHICLE'],
+              'UDHAAR': roundRupees(row['UDHAAR']),
+              'PAID': roundRupees(row['PAID']),
+              'REMAINING': roundRupees(row['REMAINING']),
+              'Status': row['Status'],
+            };
+          },
+        );
+      }
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._ensureFuelPrecisionSchema failed: $error\n$stack',
+      );
+    } finally {
+      await db.execute('PRAGMA foreign_keys = ON');
+    }
+  }
+
+  Future<bool> _columnIsText(Database db, String table, String column) async {
+    final List<Map<String, Object?>> cols = await db.rawQuery(
+      'PRAGMA table_info($table)',
+    );
+    for (final Map<String, Object?> col in cols) {
+      if ('${col['name']}' == column) {
+        return '${col['type']}'.toUpperCase() == 'TEXT';
+      }
+    }
+    return false;
+  }
+
+  Future<void> _rebuildTable(
+    Database db, {
+    required String table,
+    required String createSql,
+    required Map<String, Object?> Function(Map<String, Object?> row) transform,
+  }) async {
+    final String tmp = '${table}__precision';
+    await db.execute('DROP TABLE IF EXISTS $tmp');
+    await db.execute(createSql);
+    final List<Map<String, Object?>> rows = await db.query(table);
+    if (rows.isNotEmpty) {
+      final Batch batch = db.batch();
+      for (final Map<String, Object?> row in rows) {
+        batch.insert(tmp, transform(row));
+      }
+      await batch.commit(noResult: true);
+    }
+    await db.execute('DROP TABLE $table');
+    await db.execute('ALTER TABLE $tmp RENAME TO $table');
   }
 
   /// Seeds SHA-256(`1234`) when `owner_master_pin_hash` is missing.
@@ -377,6 +809,41 @@ CREATE TABLE IF NOT EXISTS $tableAppSettings (
     } catch (error, stack) {
       debugPrint('DatabaseHelper._seedOwnerMasterPin failed: $error\n$stack');
     }
+  }
+
+  Future<void> _seedOwnerAutoLockMinutes(Database db) async {
+    try {
+      final List<Map<String, Object?>> rows = await db.query(
+        tableAppSettings,
+        columns: const <String>['value'],
+        where: 'key = ?',
+        whereArgs: const <Object>[settingOwnerAutoLockMinutes],
+        limit: 1,
+      );
+      final String stored = rows.isEmpty
+          ? ''
+          : '${rows.first['value'] ?? ''}'.trim();
+      if (stored.isNotEmpty) {
+        return;
+      }
+      await db.insert(tableAppSettings, <String, Object?>{
+        'key': settingOwnerAutoLockMinutes,
+        'value': '$defaultOwnerAutoLockMinutes',
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      debugPrint(
+        'DatabaseHelper: seeded owner auto-lock minutes='
+        '$defaultOwnerAutoLockMinutes',
+      );
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._seedOwnerAutoLockMinutes failed: $error\n$stack',
+      );
+    }
+  }
+
+  Future<void> _seedOwnerAccessSettings(Database db) async {
+    await _seedOwnerMasterPin(db);
+    await _seedOwnerAutoLockMinutes(db);
   }
 
   /// Old in-memory seed (Sajjad / Babar / Tariq / Rashid) was written into
@@ -452,11 +919,31 @@ CREATE TABLE IF NOT EXISTS $tableAppSettings (
                 : resolvedHelperId,
           }, conflictAlgorithm: ConflictAlgorithm.ignore);
         }
-        await txn.insert(
-          tableSalesTransactions,
-          Map<String, Object?>.from(sale)
-            ..removeWhere((String _, Object? value) => value == null),
-        );
+        final Map<String, Object?> saleRow = Map<String, Object?>.from(sale)
+          ..removeWhere((String _, Object? value) => value == null);
+        saleRow['LITERS'] = fuelToText(saleRow['LITERS']);
+        saleRow['RATE'] = fuelToText(saleRow['RATE']);
+        final String espTxId = '${saleRow['ESP_TX_ID'] ?? ''}'.trim();
+        if (espTxId.isNotEmpty) {
+          saleRow['AMOUNT'] = parseDecimal(saleRow['AMOUNT'])
+              .truncate(scale: 2)
+              .toDouble();
+        } else {
+          saleRow['AMOUNT'] = roundRupees(saleRow['AMOUNT']);
+        }
+        if (espTxId.isNotEmpty) {
+          final List<Map<String, Object?>> existing = await txn.query(
+            tableSalesTransactions,
+            columns: <String>['TOKEN'],
+            where: 'ESP_TX_ID = ?',
+            whereArgs: <Object>[espTxId],
+            limit: 1,
+          );
+          if (existing.isNotEmpty) {
+            return;
+          }
+        }
+        await txn.insert(tableSalesTransactions, saleRow);
         final String? creditId = creditCustomerId?.trim();
         if (creditId != null && creditId.isNotEmpty) {
           final String creditName =
@@ -476,15 +963,15 @@ CREATE TABLE IF NOT EXISTS $tableAppSettings (
             at:
                 DateTime.tryParse('${sale['DATE_TIME'] ?? ''}') ??
                 DateTime.now(),
-            amount: _asDouble(sale['AMOUNT']),
+            amount: parseDecimal(saleRow['AMOUNT']).toDouble(),
             token: sale['TOKEN'] as String?,
-            liters: _asDouble(sale['LITERS']),
-            rate: _asDouble(sale['RATE']),
+            liters: parseFuel(saleRow['LITERS']).toDouble(),
+            rate: parseFuel(saleRow['RATE']).toDouble(),
             description: creditDescription ?? '',
             vehicle: creditVehicle ?? sale['VEHICLE_NO'] as String?,
           );
         }
-        await _applyStockDelta(txn, -volumeLiters);
+        await _applyStockDelta(txn, parseFuel(-volumeLiters));
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.commitSaleTransaction failed: $error\n$stack');
@@ -508,12 +995,15 @@ SELECT
   s.VEHICLE_NO,
   s.HELPER,
   s.Manager,
+  s.SHIFT_ID,
+  s.MANAGER_ID,
+  s.HELPER_ID,
   s.ACTIONS,
   m.Manager_name AS manager_name,
   h.Helper_name AS helper_name
 FROM $tableSalesTransactions s
-LEFT JOIN $tableManagers m ON m.manager_ID = s.Manager
-LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
+LEFT JOIN $tableManagers m ON m.manager_ID = COALESCE(s.MANAGER_ID, s.Manager)
+LEFT JOIN $tableHelpers h ON h.Helper_ID = COALESCE(s.HELPER_ID, s.HELPER)
 ''';
 
   Future<List<Map<String, Object?>>> queryRecentSales({int limit = 20}) async {
@@ -522,6 +1012,47 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
 
   Future<List<Map<String, Object?>>> queryAllSales() async {
     return _querySales();
+  }
+
+  /// Itemized `sales_transactions` for one shift, including untagged rows
+  /// whose `DATE_TIME` falls inside that shift window.
+  Future<List<Map<String, Object?>>> querySalesByShiftId(int shiftId) async {
+    if (shiftId <= 0) {
+      return const <Map<String, Object?>>[];
+    }
+    try {
+      final Database db = await database;
+      final List<Map<String, Object?>> shifts = await db.query(
+        tableShifts,
+        columns: const <String>['START_TIME', 'END_TIME'],
+        where: 'SHIFT_ID = ?',
+        whereArgs: <Object>[shiftId],
+        limit: 1,
+      );
+      if (shifts.isEmpty) {
+        return const <Map<String, Object?>>[];
+      }
+      final String start = '${shifts.first['START_TIME'] ?? ''}';
+      final String end = '${shifts.first['END_TIME'] ?? ''}'.trim();
+      return db.rawQuery(
+        '''
+$_salesSelectSql
+WHERE (
+  s.SHIFT_ID = ?
+  OR (
+    s.SHIFT_ID IS NULL
+    AND datetime(s.DATE_TIME) >= datetime(?)
+    AND (? = '' OR datetime(s.DATE_TIME) <= datetime(?))
+  )
+)
+ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
+''',
+        <Object>[shiftId, start, end, end],
+      );
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.querySalesByShiftId failed: $error\n$stack');
+      rethrow;
+    }
   }
 
   /// Helper-tab ledger: `sales_transactions` rows for one `helpers.Helper_ID`
@@ -563,6 +1094,7 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
     String? helperId,
     DateTime? fromInclusive,
     DateTime? toInclusive,
+    int? shiftId,
     int? limit,
   }) async {
     try {
@@ -572,8 +1104,13 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
       final List<String> where = <String>[];
       final String? resolvedHelper = helperId?.trim();
       if (resolvedHelper != null && resolvedHelper.isNotEmpty) {
-        where.add('s.HELPER = ?');
+        where.add('(s.HELPER_ID = ? OR s.HELPER = ?)');
         args.add(resolvedHelper);
+        args.add(resolvedHelper);
+      }
+      if (shiftId != null && shiftId > 0) {
+        where.add('s.SHIFT_ID = ?');
+        args.add(shiftId);
       }
       if (fromInclusive != null) {
         final DateTime start = DateTime(
@@ -656,27 +1193,50 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
     }
   }
 
-  /// Current diesel volume on the singleton `diesel_stock` row. Raw REAL.
+  /// Current tank liters from `diesel_stock.stock_quantity`.
   Future<double> getStockAmount() async {
+    try {
+      final ({double quantity, double averageRate, double amount}) stock =
+          await getDieselStock();
+      return stock.quantity;
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.getStockAmount failed: $error\n$stack');
+      rethrow;
+    }
+  }
+
+  /// Singleton tank row: liters and WAC at 13-place TEXT; PKR is whole rupees.
+  Future<({double quantity, double averageRate, double amount})>
+  getDieselStock() async {
     try {
       final Database db = await database;
       final List<Map<String, Object?>> rows = await db.query(
         tableDieselStock,
-        columns: const <String>['Stock_amount'],
+        columns: const <String>[
+          'stock_quantity',
+          'Average_rate',
+          'Stock_amount',
+        ],
         where: 'id = ?',
         whereArgs: const <Object>[1],
         limit: 1,
       );
       if (rows.isEmpty) {
-        await db.insert(tableDieselStock, const <String, Object?>{
+        await db.insert(tableDieselStock, <String, Object?>{
           'id': 1,
-          'Stock_amount': 0.0,
+          'stock_quantity': zeroFuelText,
+          'Average_rate': zeroFuelText,
+          'Stock_amount': 0,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
-        return 0.0;
+        return (quantity: 0.0, averageRate: 0.0, amount: 0.0);
       }
-      return _asDouble(rows.first['Stock_amount']);
+      return (
+        quantity: _asDouble(rows.first['stock_quantity']),
+        averageRate: _asDouble(rows.first['Average_rate']),
+        amount: _asDouble(rows.first['Stock_amount']),
+      );
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.getStockAmount failed: $error\n$stack');
+      debugPrint('DatabaseHelper.getDieselStock failed: $error\n$stack');
       rethrow;
     }
   }
@@ -693,7 +1253,7 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
       final Database db = await database;
       final double signedDelta = isAddition ? deltaVolume : -deltaVolume;
       await db.transaction((Transaction txn) async {
-        await _applyStockDelta(txn, signedDelta);
+        await _applyStockDelta(txn, parseFuel(signedDelta));
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.updateStockAmount failed: $error\n$stack');
@@ -716,8 +1276,8 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
 
   /// Inserts a purchase, upserts the manager FK, and updates `diesel_stock`.
   ///
-  /// When [replaceStock] is true the tank volume is set to [quantity]
-  /// (Initial Dip). Otherwise [quantity] is added.
+  /// WAC uses stored whole-rupee amounts:
+  /// `(Stock_amount + this AMOUNT) / (stock_quantity + this QUANTITY)`.
   Future<void> commitPurchase({
     required String invNo,
     required String datetimeIso,
@@ -728,9 +1288,11 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
     required String managerName,
     required String managerPin,
     String tafseel = '',
-    bool replaceStock = false,
   }) async {
     try {
+      final Decimal liters = parseFuel(quantity);
+      final Decimal unitRate = parseFuel(rate);
+      final int rupees = roundRupees(amount);
       final Database db = await database;
       await db.transaction((Transaction txn) async {
         await txn.insert(tableManagers, <String, Object?>{
@@ -741,20 +1303,81 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.HELPER
         await txn.insert(tablePurchases, <String, Object?>{
           'INV_NO': invNo,
           'DATETIME': datetimeIso,
-          'QUANTITY': quantity,
-          'RATE': rate,
-          'AMOUNT': amount,
+          'QUANTITY': fuelToText(liters),
+          'RATE': fuelToText(unitRate),
+          'AMOUNT': rupees,
           'TAFSEEL': tafseel.trim().isEmpty ? null : tafseel.trim(),
           'Manager': managerId,
         });
-        if (replaceStock) {
-          await _setStockAmount(txn, quantity);
-        } else {
-          await _applyStockDelta(txn, quantity);
-        }
+        await _applyPurchaseToStock(
+          txn,
+          purchaseLiters: liters,
+          purchaseAmount: Decimal.fromInt(rupees),
+        );
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.commitPurchase failed: $error\n$stack');
+      rethrow;
+    }
+  }
+
+  /// Corrects an existing purchase in place. [invNo] is never rewritten.
+  ///
+  /// Stock is delta-adjusted from the current tank (not a history replay) so
+  /// later invoices and sales keep their own running WAC.
+  Future<void> updatePurchase({
+    required String invNo,
+    required double quantity,
+    required double rate,
+    required double amount,
+    String tafseel = '',
+  }) async {
+    try {
+      final Decimal newLiters = parseFuel(quantity);
+      final Decimal newRate = parseFuel(rate);
+      final int newRupees = roundRupees(amount);
+      final Database db = await database;
+      await db.transaction((Transaction txn) async {
+        final List<Map<String, Object?>> rows = await txn.query(
+          tablePurchases,
+          columns: const <String>['QUANTITY', 'AMOUNT'],
+          where: 'INV_NO = ?',
+          whereArgs: <Object>[invNo],
+          limit: 1,
+        );
+        if (rows.isEmpty) {
+          throw StateError('Purchase $invNo was not found');
+        }
+        final Decimal oldLiters = parseFuel(rows.first['QUANTITY']);
+        final Decimal oldAmount = rupeesDecimal(rows.first['AMOUNT']);
+        final Decimal deltaLiters = truncateFuel(newLiters - oldLiters);
+        final Decimal deltaAmount = Decimal.fromInt(newRupees) - oldAmount;
+        if (deltaLiters != Decimal.zero || deltaAmount != Decimal.zero) {
+          final ({Decimal quantity, Decimal averageRate, Decimal amount})
+          current = await _readDieselStock(txn);
+          if (truncateFuel(current.quantity + deltaLiters) < Decimal.zero) {
+            throw const PurchaseStockOverdrawException();
+          }
+          await _applyPurchaseToStock(
+            txn,
+            purchaseLiters: deltaLiters,
+            purchaseAmount: deltaAmount,
+          );
+        }
+        await txn.update(
+          tablePurchases,
+          <String, Object?>{
+            'QUANTITY': fuelToText(newLiters),
+            'RATE': fuelToText(newRate),
+            'AMOUNT': newRupees,
+            'TAFSEEL': tafseel.trim().isEmpty ? null : tafseel.trim(),
+          },
+          where: 'INV_NO = ?',
+          whereArgs: <Object>[invNo],
+        );
+      });
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.updatePurchase failed: $error\n$stack');
       rethrow;
     }
   }
@@ -857,7 +1480,7 @@ SELECT
     SELECT s.SHIFT_ID
     FROM $tableShifts s
     WHERE s.MANAGER = m.manager_ID
-      AND UPPER(TRIM(s.STATUS)) = 'OPEN'
+      AND ${ShiftStatusStorage.liveAliasSql}
     ORDER BY s.SHIFT_ID DESC
     LIMIT 1
   ) AS open_shift_id
@@ -962,8 +1585,8 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
       final List<Map<String, Object?>> rows = await db.query(
         tableShifts,
         columns: const <String>['SHIFT_ID', 'MANAGER', 'STATUS'],
-        where: 'MANAGER = ? AND UPPER(TRIM(STATUS)) = ?',
-        whereArgs: <Object>[managerId.trim(), 'OPEN'],
+        where: 'MANAGER = ? AND ${ShiftStatusStorage.liveSql}',
+        whereArgs: <Object>[managerId.trim()],
         orderBy: 'SHIFT_ID DESC',
         limit: 1,
       );
@@ -1124,6 +1747,9 @@ SELECT
   s.ACTUAL_CASH,
   s.DISCREPANCY,
   s.STATUS,
+  s.NOTES,
+  s.OPENING_METERS,
+  s.CLOSING_METERS,
   m.Manager_name AS manager_name,
   h.Helper_name AS helper_name
 FROM $tableShifts s
@@ -1141,18 +1767,65 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     }
   }
 
+  static const String _shiftLedgerSelectSql =
+      '''
+SELECT
+  s.SHIFT_ID AS shift_id,
+  s.MANAGER AS manager_id,
+  m.Manager_name AS manager_name,
+  s.START_TIME AS start_timestamp,
+  s.END_TIME AS end_timestamp,
+  s.STATUS AS shift_status,
+  COUNT(t.TOKEN) AS total_transactions,
+  COALESCE(SUM(t.AMOUNT), 0.0) AS total_shift_pkr,
+  COALESCE(SUM(t.LITERS), 0.0) AS total_shift_liters
+FROM $tableShifts s
+LEFT JOIN $tableManagers m ON m.manager_ID = s.MANAGER
+LEFT JOIN $tableSalesTransactions t ON (
+  t.SHIFT_ID = s.SHIFT_ID
+  OR (
+    t.SHIFT_ID IS NULL
+    AND datetime(t.DATE_TIME) >= datetime(s.START_TIME)
+    AND (
+      s.END_TIME IS NULL
+      OR TRIM(s.END_TIME) = ''
+      OR datetime(t.DATE_TIME) <= datetime(s.END_TIME)
+    )
+  )
+)
+GROUP BY s.SHIFT_ID, s.MANAGER, m.Manager_name, s.START_TIME, s.END_TIME, s.STATUS
+ORDER BY datetime(s.START_TIME) DESC
+''';
+
+  /// Shift sessions with nested sales totals (`COUNT` / `SUM` over LEFT JOIN).
+  Future<List<Map<String, Object?>>> queryShiftLedgerSummaries() async {
+    try {
+      final Database db = await database;
+      return db.rawQuery(_shiftLedgerSelectSql);
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.queryShiftLedgerSummaries failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
   Future<int> insertShift({
     required String managerId,
     String? helperId,
     required String startTimeIso,
-    String status = 'OPEN',
+    String status = ShiftStatusStorage.live,
     double expectedCash = 0,
     double actualCash = 0,
     double discrepancy = 0,
     String? endTimeIso,
+    String notes = '',
+    String openingMeters = '{}',
+    String closingMeters = '{}',
+    DatabaseExecutor? executor,
   }) async {
     try {
-      final Database db = await database;
+      final DatabaseExecutor db = executor ?? await database;
       return db.insert(tableShifts, <String, Object?>{
         'MANAGER': managerId,
         'Helper': helperId,
@@ -1162,6 +1835,9 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
         'ACTUAL_CASH': actualCash,
         'DISCREPANCY': discrepancy,
         'STATUS': status,
+        'NOTES': notes,
+        'OPENING_METERS': openingMeters,
+        'CLOSING_METERS': closingMeters,
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.insertShift failed: $error\n$stack');
@@ -1177,9 +1853,13 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     double? actualCash,
     double? discrepancy,
     String? status,
+    String? notes,
+    String? openingMeters,
+    String? closingMeters,
+    DatabaseExecutor? executor,
   }) async {
     try {
-      final Database db = await database;
+      final DatabaseExecutor db = executor ?? await database;
       final Map<String, Object?> values = <String, Object?>{};
       if (helperId != null) {
         values['Helper'] = helperId;
@@ -1199,6 +1879,15 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
       if (status != null) {
         values['STATUS'] = status;
       }
+      if (notes != null) {
+        values['NOTES'] = notes;
+      }
+      if (openingMeters != null) {
+        values['OPENING_METERS'] = openingMeters;
+      }
+      if (closingMeters != null) {
+        values['CLOSING_METERS'] = closingMeters;
+      }
       if (values.isEmpty) {
         return;
       }
@@ -1215,6 +1904,13 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
       debugPrint('DatabaseHelper.updateShift failed: $error\n$stack');
       rethrow;
     }
+  }
+
+  Future<T> runInTransaction<T>(
+    Future<T> Function(Transaction txn) action,
+  ) async {
+    final Database db = await database;
+    return db.transaction(action);
   }
 
   Future<List<Map<String, Object?>>> queryCustomers() async {
@@ -1551,6 +2247,10 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
       await _setForeignKeys(db, enabled: false);
       try {
         await db.transaction((Transaction txn) async {
+          Map<String, String> preservedGoogle = const <String, String>{};
+          if (selected.contains(tableStationSettings)) {
+            preservedGoogle = await _readGoogleIdentitySettingsOn(txn);
+          }
           for (final String table in selected) {
             final int deleted = await txn.delete(table, where: '1');
             debugPrint('DatabaseHelper: DELETE FROM $table WHERE 1 → $deleted');
@@ -1569,9 +2269,11 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
             }
           }
           if (selected.contains(tableDieselStock)) {
-            await txn.insert(tableDieselStock, const <String, Object?>{
+            await txn.insert(tableDieselStock, <String, Object?>{
               'id': 1,
-              'Stock_amount': 0.0,
+              'stock_quantity': zeroFuelText,
+              'Average_rate': zeroFuelText,
+              'Stock_amount': 0,
             }, conflictAlgorithm: ConflictAlgorithm.replace);
           }
           if (selected.contains(tableAppSettings)) {
@@ -1579,6 +2281,13 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
               'key': settingOwnerMasterPinHash,
               'value': PinHasher.hash(defaultOwnerMasterPin),
             }, conflictAlgorithm: ConflictAlgorithm.replace);
+            await txn.insert(tableAppSettings, <String, Object?>{
+              'key': settingOwnerAutoLockMinutes,
+              'value': '$defaultOwnerAutoLockMinutes',
+            }, conflictAlgorithm: ConflictAlgorithm.replace);
+          }
+          if (preservedGoogle.isNotEmpty) {
+            await _writeGoogleIdentitySettingsOn(txn, preservedGoogle);
           }
         });
       } finally {
@@ -1615,6 +2324,7 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
       tableDieselStock,
       tableStationSettings,
       tableAppSettings,
+      tableAppSessionState,
       tableAuditLogs,
       tableCloudBackupLogs,
     ];
@@ -1653,7 +2363,8 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     try {
       final Database db = await database;
       final List<Map<String, Object?>> rows = await db.rawQuery(
-        "SELECT COUNT(*) AS n FROM $tableShifts WHERE UPPER(TRIM(STATUS)) = 'OPEN'",
+        'SELECT COUNT(*) AS n FROM $tableShifts '
+        'WHERE ${ShiftStatusStorage.blockingSql}',
       );
       if (rows.isEmpty) {
         return 0;
@@ -1676,12 +2387,109 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     try {
       final Database db = await database;
       return db.rawQuery(
-        "$_shiftsSelectSql WHERE UPPER(TRIM(s.STATUS)) = 'OPEN' "
+        '$_shiftsSelectSql WHERE ${ShiftStatusStorage.liveAliasSql} '
         'ORDER BY s.SHIFT_ID DESC',
       );
     } catch (error, stack) {
       debugPrint('DatabaseHelper.queryOpenShifts failed: $error\n$stack');
       rethrow;
+    }
+  }
+
+  Future<AppSessionSnapshot> readAppSessionState() async {
+    try {
+      final Database db = await database;
+      final List<Map<String, Object?>> rows = await db.query(
+        tableAppSessionState,
+        where: 'id = 1',
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        return AppSessionSnapshot.clean;
+      }
+      final Map<String, Object?> row = rows.first;
+      return AppSessionSnapshot(
+        isCleanShutdown: _asInt(row['is_clean_shutdown']) != 0,
+        lastHeartbeatAt: DateTime.tryParse('${row['last_heartbeat_at'] ?? ''}'),
+        uncleanExitAt: DateTime.tryParse('${row['unclean_exit_at'] ?? ''}'),
+      );
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.readAppSessionState failed: $error\n$stack');
+      return AppSessionSnapshot.clean;
+    }
+  }
+
+  Future<void> markRuntimeUnclean() async {
+    try {
+      final Database db = await database;
+      await db.update(tableAppSessionState, <String, Object?>{
+        'is_clean_shutdown': 0,
+        'last_heartbeat_at': DateTime.now().toIso8601String(),
+      }, where: 'id = 1');
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.markRuntimeUnclean failed: $error\n$stack');
+    }
+  }
+
+  Future<void> markCleanShutdown() async {
+    try {
+      final Database db = await database;
+      await db.update(tableAppSessionState, <String, Object?>{
+        'is_clean_shutdown': 1,
+        'last_heartbeat_at': DateTime.now().toIso8601String(),
+      }, where: 'id = 1');
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.markCleanShutdown failed: $error\n$stack');
+    }
+  }
+
+  Future<void> touchSessionHeartbeat() async {
+    try {
+      final Database db = await database;
+      await db.update(tableAppSessionState, <String, Object?>{
+        'last_heartbeat_at': DateTime.now().toIso8601String(),
+      }, where: 'id = 1');
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.touchSessionHeartbeat failed: $error\n$stack');
+    }
+  }
+
+  /// On crash boot, stamp [unclean_exit_at] from the last heartbeat if empty.
+  Future<AppSessionSnapshot> captureUncleanExitIfNeeded() async {
+    try {
+      final AppSessionSnapshot current = await readAppSessionState();
+      if (current.isCleanShutdown) {
+        return current;
+      }
+      if (current.uncleanExitAt != null) {
+        return current;
+      }
+      final DateTime stamp = current.lastHeartbeatAt ?? DateTime.now();
+      final Database db = await database;
+      await db.update(tableAppSessionState, <String, Object?>{
+        'unclean_exit_at': stamp.toIso8601String(),
+      }, where: 'id = 1');
+      return AppSessionSnapshot(
+        isCleanShutdown: false,
+        lastHeartbeatAt: current.lastHeartbeatAt,
+        uncleanExitAt: stamp,
+      );
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.captureUncleanExitIfNeeded failed: $error\n$stack',
+      );
+      return readAppSessionState();
+    }
+  }
+
+  Future<void> clearUncleanExitStamp() async {
+    try {
+      final Database db = await database;
+      await db.update(tableAppSessionState, <String, Object?>{
+        'unclean_exit_at': null,
+      }, where: 'id = 1');
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.clearUncleanExitStamp failed: $error\n$stack');
     }
   }
 
@@ -1732,6 +2540,7 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     required String details,
     String? managerId,
     DateTime? at,
+    bool elevatedByOwner = false,
   }) async {
     try {
       final Database db = await database;
@@ -1741,6 +2550,7 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
         'manager_ID': operator.isEmpty ? 'SYSTEM' : operator,
         'action_type': actionType.trim(),
         'details': details,
+        'elevated_by_owner': elevatedByOwnerFlag(elevatedByOwner),
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.insertAuditLog failed: $error\n$stack');
@@ -1851,6 +2661,26 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     await writeAppSetting(settingOwnerMasterPinHash, hash.trim());
   }
 
+  Future<int> readOwnerAutoLockMinutes() async {
+    final Database db = await database;
+    await _seedOwnerAutoLockMinutes(db);
+    final String? stored = await readAppSetting(settingOwnerAutoLockMinutes);
+    final int? parsed = int.tryParse(stored?.trim() ?? '');
+    if (parsed != null && parsed >= 0) {
+      return parsed;
+    }
+    await writeAppSetting(
+      settingOwnerAutoLockMinutes,
+      '$defaultOwnerAutoLockMinutes',
+    );
+    return defaultOwnerAutoLockMinutes;
+  }
+
+  Future<void> writeOwnerAutoLockMinutes(int minutes) async {
+    final int safe = minutes < 0 ? defaultOwnerAutoLockMinutes : minutes;
+    await writeAppSetting(settingOwnerAutoLockMinutes, '$safe');
+  }
+
   Future<String?> readSetting(String key) async {
     try {
       final Database db = await database;
@@ -1895,6 +2725,74 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     } catch (error, stack) {
       debugPrint('DatabaseHelper.deleteSetting failed: $error\n$stack');
       rethrow;
+    }
+  }
+
+  Future<Map<String, String>> snapshotGoogleIdentitySettings() async {
+    try {
+      final Database db = await database;
+      return _readGoogleIdentitySettingsOn(db);
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.snapshotGoogleIdentitySettings failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
+  Future<void> restoreGoogleIdentitySettings(Map<String, String> values) async {
+    try {
+      if (values.isEmpty) {
+        return;
+      }
+      final Database db = await database;
+      await _writeGoogleIdentitySettingsOn(db, values);
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.restoreGoogleIdentitySettings failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
+  Future<Map<String, String>> _readGoogleIdentitySettingsOn(
+    DatabaseExecutor executor,
+  ) async {
+    final List<String> keys = googleIdentitySettingKeys;
+    if (keys.isEmpty) {
+      return const <String, String>{};
+    }
+    final String placeholders = List<String>.filled(keys.length, '?').join(',');
+    final List<Map<String, Object?>> rows = await executor.query(
+      tableStationSettings,
+      columns: const <String>['key', 'value'],
+      where: 'key IN ($placeholders)',
+      whereArgs: keys,
+    );
+    final Map<String, String> out = <String, String>{};
+    for (final Map<String, Object?> row in rows) {
+      final String key = '${row['key'] ?? ''}'.trim();
+      final String value = '${row['value'] ?? ''}';
+      if (key.isNotEmpty && value.trim().isNotEmpty) {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
+  Future<void> _writeGoogleIdentitySettingsOn(
+    DatabaseExecutor executor,
+    Map<String, String> values,
+  ) async {
+    for (final MapEntry<String, String> entry in values.entries) {
+      final String key = entry.key.trim();
+      if (key.isEmpty) {
+        continue;
+      }
+      await executor.insert(tableStationSettings, <String, Object?>{
+        'key': key,
+        'value': entry.value,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   }
 
@@ -2027,19 +2925,22 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     final String resolvedType = type.trim().toUpperCase();
     final bool isSale = resolvedType == 'SALE';
     final String resolvedCustomerId = customerId.trim().padLeft(2, '0');
-    final double previous = await _latestRemainingOn(txn, resolvedCustomerId);
-    final double remaining = isSale ? previous + amount : previous - amount;
+    final int rupees = roundRupees(amount);
+    final int previous = roundRupees(
+      await _latestRemainingOn(txn, resolvedCustomerId),
+    );
+    final int remaining = isSale ? previous + rupees : previous - rupees;
     final List<Map<String, Object?>> paidRows = await txn.rawQuery(
       'SELECT COALESCE(SUM(PAID), 0) AS paid FROM $tableUnifiedUdhaarLedger WHERE Customer_ID = ?',
       <Object>[resolvedCustomerId],
     );
-    final double priorPaid = _asDouble(
+    final int priorPaid = roundRupees(
       paidRows.isEmpty ? 0 : paidRows.first['paid'],
     );
-    final double thisPaid = isSale ? 0.0 : amount;
-    final String status = remaining <= 0.004
+    final int thisPaid = isSale ? 0 : rupees;
+    final String status = remaining <= 0
         ? 'Paid'
-        : (priorPaid + thisPaid > 0.004 ? 'Partially Paid' : 'Unpaid');
+        : (priorPaid + thisPaid > 0 ? 'Partially Paid' : 'Unpaid');
     final int serial = await _nextLedgerSerial(
       txn,
       shiftId: shiftId,
@@ -2056,14 +2957,14 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
       'DATE_TIME': at.toIso8601String(),
       'Customer_name': customerName.trim(),
       'Customer_ID': resolvedCustomerId,
-      'LITERS': isSale ? liters : 0.0,
-      'RATE': isSale ? rate : 0.0,
-      'AMOUNT': amount,
+      'LITERS': isSale ? fuelToText(liters) : zeroFuelText,
+      'RATE': isSale ? fuelToText(rate) : zeroFuelText,
+      'AMOUNT': rupees,
       'DESCRIPTION': description.trim(),
       'VEHICLE': vehicleValue == null || vehicleValue.isEmpty
           ? null
           : vehicleValue,
-      'UDHAAR': isSale ? amount : 0.0,
+      'UDHAAR': isSale ? rupees : 0,
       'PAID': thisPaid,
       'REMAINING': remaining,
       'Status': status,
@@ -2124,34 +3025,91 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
     return trimmed.replaceFirst(RegExp(r'^SHF-', caseSensitive: false), '');
   }
 
-  Future<void> _applyStockDelta(Transaction txn, double signedDelta) async {
-    final int changed = await txn.rawUpdate(
-      'UPDATE $tableDieselStock SET Stock_amount = Stock_amount + ? WHERE id = 1',
-      <Object>[signedDelta],
+  Future<void> _applyPurchaseToStock(
+    Transaction txn, {
+    required Decimal purchaseLiters,
+    required Decimal purchaseAmount,
+  }) async {
+    final ({Decimal quantity, Decimal averageRate, Decimal amount}) current =
+        await _readDieselStock(txn);
+    final Decimal nextQuantity = truncateFuel(
+      current.quantity + purchaseLiters,
     );
-    if (changed == 0) {
-      await txn.insert(tableDieselStock, const <String, Object?>{
-        'id': 1,
-        'Stock_amount': 0.0,
-      }, conflictAlgorithm: ConflictAlgorithm.ignore);
-      await txn.rawUpdate(
-        'UPDATE $tableDieselStock SET Stock_amount = Stock_amount + ? WHERE id = 1',
-        <Object>[signedDelta],
-      );
-    }
+    final Decimal nextRate = nextAverageRate(
+      currentLiters: current.quantity,
+      currentStockAmount: current.amount,
+      purchaseLiters: purchaseLiters,
+      purchaseAmount: purchaseAmount,
+    );
+    await _writeDieselStock(txn, quantity: nextQuantity, averageRate: nextRate);
+  }
+
+  Future<void> _applyStockDelta(Transaction txn, Decimal signedDelta) async {
+    final ({Decimal quantity, Decimal averageRate, Decimal amount}) current =
+        await _readDieselStock(txn);
+    await _writeDieselStock(
+      txn,
+      quantity: truncateFuel(current.quantity + signedDelta),
+      averageRate: current.averageRate,
+    );
   }
 
   Future<void> _setStockAmount(Transaction txn, double volume) async {
+    final ({Decimal quantity, Decimal averageRate, Decimal amount}) current =
+        await _readDieselStock(txn);
+    await _writeDieselStock(
+      txn,
+      quantity: parseFuel(volume),
+      averageRate: current.averageRate,
+    );
+  }
+
+  Future<({Decimal quantity, Decimal averageRate, Decimal amount})>
+  _readDieselStock(Transaction txn) async {
+    final List<Map<String, Object?>> rows = await txn.query(
+      tableDieselStock,
+      columns: const <String>['stock_quantity', 'Average_rate', 'Stock_amount'],
+      where: 'id = ?',
+      whereArgs: const <Object>[1],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return (
+        quantity: Decimal.zero,
+        averageRate: Decimal.zero,
+        amount: Decimal.zero,
+      );
+    }
+    return (
+      quantity: parseFuel(rows.first['stock_quantity']),
+      averageRate: parseFuel(rows.first['Average_rate']),
+      amount: rupeesDecimal(rows.first['Stock_amount']),
+    );
+  }
+
+  /// Writes the singleton row. `Stock_amount` is round(quantity × rate).
+  Future<void> _writeDieselStock(
+    Transaction txn, {
+    required Decimal quantity,
+    required Decimal averageRate,
+  }) async {
+    final Decimal qty = truncateFuel(quantity);
+    final Decimal rate = truncateFuel(averageRate);
+    final Map<String, Object?> values = <String, Object?>{
+      'stock_quantity': fuelToText(qty),
+      'Average_rate': fuelToText(rate),
+      'Stock_amount': roundRupees(qty * rate),
+    };
     final int changed = await txn.update(
       tableDieselStock,
-      <String, Object?>{'Stock_amount': volume},
+      values,
       where: 'id = ?',
       whereArgs: const <Object>[1],
     );
     if (changed == 0) {
       await txn.insert(tableDieselStock, <String, Object?>{
         'id': 1,
-        'Stock_amount': volume,
+        ...values,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   }
@@ -2165,13 +3123,17 @@ LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
   }
 
   static double _asDouble(Object? value) {
-    if (value is double) {
-      return value;
-    }
-    if (value is num) {
-      return value.toDouble();
-    }
-    return 0.0;
+    return storedNumberToDouble(value);
+  }
+}
+
+/// Thrown when a purchase edit would push `diesel_stock` below zero.
+class PurchaseStockOverdrawException implements Exception {
+  const PurchaseStockOverdrawException();
+
+  @override
+  String toString() {
+    return 'PurchaseStockOverdrawException';
   }
 }
 

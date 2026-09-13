@@ -11,11 +11,13 @@ import '../../features/station/data/ledger_pdf_export.dart';
 import '../../features/station/data/transaction_store.dart';
 import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/money_format.dart';
+import '../../features/station/domain/shift_ledger_models.dart';
 import '../../features/station/presentation/ledger_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
-import '../../features/station/presentation/workspace_refresh.dart';
 import '../Sale Screen/Widgets/Services/generate_receipt.dart';
 import '../Sale Screen/Widgets/Services/receipt_preview_widget.dart';
+import 'Widgets/edit_purchase_dialog.dart';
+import 'Widgets/shift_wise_ledger_view.dart';
 
 class LedgerScreen extends ConsumerStatefulWidget {
   const LedgerScreen({super.key});
@@ -31,15 +33,18 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        unawaited(refreshLedgerFromDatabase(ref));
-      }
-    });
+    _searchFocus.addListener(_onSearchFocusChange);
+  }
+
+  void _onSearchFocusChange() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
+    _searchFocus.removeListener(_onSearchFocusChange);
     _search.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -50,10 +55,27 @@ class _LedgerScreenState extends ConsumerState<LedgerScreen> {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final LedgerQuery query = ref.watch(ledgerQueryProvider);
 
+    final bool shiftWiseSales =
+        query.tab == LedgerTab.sales &&
+        query.salesMode == SalesLedgerMode.shiftWise;
+    final List<ShiftLedgerSummary> shifts = shiftWiseSales
+        ? (ref.watch(shiftWisePagerProvider).valueOrNull ??
+              const <ShiftLedgerSummary>[])
+        : const <ShiftLedgerSummary>[];
+    final bool shiftPagerActive = shiftWiseSales && !_searchFocus.hasFocus;
+
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
           _searchFocus.requestFocus();
+        },
+        if (shiftPagerActive) ...<ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
+            ref.read(ledgerQueryProvider.notifier).stepShift(-1, shifts);
+          },
+          const SingleActivator(LogicalKeyboardKey.arrowRight): () {
+            ref.read(ledgerQueryProvider.notifier).stepShift(1, shifts);
+          },
         },
       },
       child: Focus(
@@ -212,17 +234,33 @@ class _SalesLedgerView extends ConsumerWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final LedgerQuery query = ref.watch(ledgerQueryProvider);
     final SalesLedgerSnapshot slice = ref.watch(salesLedgerSliceProvider);
-    final bool filtered = query.salesRange != null;
+    final bool shiftWise = query.salesMode == SalesLedgerMode.shiftWise;
+    final AsyncValue<List<ShiftLedgerSummary>> shiftsAsync = shiftWise
+        ? ref.watch(shiftWisePagerProvider)
+        : const AsyncValue<List<ShiftLedgerSummary>>.data(
+            <ShiftLedgerSummary>[],
+          );
+    final ShiftLedgerSummary? selectedShift = shiftWise
+        ? ref.watch(selectedShiftSummaryProvider)
+        : null;
     final String countLabel = slice.totalCount == 1
         ? 'transaction'
         : 'transactions';
+    final List<ShiftLedgerSummary> shifts =
+        shiftsAsync.valueOrNull ?? const <ShiftLedgerSummary>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         _SalesKpiBar(slice: slice),
         const SizedBox(height: 10),
-        _SalesToolbar(search: search, searchFocus: searchFocus, query: query),
+        _SalesToolbar(
+          search: search,
+          searchFocus: searchFocus,
+          query: query,
+          slice: slice,
+          selectedShift: selectedShift,
+        ),
         const SizedBox(height: 10),
         Expanded(
           child: _TableCard(
@@ -233,56 +271,25 @@ class _SalesLedgerView extends ConsumerWidget {
                   padding: const EdgeInsets.fromLTRB(14, 10, 12, 8),
                   child: Row(
                     children: <Widget>[
-                      Text(
-                        'Sales History',
-                        style: TextStyle(
-                          fontFamily: 'Roboto',
-                          fontWeight: FontWeight.w700,
-                          fontSize: 14,
-                          color: tokens.ink,
-                        ),
+                      Expanded(
+                        child: shiftWise
+                            ? ShiftLedgerTableHeader(summary: selectedShift)
+                            : Text(
+                                'Sales History',
+                                style: TextStyle(
+                                  fontFamily: 'Roboto',
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                  color: tokens.ink,
+                                ),
+                              ),
                       ),
-                      const Spacer(),
-                      DateRangeFilterButton(
-                        range: query.salesRange,
-                        onChanged: (DateTimeRange? range) {
-                          ref
-                              .read(ledgerQueryProvider.notifier)
-                              .setSalesRange(range);
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      _GeneratePdfButton(
-                        onPressed: () {
-                          unawaited(
-                            _exportLedgerPdf(
-                              context,
-                              empty: slice.rows.isEmpty,
-                              export: () {
-                                return LedgerPdfExport.instance.exportSales(
-                                  slice: slice,
-                                  unitId: query.unitId,
-                                  range: query.salesRange,
-                                  search: query.search,
-                                );
-                              },
-                            ),
-                          );
-                        },
-                      ),
+                      if (shiftWise) ShiftLedgerPager(shifts: shifts),
                     ],
                   ),
                 ),
                 Divider(color: tokens.line, height: 1),
-                Expanded(
-                  child: slice.rows.isEmpty
-                      ? _EmptyHint(
-                          message: filtered
-                              ? 'No sales match this date range.'
-                              : 'No sales yet.',
-                        )
-                      : _SalesDataTable(rows: slice.rows),
-                ),
+                Expanded(child: _salesTableBody(ref, shiftsAsync)),
                 Divider(color: tokens.line, height: 1),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
@@ -304,6 +311,150 @@ class _SalesLedgerView extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _salesTableBody(
+    WidgetRef ref,
+    AsyncValue<List<ShiftLedgerSummary>> shiftsAsync,
+  ) {
+    final LedgerQuery query = ref.watch(ledgerQueryProvider);
+    final SalesLedgerSnapshot slice = ref.watch(salesLedgerSliceProvider);
+    final bool shiftWise = query.salesMode == SalesLedgerMode.shiftWise;
+    final bool filtered =
+        query.salesRange != null ||
+        query.unitId != null ||
+        query.search.trim().isNotEmpty;
+
+    if (shiftWise) {
+      return shiftsAsync.when(
+        skipLoadingOnReload: true,
+        skipLoadingOnRefresh: true,
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (Object error, StackTrace stack) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                _EmptyHint(message: 'Could not load shift ledger. $error'),
+                const SizedBox(height: 12),
+                DsPillButton(
+                  label: 'Retry',
+                  compact: true,
+                  onPressed: () {
+                    ref.invalidate(shiftLedgerSummariesProvider);
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+        data: (List<ShiftLedgerSummary> shifts) {
+          if (shifts.isEmpty) {
+            return _EmptyHint(
+              message: query.salesRange != null
+                  ? 'No shifts match this date range.'
+                  : 'No shifts recorded yet.',
+            );
+          }
+          if (slice.rows.isEmpty) {
+            return _EmptyHint(
+              message: filtered
+                  ? 'No sales match this filter.'
+                  : 'No sales in this shift.',
+            );
+          }
+          return _SalesDataTable(rows: slice.rows);
+        },
+      );
+    }
+
+    if (slice.rows.isEmpty) {
+      return _EmptyHint(
+        message: filtered ? 'No sales match this filter.' : 'No sales yet.',
+      );
+    }
+    return _SalesDataTable(rows: slice.rows);
+  }
+}
+
+class _SalesModeToggle extends StatelessWidget {
+  const _SalesModeToggle({required this.mode, required this.onChanged});
+
+  final SalesLedgerMode mode;
+  final ValueChanged<SalesLedgerMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: tokens.canvas,
+        borderRadius: BorderRadius.circular(tokens.radius12),
+        border: Border.all(color: tokens.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          _SalesModeChip(
+            label: 'All Transactions',
+            selected: mode == SalesLedgerMode.allTransactions,
+            onTap: () => onChanged(SalesLedgerMode.allTransactions),
+          ),
+          const SizedBox(width: 4),
+          _SalesModeChip(
+            label: 'Shift-Wise',
+            selected: mode == SalesLedgerMode.shiftWise,
+            onTap: () => onChanged(SalesLedgerMode.shiftWise),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalesModeChip extends StatelessWidget {
+  const _SalesModeChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Material(
+      color: selected
+          ? tokens.coral.withValues(alpha: 0.14)
+          : Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: selected ? tokens.coral : Colors.transparent),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        hoverColor: tokens.ink.withValues(alpha: 0.05),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+              color: selected ? tokens.coralPressed : tokens.inkMuted,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -379,7 +530,12 @@ class _PurchaseLedgerView extends ConsumerWidget {
                               ? 'No purchases match this date range.'
                               : 'No purchases yet.',
                         )
-                      : _PurchaseDataTable(rows: slice.rows),
+                      : _PurchaseDataTable(
+                          rows: slice.rows,
+                          onEdit: (PurchaseTransaction row) {
+                            unawaited(_editPurchase(context, row));
+                          },
+                        ),
                 ),
                 Divider(color: tokens.line, height: 1),
                 Padding(
@@ -506,7 +662,7 @@ class _PurchaseKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Average Purchase Rate',
-              value: formatPkr(slice.averageRate),
+              value: formatAverageRateValue(slice.averageRate),
               hint: 'PKR / L',
               icon: Icons.speed_outlined,
               tint: tokens.warn,
@@ -627,11 +783,15 @@ class _SalesToolbar extends ConsumerWidget {
     required this.search,
     required this.searchFocus,
     required this.query,
+    required this.slice,
+    required this.selectedShift,
   });
 
   final TextEditingController search;
   final FocusNode searchFocus;
   final LedgerQuery query;
+  final SalesLedgerSnapshot slice;
+  final ShiftLedgerSummary? selectedShift;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -674,9 +834,45 @@ class _SalesToolbar extends ConsumerWidget {
               ),
             ),
           ),
+          const SizedBox(width: 8),
+          _SalesModeToggle(
+            mode: query.salesMode,
+            onChanged: (SalesLedgerMode mode) {
+              ref.read(ledgerQueryProvider.notifier).setSalesMode(mode);
+            },
+          ),
+          const SizedBox(width: 8),
+          DateRangeFilterButton(
+            range: query.salesRange,
+            onChanged: (DateTimeRange? range) {
+              ref.read(ledgerQueryProvider.notifier).setSalesRange(range);
+            },
+          ),
+          const SizedBox(width: 8),
+          _GeneratePdfButton(
+            onPressed: () {
+              unawaited(
+                _exportLedgerPdf(
+                  context,
+                  empty: slice.rows.isEmpty,
+                  export: () {
+                    return LedgerPdfExport.instance.exportSales(
+                      slice: slice,
+                      unitId: query.unitId,
+                      range: query.salesRange,
+                      search: query.search,
+                      shiftLabel: query.salesMode == SalesLedgerMode.shiftWise
+                          ? _shiftPdfLabel(selectedShift)
+                          : null,
+                    );
+                  },
+                ),
+              );
+            },
+          ),
           const SizedBox(width: 10),
           SizedBox(
-            width: 260,
+            width: 220,
             child: TextField(
               controller: search,
               focusNode: searchFocus,
@@ -708,6 +904,13 @@ class _SalesToolbar extends ConsumerWidget {
       ),
     );
   }
+}
+
+String? _shiftPdfLabel(ShiftLedgerSummary? shift) {
+  if (shift == null) {
+    return null;
+  }
+  return '${shift.shiftId} · ${shift.managerBadgeLabel}';
 }
 
 class _UnitChip extends StatelessWidget {
@@ -884,159 +1087,369 @@ class _TwoAxisScrollState extends State<_TwoAxisScroll> {
   }
 }
 
-class _SalesDataTable extends ConsumerWidget {
+class _SalesCol {
+  const _SalesCol(this.label, this.width, {this.numeric = false});
+
+  final String label;
+  final double width;
+  final bool numeric;
+}
+
+const List<_SalesCol> _salesCols = <_SalesCol>[
+  _SalesCol('TOKEN', 88),
+  _SalesCol('DATE & TIME', 140),
+  _SalesCol('UNIT NO', 70),
+  _SalesCol('AMOUNT', 86, numeric: true),
+  _SalesCol('LITERS', 76, numeric: true),
+  _SalesCol('RATE', 68, numeric: true),
+  _SalesCol('OPENING READING', 110, numeric: true),
+  _SalesCol('CLOSING READING', 110, numeric: true),
+  _SalesCol('PAYMENT METHOD', 130),
+  _SalesCol('CUSTOMER NAME', 130),
+  _SalesCol('VEHICLE NO', 96),
+  _SalesCol('HELPER', 90),
+  _SalesCol('CASHIER', 90),
+  _SalesCol('ACTIONS', 86),
+];
+
+const double _salesTableMinWidth = 1680;
+const double _salesHeaderHeight = 32;
+const double _salesRowExtent = 52;
+
+class _SalesDataTable extends StatelessWidget {
   const _SalesDataTable({required this.rows});
 
   final List<SaleTransaction> rows;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
+  Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double minWidth = constraints.maxWidth < 1680
-            ? 1680
+        final double minWidth = constraints.maxWidth < _salesTableMinWidth
+            ? _salesTableMinWidth
             : constraints.maxWidth;
-        return _TwoAxisScroll(
-          minWidth: minWidth,
-          child: DataTable(
-            headingRowHeight: 32,
-            dataRowMinHeight: 44,
-            dataRowMaxHeight: 52,
-            horizontalMargin: 14,
-            columnSpacing: 14,
-            headingTextStyle: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 10,
-              letterSpacing: 0.9,
-              color: tokens.inkMuted,
-            ),
-            dataTextStyle: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w500,
-              fontSize: 12,
-              color: tokens.ink,
-            ),
-            columns: const <DataColumn>[
-              DataColumn(label: Text('TOKEN')),
-              DataColumn(label: Text('DATE & TIME')),
-              DataColumn(label: Text('UNIT NO')),
-              DataColumn(label: Text('AMOUNT'), numeric: true),
-              DataColumn(label: Text('LITERS'), numeric: true),
-              DataColumn(label: Text('RATE'), numeric: true),
-              DataColumn(label: Text('OPENING READING'), numeric: true),
-              DataColumn(label: Text('CLOSING READING'), numeric: true),
-              DataColumn(label: Text('PAYMENT METHOD')),
-              DataColumn(label: Text('CUSTOMER NAME')),
-              DataColumn(label: Text('VEHICLE NO')),
-              DataColumn(label: Text('HELPER')),
-              DataColumn(label: Text('CASHIER')),
-              DataColumn(label: Text('ACTIONS')),
-            ],
-            rows: <DataRow>[
-              for (final SaleTransaction row in rows)
-                DataRow(
-                  color: row.isUnsettledUdhaar
-                      ? WidgetStatePropertyAll<Color>(
-                          tokens.bad.withValues(alpha: 0.10),
-                        )
-                      : null,
-                  cells: <DataCell>[
-                    DataCell(
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: <Widget>[
-                          if (row.isUnsettledUdhaar) ...<Widget>[
-                            Container(
-                              width: 4,
-                              height: 18,
-                              decoration: BoxDecoration(
-                                color: tokens.bad,
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
-                          Text(
-                            formatLedgerToken(row.tokenNo),
-                            style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: row.isUnsettledUdhaar
-                                  ? tokens.bad
-                                  : tokens.coralPressed,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    DataCell(
-                      Text(
-                        formatDateTime(row.timestamp),
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                    DataCell(Text(formatUnitLabel(row.unitId))),
-                    DataCell(
-                      Text(
-                        formatPkr(row.amountPkr),
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    DataCell(Text(formatLiters(row.volumeLiters))),
-                    DataCell(Text(formatRate(row.rate))),
-                    DataCell(Text(formatMeterReading(row.openingMeter))),
-                    DataCell(Text(formatMeterReading(row.closingMeter))),
-                    DataCell(
-                      _PaymentPill(
-                        method: row.payment,
-                        settled: row.udhaarSettled,
-                      ),
-                    ),
-                    DataCell(
-                      _CustomerCell(name: row.customerName, notes: row.notes),
-                    ),
-                    DataCell(Text(displayVehicleNo(row.vehicleNo))),
-                    DataCell(
-                      Text(
-                        row.helperName.trim().isEmpty ? '—' : row.helperName,
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                    DataCell(
-                      Text(
-                        row.cashierName,
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                    DataCell(
-                      _RowActions(
-                        showSettle: row.isUnsettledUdhaar,
-                        onPrint: () {
-                          unawaited(_reprint(context, ref, row));
-                        },
-                        onEdit: () {
-                          unawaited(_editSale(context, ref, row));
-                        },
-                        onSettle: () {
-                          unawaited(_settleUdhaar(context, ref, row));
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-            ],
-          ),
-        );
+        return _VirtualSalesTable(minWidth: minWidth, rows: rows);
       },
     );
   }
 }
 
+class _VirtualSalesTable extends ConsumerStatefulWidget {
+  const _VirtualSalesTable({required this.minWidth, required this.rows});
+
+  final double minWidth;
+  final List<SaleTransaction> rows;
+
+  @override
+  ConsumerState<_VirtualSalesTable> createState() => _VirtualSalesTableState();
+}
+
+class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
+  final ScrollController _vertical = ScrollController();
+  final ScrollController _horizontal = ScrollController();
+
+  @override
+  void dispose() {
+    _vertical.dispose();
+    _horizontal.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        return Scrollbar(
+          controller: _horizontal,
+          thumbVisibility: true,
+          notificationPredicate: (ScrollNotification notification) {
+            return notification.depth == 0;
+          },
+          child: SingleChildScrollView(
+            controller: _horizontal,
+            primary: false,
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: widget.minWidth,
+              height: constraints.maxHeight.isFinite
+                  ? constraints.maxHeight
+                  : _salesHeaderHeight + _salesRowExtent,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  SizedBox(
+                    height: _salesHeaderHeight,
+                    child: _salesHeaderRow(tokens),
+                  ),
+                  Divider(color: tokens.line, height: 1),
+                  Expanded(
+                    child: Scrollbar(
+                      controller: _vertical,
+                      thumbVisibility: true,
+                      child: ListView.builder(
+                        controller: _vertical,
+                        primary: false,
+                        itemExtent: _salesRowExtent,
+                        itemCount: widget.rows.length,
+                        itemBuilder: (BuildContext context, int index) {
+                          return _salesDataRow(
+                            context,
+                            tokens,
+                            widget.rows[index],
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _salesHeaderRow(DispensrTokens tokens) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Row(
+        children: <Widget>[
+          for (int i = 0; i < _salesCols.length; i++) ...<Widget>[
+            if (i > 0) const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[i].width,
+              numeric: _salesCols[i].numeric,
+              child: Text(
+                _salesCols[i].label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 10,
+                  letterSpacing: 0.9,
+                  color: tokens.inkMuted,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _salesDataRow(
+    BuildContext context,
+    DispensrTokens tokens,
+    SaleTransaction row,
+  ) {
+    final TextStyle dataStyle = TextStyle(
+      fontFamily: 'Roboto',
+      fontWeight: FontWeight.w500,
+      fontSize: 12,
+      color: tokens.ink,
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: row.isUnsettledUdhaar
+            ? tokens.bad.withValues(alpha: 0.10)
+            : Colors.transparent,
+        border: Border(bottom: BorderSide(color: tokens.line)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: <Widget>[
+            _salesCell(
+              width: _salesCols[0].width,
+              child: Row(
+                children: <Widget>[
+                  if (row.isUnsettledUdhaar) ...<Widget>[
+                    Container(
+                      width: 4,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: tokens.bad,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      formatLedgerToken(row.tokenNo),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                        color: row.isUnsettledUdhaar
+                            ? tokens.bad
+                            : tokens.coralPressed,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[1].width,
+              child: Text(
+                formatDateTime(row.timestamp),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle.copyWith(color: tokens.inkMuted),
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[2].width,
+              child: Text(
+                formatUnitLabel(row.unitId),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[3].width,
+              numeric: true,
+              child: Text(
+                formatPkr(row.amountPkr),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[4].width,
+              numeric: true,
+              child: Text(
+                formatLiters(row.volumeLiters),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[5].width,
+              numeric: true,
+              child: Text(
+                formatRate(row.rate),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[6].width,
+              numeric: true,
+              child: Text(
+                formatMeterReading(row.openingMeter),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[7].width,
+              numeric: true,
+              child: Text(
+                formatMeterReading(row.closingMeter),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[8].width,
+              child: _PaymentPill(
+                method: row.payment,
+                settled: row.udhaarSettled,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[9].width,
+              child: _CustomerCell(name: row.customerName, notes: row.notes),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[10].width,
+              child: Text(
+                displayVehicleNo(row.vehicleNo),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[11].width,
+              child: Text(
+                row.helperName.trim().isEmpty ? '—' : row.helperName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle.copyWith(color: tokens.inkMuted),
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[12].width,
+              child: Text(
+                row.cashierName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle.copyWith(color: tokens.inkMuted),
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[13].width,
+              child: _RowActions(
+                onPrint: () {
+                  unawaited(_reprint(context, ref, row));
+                },
+                onEdit: () {
+                  unawaited(_editSale(context, ref, row));
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _salesCell({
+    required double width,
+    required Widget child,
+    bool numeric = false,
+  }) {
+    return SizedBox(
+      width: width,
+      child: numeric
+          ? Align(alignment: Alignment.centerRight, child: child)
+          : child,
+    );
+  }
+}
+
 class _PurchaseDataTable extends StatelessWidget {
-  const _PurchaseDataTable({required this.rows});
+  const _PurchaseDataTable({required this.rows, required this.onEdit});
 
   final List<PurchaseTransaction> rows;
+  final ValueChanged<PurchaseTransaction> onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -1044,7 +1457,7 @@ class _PurchaseDataTable extends StatelessWidget {
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         return _TwoAxisScroll(
-          minWidth: constraints.maxWidth < 980 ? 980 : constraints.maxWidth,
+          minWidth: constraints.maxWidth < 1080 ? 1080 : constraints.maxWidth,
           child: DataTable(
             headingRowHeight: 32,
             dataRowMinHeight: 38,
@@ -1072,6 +1485,7 @@ class _PurchaseDataTable extends StatelessWidget {
               DataColumn(label: Text('AMOUNT'), numeric: true),
               DataColumn(label: Text('TAFSEEL')),
               DataColumn(label: Text('USERS')),
+              DataColumn(label: Text('ACTIONS')),
             ],
             rows: <DataRow>[
               for (final PurchaseTransaction row in rows)
@@ -1093,7 +1507,7 @@ class _PurchaseDataTable extends StatelessWidget {
                       ),
                     ),
                     DataCell(Text(formatLiters(row.netLiters))),
-                    DataCell(Text(row.ratePerLiter.toStringAsFixed(2))),
+                    DataCell(Text(formatTruncatedDecimal(row.ratePerLiter))),
                     DataCell(
                       Text(
                         formatPkr(row.totalAmount),
@@ -1112,6 +1526,14 @@ class _PurchaseDataTable extends StatelessWidget {
                     ),
                     DataCell(
                       Text(row.user, style: TextStyle(color: tokens.inkMuted)),
+                    ),
+                    DataCell(
+                      _ActionIcon(
+                        tooltip: 'Edit',
+                        icon: Icons.edit_outlined,
+                        color: tokens.inkMuted,
+                        onPressed: () => onEdit(row),
+                      ),
                     ),
                   ],
                 ),
@@ -1159,17 +1581,10 @@ class _CustomerCell extends StatelessWidget {
 }
 
 class _RowActions extends StatelessWidget {
-  const _RowActions({
-    required this.onPrint,
-    required this.onEdit,
-    required this.onSettle,
-    required this.showSettle,
-  });
+  const _RowActions({required this.onPrint, required this.onEdit});
 
   final VoidCallback onPrint;
   final VoidCallback onEdit;
-  final VoidCallback onSettle;
-  final bool showSettle;
 
   @override
   Widget build(BuildContext context) {
@@ -1177,10 +1592,6 @@ class _RowActions extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        if (showSettle) ...<Widget>[
-          _SettleChip(onPressed: onSettle),
-          const SizedBox(width: 4),
-        ],
         _ActionIcon(
           tooltip: 'Print',
           icon: Icons.print_outlined,
@@ -1194,40 +1605,6 @@ class _RowActions extends StatelessWidget {
           onPressed: onEdit,
         ),
       ],
-    );
-  }
-}
-
-class _SettleChip extends StatelessWidget {
-  const _SettleChip({required this.onPressed});
-
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
-    return Material(
-      color: tokens.bad.withValues(alpha: 0.12),
-      shape: StadiumBorder(
-        side: BorderSide(color: tokens.bad.withValues(alpha: 0.45)),
-      ),
-      child: InkWell(
-        onTap: onPressed,
-        customBorder: const StadiumBorder(),
-        hoverColor: tokens.bad.withValues(alpha: 0.10),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          child: Text(
-            'Settle',
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 11,
-              color: tokens.bad,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -1312,62 +1689,17 @@ Future<void> _reprint(
   );
 }
 
-Future<void> _settleUdhaar(
+Future<void> _editPurchase(
   BuildContext context,
-  WidgetRef ref,
-  SaleTransaction row,
+  PurchaseTransaction row,
 ) async {
-  final _SettlementDraft? draft = await showDialog<_SettlementDraft>(
-    context: context,
-    builder: (BuildContext context) {
-      return _SettleUdhaarDialog(txn: row);
-    },
-  );
-  if (!context.mounted || draft == null) {
+  final bool saved = await showEditPurchaseDialogFromLedger(context, row);
+  if (!context.mounted || !saved) {
     return;
   }
-  try {
-    final SaleTransaction? updated = await ref
-        .read(stationControllerProvider.notifier)
-        .settleUdhaar(
-          tokenNo: row.tokenNo,
-          settledAmount: draft.amount,
-          description: draft.description,
-        );
-    if (!context.mounted) {
-      return;
-    }
-    if (updated == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not settle this udhaar')),
-      );
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '${formatLedgerToken(row.tokenNo)} settled — receipt queued',
-        ),
-      ),
-    );
-    await showDialog<void>(
-      context: context,
-      builder: (BuildContext context) {
-        return _ReprintReceiptDialog(
-          txn: updated,
-          title: 'Udhaar Settlement ${formatLedgerToken(updated.tokenNo)}',
-        );
-      },
-    );
-  } catch (error, stack) {
-    debugPrint('Udhaar settle failed: $error\n$stack');
-    if (!context.mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Could not settle udhaar. $error')));
-  }
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('${formatInvoiceNo(row.refNo)} updated')),
+  );
 }
 
 Future<void> _editSale(
@@ -1403,10 +1735,11 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
   final GlobalKey _previewKey = GlobalKey();
   bool _busy = false;
   bool _stationCapture = false;
+  bool _forPrint = false;
 
   ReceiptTicket get _ticket => ReceiptTicket.fromTransaction(widget.txn);
 
-  bool get _udhaar => widget.txn.payment == PaymentMethod.udhaar;
+  bool get _twoCopies => widget.txn.payment.printsTwoCopies;
 
   Future<void> _print() async {
     if (_busy) {
@@ -1414,11 +1747,14 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
     }
     setState(() {
       _busy = true;
+      _forPrint = true;
     });
     try {
+      await WidgetsBinding.instance.endOfFrame;
+      await WidgetsBinding.instance.endOfFrame;
       final Uint8List customerPng = await ReceiptGenerator.instance
           .capturePreview(_previewKey);
-      if (_udhaar) {
+      if (_twoCopies) {
         setState(() {
           _stationCapture = true;
         });
@@ -1426,7 +1762,7 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
         await WidgetsBinding.instance.endOfFrame;
         final Uint8List stationPng = await ReceiptGenerator.instance
             .capturePreview(_previewKey);
-        await ReceiptGenerator.instance.printUdhaarCopies(
+        await ReceiptGenerator.instance.printDualCopies(
           customerPng: customerPng,
           stationPng: stationPng,
           ticket: _ticket,
@@ -1441,7 +1777,7 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            _udhaar
+            _twoCopies
                 ? 'Receipt ${formatLedgerToken(widget.txn.tokenNo)} — 2 copies sent to printer'
                 : 'Receipt ${formatLedgerToken(widget.txn.tokenNo)} sent to printer',
           ),
@@ -1452,6 +1788,9 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
       if (!mounted) {
         return;
       }
+      setState(() {
+        _forPrint = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not print receipt. $error')),
       );
@@ -1503,15 +1842,15 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
               Flexible(
                 child: SingleChildScrollView(
                   child: Center(
-                    child: RepaintBoundary(
-                      key: _previewKey,
+                    child: ThermalReceiptCapture(
+                      captureKey: _previewKey,
                       child: ThermalReceiptView(
                         ticket: _ticket,
-                        copyBanner: !_udhaar
-                            ? null
-                            : (_stationCapture
-                                  ? ReceiptCopy.stationCopyBanner
-                                  : ReceiptCopy.customerCopyBanner),
+                        forPrint: _forPrint,
+                        copyBanner: ReceiptCopy.bannerFor(
+                          payment: widget.txn.payment,
+                          stationCopy: _stationCapture,
+                        ),
                       ),
                     ),
                   ),
@@ -1535,155 +1874,6 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
                       label: _busy ? 'Printing…' : 'Print',
                       icon: Icons.print_outlined,
                       onPressed: _busy ? null : _print,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SettlementDraft {
-  const _SettlementDraft({required this.amount, required this.description});
-
-  final double amount;
-  final String description;
-}
-
-class _SettleUdhaarDialog extends StatefulWidget {
-  const _SettleUdhaarDialog({required this.txn});
-
-  final SaleTransaction txn;
-
-  @override
-  State<_SettleUdhaarDialog> createState() => _SettleUdhaarDialogState();
-}
-
-class _SettleUdhaarDialogState extends State<_SettleUdhaarDialog> {
-  static final FilteringTextInputFormatter _decimalFormatter =
-      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'));
-
-  late final TextEditingController _amount;
-  late final TextEditingController _description;
-  bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _amount = TextEditingController(
-      text: widget.txn.amountPkr.toStringAsFixed(2),
-    );
-    _description = TextEditingController();
-  }
-
-  @override
-  void dispose() {
-    _amount.dispose();
-    _description.dispose();
-    super.dispose();
-  }
-
-  void _confirm() {
-    if (_saving) {
-      return;
-    }
-    final double? value = double.tryParse(_amount.text.trim());
-    if (value == null || value <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid udhaar amount')),
-      );
-      return;
-    }
-    setState(() {
-      _saving = true;
-    });
-    Navigator.of(context).pop(
-      _SettlementDraft(amount: value, description: _description.text.trim()),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
-    return Dialog(
-      backgroundColor: tokens.card,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(tokens.radius20),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                'Settle ${formatLedgerToken(widget.txn.tokenNo)}',
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 16,
-                  color: tokens.ink,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '${displayCustomerName(widget.txn.customerName)} · ${formatPkr(widget.txn.amountPkr)}',
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontSize: 12,
-                  color: tokens.inkMuted,
-                ),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _amount,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                inputFormatters: <TextInputFormatter>[_decimalFormatter],
-                style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Udhaar Amount',
-                  hintText: '0.00',
-                  suffixText: 'Rs',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _description,
-                maxLines: 3,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _confirm(),
-                style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Description',
-                  hintText: 'Notes / remarks',
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: DsPillButton(
-                      label: 'Cancel',
-                      variant: DsPillVariant.outline,
-                      onPressed: _saving
-                          ? null
-                          : () => Navigator.of(context).pop(),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DsPillButton(
-                      label: 'Settle',
-                      onPressed: _saving ? null : _confirm,
                     ),
                   ),
                 ],

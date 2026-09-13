@@ -8,6 +8,7 @@ import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/dispenser_monitor_models.dart';
 import '../../features/station/presentation/dispenser_monitor_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
+import '../../providers/settings_provider.dart';
 import 'Widgets/diagnostic_bay_card.dart';
 import 'Widgets/gateway_header_card.dart';
 import 'Widgets/telemetry_terminal.dart';
@@ -25,6 +26,9 @@ class DispenserScreen extends ConsumerWidget {
     );
     final DispenserMonitorController monitorCtl = ref.read(
       dispenserMonitorProvider.notifier,
+    );
+    final List<int> unitIds = visibleDispenserUnitIds(
+      showUnit5: ref.watch(settingsProvider).showUnit5,
     );
 
     return ColoredBox(
@@ -53,7 +57,7 @@ class DispenserScreen extends ConsumerWidget {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text(
-                            'Global keypad lock dispatched to all 5 bays.',
+                            'Global keypad lock dispatched to all 4 bays.',
                           ),
                         ),
                       );
@@ -68,7 +72,7 @@ class DispenserScreen extends ConsumerWidget {
                         spacing: 10,
                         runSpacing: 10,
                         children: <Widget>[
-                          for (final int unitId in dispenserUnitIds)
+                          for (final int unitId in unitIds)
                             DiagnosticBayCard(
                               bay: station.bay(unitId),
                               endpoint: station.endpoint(unitId),

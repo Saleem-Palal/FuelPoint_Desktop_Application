@@ -44,20 +44,42 @@ class SegmentLcd extends StatelessWidget {
     this.expand = false,
     this.showSideNub = false,
     this.labelStroke = false,
+    this.gapBeforeLast = 0,
   });
 
   static const String saleAmountMask = '888888.88';
   static const String saleMeterMask = '88888888.888';
 
+  /// Pump-head type. Receipt LCD uses these same sizes.
+  static const double dispenserLabelSize = 11;
+  static const double dispenserValueSize = 36;
+  static const double dispenserAmountSize = 46;
+  static const double dispenserLitersSize = 42;
+  static const double dispenserRateSize = 20;
+
   static double? _dispenserValueSize(String label) {
     switch (label.toUpperCase()) {
       case 'AMOUNT':
-        return 38;
+        return dispenserAmountSize;
+      case 'LITERS':
+        return dispenserLitersSize;
       case 'RATE':
-        return 20;
+        return dispenserRateSize;
       default:
         return null;
     }
+  }
+
+  static List<SegmentLcdLine> _saleReadoutLines(List<SegmentLcdLine> lines) {
+    return <SegmentLcdLine>[
+      for (final SegmentLcdLine line in lines)
+        SegmentLcdLine(
+          label: line.label,
+          value: line.value,
+          placeholder: line.placeholder ?? saleAmountMask,
+          valueSize: line.valueSize ?? _dispenserValueSize(line.label),
+        ),
+    ];
   }
 
   /// Purchase stock LCDs — sage glass, compact, AMOUNT rule.
@@ -80,6 +102,7 @@ class SegmentLcd extends StatelessWidget {
       bezelWidth: 3,
       dividerAfterFirst: true,
       emphasizeFirst: true,
+      expand: true,
       labelStroke: true,
     );
   }
@@ -92,18 +115,10 @@ class SegmentLcd extends StatelessWidget {
   }) {
     return SegmentLcd(
       key: key,
-      lines: <SegmentLcdLine>[
-        for (final SegmentLcdLine line in lines)
-          SegmentLcdLine(
-            label: line.label,
-            value: line.value,
-            placeholder: line.placeholder ?? saleAmountMask,
-            valueSize: line.valueSize ?? _dispenserValueSize(line.label),
-          ),
-      ],
+      lines: _saleReadoutLines(lines),
       digitWidth: 0,
-      labelSize: 11,
-      valueSize: 30,
+      labelSize: dispenserLabelSize,
+      valueSize: dispenserValueSize,
       labelWeight: FontWeight.w400,
       glass: offlineAmber(offline),
       active: offlineActive(offline),
@@ -156,22 +171,30 @@ class SegmentLcd extends StatelessWidget {
   }
 
   /// Thermal receipt LCD block.
-  factory SegmentLcd.receipt({Key? key, required List<SegmentLcdLine> lines}) {
+  ///
+  /// [forPrint] uses white glass and black digits so a 1-bit thermal
+  /// head does not turn the amber panel into a solid black rectangle.
+  factory SegmentLcd.receipt({
+    Key? key,
+    required List<SegmentLcdLine> lines,
+    bool forPrint = false,
+  }) {
     return SegmentLcd(
       key: key,
-      lines: lines,
+      lines: _saleReadoutLines(lines),
       digitWidth: 0,
-      labelSize: 9,
-      valueSize: 21,
+      labelSize: dispenserLabelSize,
+      valueSize: dispenserValueSize,
       labelWeight: FontWeight.w400,
-      glass: amberGlass,
-      ghost: const Color(0x14000000),
+      glass: forPrint ? const Color(0xFFFFFFFF) : amberGlass,
+      ghost: forPrint ? const Color(0x1A000000) : const Color(0x14000000),
       bezelWidth: 5,
       frameRadius: 8,
       glassRadius: 2,
       glassPadding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       dividerAfterFirst: true,
       emphasizeFirst: true,
+      gapBeforeLast: 8,
     );
   }
 
@@ -227,6 +250,7 @@ class SegmentLcd extends StatelessWidget {
   final bool expand;
   final bool showSideNub;
   final bool labelStroke;
+  final double gapBeforeLast;
 
   @override
   Widget build(BuildContext context) {
@@ -265,6 +289,8 @@ class SegmentLcd extends StatelessWidget {
                 )
               else if (i > 0 && !expand)
                 const SizedBox(height: 2),
+              if (i == lines.length - 1 && gapBeforeLast > 0)
+                SizedBox(height: gapBeforeLast),
               _SegmentLcdRow(
                 label: lines[i].label,
                 value: lines[i].value,

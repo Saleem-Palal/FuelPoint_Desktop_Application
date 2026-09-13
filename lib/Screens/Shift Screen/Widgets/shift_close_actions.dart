@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../Shell/shell_navigation.dart';
+import '../../../features/access/domain/access_policy.dart';
+import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/presentation/shift_hardware.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
 import 'shift_close_warning_dialog.dart';
 
@@ -21,14 +25,26 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
   if (shift == null) {
     return;
   }
+  final int? blockingBay = shouldEnforceStationGuards
+      ? dispensingBayIdOf(ref)
+      : null;
+  if (blockingBay != null) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ShiftLifecycleGuard.endBlockedMessage(blockingBay)),
+        ),
+      );
+    }
+    return;
+  }
   final String? pin = await showManagerPinDialog(
     context,
     managerName: shift.managerName,
     title: 'End Shift (Manual)',
     message:
         'Enter ${shift.managerName}\'s PIN to freeze ${shift.shiftId} and '
-        'open the cash tally. All helpers will be taken off duty. '
-        'Dispenser keypads are not locked.',
+        'open the cash tally. All helpers will be taken off duty.',
   );
   if (pin == null || !context.mounted) {
     return;
@@ -36,7 +52,13 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
   try {
     final ShiftHandoverResult result = await ref
         .read(shiftWorkspaceProvider.notifier)
-        .beginManualEnd(pin: pin);
+        .beginManualEnd(
+          pin: pin,
+          blockingDispensingBay: shouldEnforceStationGuards
+              ? dispensingBayIdOf(ref)
+              : null,
+          closingMeters: currentBayMetersOf(ref),
+        );
     if (!context.mounted) {
       return;
     }
@@ -48,12 +70,24 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
       );
       return;
     }
+    if (result.outcome == HandoverOutcome.baysDispensing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ShiftLifecycleGuard.endBlockedMessage(result.blockedBayId ?? 0),
+          ),
+        ),
+      );
+      return;
+    }
     if (!result.isSuccess) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not end the shift. Try again.')),
       );
       return;
     }
+    ref.read(shellDestinationProvider.notifier).state =
+        ShellDestinations.shifts;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -123,6 +157,7 @@ Future<void> promptUnverifiedShift(BuildContext context, WidgetRef ref) async {
   final UnverifiedShiftAction? action = await showUnverifiedShiftDialog(
     context,
     shift: shift,
+    uncleanExitAt: workspace.uncleanExitAt,
   );
   if (action == null || !context.mounted) {
     return;
@@ -156,11 +191,12 @@ Future<void> promptUnverifiedShift(BuildContext context, WidgetRef ref) async {
       );
       return promptUnverifiedShift(context, ref);
     }
+    ref.read(shellDestinationProvider.notifier).state = ShellDestinations.sale;
     return;
   }
   final ShiftHandoverResult result = await ref
       .read(shiftWorkspaceProvider.notifier)
-      .beginManualEnd(pin: pin);
+      .beginManualEnd(pin: pin, closingMeters: currentBayMetersOf(ref));
   if (!context.mounted) {
     return;
   }

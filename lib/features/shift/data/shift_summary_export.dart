@@ -139,7 +139,8 @@ class ShiftSummaryExport {
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: <pw.Widget>[
                 pw.Text(
-                  'Expected cash = Direct fuel cash sales + Udhaar recovery. '
+                  'Expected cash = Cash sales + Udhaar recovery (cash). '
+                  'Total sale = Cash sales + Account + Udhaar issued. '
                   '${AppBrand.developer}',
                   style: pw.TextStyle(color: muted, fontSize: 8),
                 ),

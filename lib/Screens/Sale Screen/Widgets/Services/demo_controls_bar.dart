@@ -4,13 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/presentation/station_providers.dart';
+import '../../../../providers/settings_provider.dart';
 
-/// Collapsible mock-hardware bar on the Sale screen.
-/// Kept visible in debug and release so client MSIX demos can run without ESP32 hardware.
+/// Mock-hardware bar. Hidden in release / MSIX station installs.
 class DemoControlsBar extends ConsumerStatefulWidget {
   const DemoControlsBar({super.key});
 
-  static const bool visible = true;
+  static const bool visible = false;
 
   @override
   ConsumerState<DemoControlsBar> createState() => _DemoControlsBarState();
@@ -26,6 +26,9 @@ class _DemoControlsBarState extends ConsumerState<DemoControlsBar> {
     }
     final DispensrTokens tokens = DispensrTokens.of(context);
     final StationState station = ref.watch(stationControllerProvider);
+    final List<int> unitIds = visibleDispenserUnitIds(
+      showUnit5: ref.watch(settingsProvider).showUnit5,
+    );
 
     return Container(
       width: double.infinity,
@@ -84,14 +87,12 @@ class _DemoControlsBarState extends ConsumerState<DemoControlsBar> {
             ),
           ),
           if (_expanded) ...<Widget>[
-            const SizedBox(height: 8),
-
             const SizedBox(height: 10),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                for (final int unitId in dispenserUnitIds) ...<Widget>[
-                  if (unitId > 1) const SizedBox(width: 8),
+                for (final int unitId in unitIds) ...<Widget>[
+                  if (unitId != unitIds.first) const SizedBox(width: 8),
                   Expanded(
                     child: _UnitDemoColumn(
                       bay: station.bay(unitId),

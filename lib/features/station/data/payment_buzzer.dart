@@ -12,25 +12,28 @@ class PaymentBuzzer {
   static const int _sndAsync = 0x0001;
   static const int _sndNoDefault = 0x0002;
   static const int _sndLoop = 0x0008;
+  static const int _sndPurge = 0x0040;
   static const int _sndFilename = 0x00020000;
 
   int Function(Pointer<Utf16> sound, Pointer<Void> module, int flags)? _play;
   Pointer<Utf16>? _pathPtr;
   String? _wavPath;
   bool _wanted = false;
+  int _epoch = 0;
 
   Future<void> start() async {
     _wanted = true;
     if (!Platform.isWindows || _pathPtr != null) {
       return;
     }
+    final int epoch = _epoch;
     _play ??= _loadPlaySound();
     final int Function(Pointer<Utf16>, Pointer<Void>, int)? play = _play;
     if (play == null) {
       return;
     }
     final String path = await _ensureWavFile();
-    if (!_wanted) {
+    if (!_wanted || epoch != _epoch || _pathPtr != null) {
       return;
     }
     final Pointer<Utf16> pathPtr = path.toNativeUtf16();
@@ -40,6 +43,14 @@ class PaymentBuzzer {
       nullptr,
       _sndAsync | _sndLoop | _sndFilename | _sndNoDefault,
     );
+    if (!_wanted || epoch != _epoch) {
+      play(nullptr.cast<Utf16>(), nullptr, _sndPurge | _sndNoDefault);
+      calloc.free(pathPtr);
+      if (identical(_pathPtr, pathPtr)) {
+        _pathPtr = null;
+      }
+      return;
+    }
     if (ok == 0) {
       calloc.free(pathPtr);
       _pathPtr = null;
@@ -47,10 +58,12 @@ class PaymentBuzzer {
   }
 
   void stop() {
+    _epoch++;
     _wanted = false;
+    _play ??= _loadPlaySound();
     final int Function(Pointer<Utf16>, Pointer<Void>, int)? play = _play;
     if (play != null) {
-      play(nullptr.cast<Utf16>(), nullptr, 0);
+      play(nullptr.cast<Utf16>(), nullptr, _sndPurge | _sndNoDefault);
     }
     final Pointer<Utf16>? pathPtr = _pathPtr;
     if (pathPtr != null) {
@@ -60,7 +73,15 @@ class PaymentBuzzer {
   }
 
   void dispose() {
-    stop();
+    _epoch++;
+    _wanted = false;
+    try {
+      final int Function(Pointer<Utf16>, Pointer<Void>, int)? play = _play;
+      if (play != null) {
+        play(nullptr.cast<Utf16>(), nullptr, _sndPurge | _sndNoDefault);
+      }
+    } catch (_) {}
+    _pathPtr = null;
   }
 
   static int Function(Pointer<Utf16>, Pointer<Void>, int)? _loadPlaySound() {

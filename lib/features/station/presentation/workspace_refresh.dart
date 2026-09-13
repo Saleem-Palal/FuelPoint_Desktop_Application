@@ -66,6 +66,7 @@ Future<void> refreshCustomersFromDatabase(WidgetRef ref) {
 Future<void> refreshLedgerFromDatabase(WidgetRef ref) async {
   await refreshSalesFromDatabase(ref);
   await refreshPurchasesFromDatabase(ref);
+  await refreshShiftsFromDatabase(ref);
 }
 
 Future<void> refreshManagersFromDatabase(WidgetRef ref) {

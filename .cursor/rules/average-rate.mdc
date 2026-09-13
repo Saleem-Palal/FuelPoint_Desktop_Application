@@ -1,0 +1,18 @@
+---
+description: Liters and average rate stay 13-place in storage; UI truncates to 2 decimals. Rupees are whole PKR.
+alwaysApply: true
+---
+
+# Average rate, liters, and rupees
+
+Backend / SQLite / domain math must keep liters and WAC at **13 fractional digits**. Never `round`, `toStringAsFixed`, or format them before storing or using them in a later purchase. Truncate extra digits toward zero — do not round. Persist as TEXT via `fuelToText` / `truncateFuel` in `fuel_precision.dart`.
+
+**Rupees** are whole PKR in SQLite and UI. Use `roundRupees`. `Stock_amount = round(stock_quantity × Average_rate)`.
+
+Formula for every purchase:
+
+`next WAC = (current Stock_amount + this purchase AMOUNT) ÷ (current liters + this purchase liters)`
+
+where `current Stock_amount` is the **stored** rounded rupee value. Initial Dip lots are not part of this formula.
+
+Frontend: show 2 digits after the decimal for rate and liters and hide the rest. Truncate — do not round. Use `FuelFormatter.formatAverageRate` / `lcdAverageRate` / `formatAverageRate` / `formatLiters` / `formatTruncatedDecimal`. Show rupees as whole numbers (`formatCurrency` / `formatPkr` / `lcdAmount`).

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../../services/database_helper.dart';
 import '../../shift/domain/shift_models.dart';
 import '../domain/dispenser_models.dart';
+import '../domain/fuel_precision.dart';
 import 'transaction_store.dart';
 
 /// Maps POS [SaleTransaction] rows onto `sales_transactions`.
@@ -11,6 +12,14 @@ class SalesTransactionRepository {
     : _db = db ?? DatabaseHelper.instance;
 
   static const String fallbackManagerId = 'mgr-walkin';
+
+  static String? requireLiveManagerId(ManagerShiftRecord? shift) {
+    final String? id = shift?.managerId.trim();
+    if (id == null || id.isEmpty || !shift!.isOpen) {
+      return null;
+    }
+    return id;
+  }
 
   final DatabaseHelper _db;
 
@@ -45,7 +54,11 @@ class SalesTransactionRepository {
               : txn.vehicleNo.trim(),
           'HELPER': resolvedHelperId.isEmpty ? null : resolvedHelperId,
           'Manager': managerId,
+          'SHIFT_ID': _shiftIdValue(creditShiftId),
+          'MANAGER_ID': managerId,
+          'HELPER_ID': resolvedHelperId.isEmpty ? null : resolvedHelperId,
           'ACTIONS': null,
+          'ESP_TX_ID': txn.espTxId.trim().isEmpty ? null : txn.espTxId.trim(),
         },
         managerId: managerId,
         managerName: managerName,
@@ -69,12 +82,12 @@ class SalesTransactionRepository {
     final List<Map<String, Object?>> rows = await _db.queryRecentSales(
       limit: limit,
     );
-    return rows.map(_fromRow).toList();
+    return rows.map(fromRow).toList();
   }
 
   Future<List<SaleTransaction>> all() async {
     final List<Map<String, Object?>> rows = await _db.queryAllSales();
-    return rows.map(_fromRow).toList();
+    return rows.map(fromRow).toList();
   }
 
   Future<SaleTransaction?> byToken(int tokenNo) async {
@@ -84,7 +97,7 @@ class SalesTransactionRepository {
     if (row == null) {
       return null;
     }
-    return _fromRow(row);
+    return fromRow(row);
   }
 
   Future<SaleTransaction?> settleUdhaar({
@@ -187,6 +200,10 @@ class SalesTransactionRepository {
     );
   }
 
+  static int? _shiftIdValue(String? raw) {
+    return parseShiftPk(raw ?? '');
+  }
+
   static String managerIdFor(ManagerShiftRecord? shift) {
     final String? id = shift?.managerId.trim();
     if (id == null || id.isEmpty) {
@@ -219,7 +236,7 @@ class SalesTransactionRepository {
     return kDefaultManagerPin;
   }
 
-  static SaleTransaction _fromRow(Map<String, Object?> row) {
+  static SaleTransaction fromRow(Map<String, Object?> row) {
     final double closing = _asDouble(row['CLOSING_READING']);
     final String helperName = (row['helper_name'] as String?)?.trim() ?? '';
     final String managerName = (row['manager_name'] as String?)?.trim() ?? '';
@@ -243,11 +260,31 @@ class SalesTransactionRepository {
       payment: paymentMethodFromStorage(row['PAYMENT_METHOD'] as String?),
       cashierName: managerName.isEmpty ? 'Cashier' : managerName,
       helperName: helperName,
+      shiftId: shiftIdFromRow(row['SHIFT_ID']),
       notes: settled.notes,
       udhaarSettled: settled.settled,
       settledAmount: settled.amount,
       settledAt: settled.at,
+      espTxId: '${row['ESP_TX_ID'] ?? ''}',
     );
+  }
+
+  static String shiftIdFromRow(Object? raw) {
+    if (raw == null) {
+      return '';
+    }
+    if (raw is int) {
+      return raw > 0 ? formatShiftId(raw) : '';
+    }
+    if (raw is num) {
+      final int pk = raw.round();
+      return pk > 0 ? formatShiftId(pk) : '';
+    }
+    final int? parsed = int.tryParse('$raw');
+    if (parsed == null || parsed <= 0) {
+      return '';
+    }
+    return formatShiftId(parsed);
   }
 
   static String encodeSettledActions({
@@ -308,13 +345,7 @@ class SalesTransactionRepository {
   }
 
   static double _asDouble(Object? value) {
-    if (value is double) {
-      return value;
-    }
-    if (value is num) {
-      return value.toDouble();
-    }
-    return 0.0;
+    return storedNumberToDouble(value);
   }
 
   static int _asInt(Object? value) {
@@ -352,11 +383,6 @@ class _SettledActions {
         : 0;
     final DateTime? at = parts.length > 2 ? DateTime.tryParse(parts[2]) : null;
     final String notes = parts.length > 3 ? parts.sublist(3).join('|') : '';
-    return _SettledActions(
-      settled: true,
-      amount: amount,
-      notes: notes,
-      at: at,
-    );
+    return _SettledActions(settled: true, amount: amount, notes: notes, at: at);
   }
 }

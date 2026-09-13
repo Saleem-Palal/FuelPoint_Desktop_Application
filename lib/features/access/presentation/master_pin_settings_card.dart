@@ -92,6 +92,25 @@ class _MasterPinSettingsCardState extends ConsumerState<MasterPinSettingsCard> {
     }
   }
 
+  Future<void> _saveAutoLock(int minutes) async {
+    final bool ok = await ref
+        .read(accessControllerProvider.notifier)
+        .setAutoLockMinutes(minutes);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Owner auto-lock set to ${OwnerAutoLockMinutes.label(minutes)}.'
+              : (ref.read(accessControllerProvider).errorMessage ??
+                    'Could not save auto-lock timer.'),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
@@ -225,6 +244,44 @@ class _MasterPinSettingsCardState extends ConsumerState<MasterPinSettingsCard> {
                           }
                         : null,
                     compact: true,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<int>(
+                  key: ValueKey<int>(access.autoLockMinutes),
+                  initialValue: OwnerAutoLockMinutes.sanitize(
+                    access.autoLockMinutes,
+                  ),
+                  isDense: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Owner auto-lock timer',
+                  ),
+                  items: <DropdownMenuItem<int>>[
+                    for (final int minutes in OwnerAutoLockMinutes.choices)
+                      DropdownMenuItem<int>(
+                        value: minutes,
+                        child: Text(OwnerAutoLockMinutes.label(minutes)),
+                      ),
+                  ],
+                  onChanged: enabled
+                      ? (int? value) {
+                          if (value == null) {
+                            return;
+                          }
+                          unawaited(_saveAutoLock(value));
+                        }
+                      : null,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  access.autoLockMinutes <= OwnerAutoLockMinutes.off
+                      ? 'Owner access stays unlocked until Lock Owner Access is used.'
+                      : 'Locks owner screens after ${OwnerAutoLockMinutes.label(access.autoLockMinutes)} of inactivity. Default is 5 minutes.',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontSize: 11,
+                    height: 1.35,
+                    color: tokens.inkMuted,
                   ),
                 ),
               ],

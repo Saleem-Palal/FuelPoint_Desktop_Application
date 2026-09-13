@@ -8,6 +8,7 @@ import '../../../../core/widgets/segment_lcd.dart';
 import '../../../../features/shift/domain/shift_models.dart';
 import '../../../../features/shift/presentation/shift_providers.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
+import '../../../../utils/fuel_formatter.dart';
 import 'confirm_payment_dialog.dart';
 import 'fuel_nozzle_graphic.dart';
 import 'helper_duty_dialog.dart';
@@ -31,38 +32,35 @@ class DispenserUnitData {
     required this.volumeLiters,
   });
 
-  factory DispenserUnitData.fromBay(DispenserBay bay) {
+  factory DispenserUnitData.fromBay(
+    DispenserBay bay, {
+    required bool linkOnline,
+  }) {
     return DispenserUnitData(
       unitId: bay.unitId,
       unitNumber: bay.unitId.toString().padLeft(2, '0'),
       name: bay.name,
       fuelType: bay.fuelType,
-      online: bay.isOnline,
+      online: linkOnline,
       runState: bay.status,
-      rupees: bay.amountPkr.toStringAsFixed(2),
-      liters: bay.volumeLiters.toStringAsFixed(2),
-      ratePerLitre: bay.rate.toStringAsFixed(2),
+      rupees: bay.status == DispenserRunState.litersPreset
+          ? ''
+          : bay.status == DispenserRunState.rupeesPreset
+          ? '${bay.amountPkr.truncate()}'
+          : FuelFormatter.lcdDispenserAmount(bay.amountPkr),
+      liters: bay.status == DispenserRunState.rupeesPreset
+          ? ''
+          : bay.status == DispenserRunState.litersPreset
+          ? '${bay.volumeLiters.truncate()}'
+          : FuelFormatter.lcdVolume(bay.volumeLiters),
+      ratePerLitre: FuelFormatter.lcdAverageRate(bay.rate),
       lastRupees: bay.lastRupees,
       lastLiters: bay.lastLiters,
       lastTime: bay.lastTime,
       lastCashier: bay.lastCashier,
-      totalMeter: _totalMeterFor(bay.unitId),
+      totalMeter: FuelFormatter.lcdVolume(bay.meterCount),
       volumeLiters: bay.volumeLiters,
     );
-  }
-
-  static String _totalMeterFor(int unitId) {
-    const List<String> meters = <String>[
-      '13452342.143',
-      '13454719.863',
-      '13450108.004',
-      '13449880.550',
-      '13451200.210',
-    ];
-    if (unitId >= 1 && unitId <= meters.length) {
-      return meters[unitId - 1];
-    }
-    return '0.000';
   }
 
   final int unitId;
@@ -82,10 +80,9 @@ class DispenserUnitData {
   final double volumeLiters;
 
   bool get isDispensing => runState == DispenserRunState.dispensing;
-  bool get isOffline => runState == DispenserRunState.offline || !online;
+  bool get isOffline => !online;
   bool get isCycleComplete => runState == DispenserRunState.cycleComplete;
   bool get canConfirmPayment =>
-      !isOffline &&
       isCycleComplete &&
       volumeLiters >= DispenserBay.zeroVolumeEpsilon;
 }
@@ -120,21 +117,31 @@ class DispenserUnitsWidget extends ConsumerWidget {
     final Color runFg;
     final Color runBg;
     final Color runBorder;
-    if (offline) {
-      runLabel = 'Offline';
-      runFg = tokens.inkMuted;
-      runBg = tokens.line.withValues(alpha: 0.55);
-      runBorder = tokens.line;
-    } else if (dispensing) {
+    if (dispensing) {
       runLabel = 'Dispensing';
       runFg = tokens.coralPressed;
       runBg = tokens.coral.withValues(alpha: 0.12);
       runBorder = tokens.coral.withValues(alpha: 0.35);
+    } else if (data.runState == DispenserRunState.rupeesPreset) {
+      runLabel = 'P  Amount';
+      runFg = tokens.ink;
+      runBg = tokens.good.withValues(alpha: 0.12);
+      runBorder = tokens.good.withValues(alpha: 0.35);
+    } else if (data.runState == DispenserRunState.litersPreset) {
+      runLabel = 'L  Liters';
+      runFg = tokens.ink;
+      runBg = tokens.good.withValues(alpha: 0.12);
+      runBorder = tokens.good.withValues(alpha: 0.35);
     } else if (data.isCycleComplete) {
       runLabel = 'Complete';
       runFg = tokens.good;
       runBg = tokens.good.withValues(alpha: 0.12);
       runBorder = tokens.good.withValues(alpha: 0.35);
+    } else if (offline && data.runState == DispenserRunState.offline) {
+      runLabel = 'Offline';
+      runFg = tokens.inkMuted;
+      runBg = tokens.line.withValues(alpha: 0.55);
+      runBorder = tokens.line;
     } else {
       runLabel = 'Idle';
       runFg = tokens.inkMuted;
@@ -147,7 +154,7 @@ class DispenserUnitsWidget extends ConsumerWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         clipBehavior: Clip.none,
-        padding: const EdgeInsets.fromLTRB(10, 10, 14, 10),
+        padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
         decoration: BoxDecoration(
           color: tokens.card,
           borderRadius: BorderRadius.circular(tokens.radius20),
@@ -206,7 +213,10 @@ class DispenserUnitsWidget extends ConsumerWidget {
                       ),
               ),
               const SizedBox(height: 8),
-              ConfirmPaymentSheet(unitId: data.unitId),
+              ConfirmPaymentSheet(
+                key: ValueKey<int>(data.unitId),
+                unitId: data.unitId,
+              ),
             ],
           ),
         ),
@@ -551,15 +561,17 @@ class _LcdWithNozzle extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         SizedBox(
-          height: 192,
+          height: 210,
           child: Stack(
             clipBehavior: Clip.none,
             children: <Widget>[
               Positioned.fill(
                 child: Padding(
-                  padding: const EdgeInsets.only(right: 36),
+                  padding: const EdgeInsets.only(
+                    right: FuelNozzleGraphic.width - 10,
+                  ),
                   child: SegmentLcd.dispenser(
-                    offline: data.isOffline,
+                    offline: data.isOffline && !data.isCycleComplete,
                     lines: <SegmentLcdLine>[
                       SegmentLcdLine(label: 'AMOUNT', value: data.rupees),
                       SegmentLcdLine(label: 'LITERS', value: data.liters),
@@ -569,7 +581,7 @@ class _LcdWithNozzle extends StatelessWidget {
                 ),
               ),
               Positioned(
-                right: FuelNozzleGraphic.left - FuelNozzleGraphic.right,
+                right: FuelNozzleGraphic.nozzleOffset.dx,
                 top: FuelNozzleGraphic.down - FuelNozzleGraphic.up,
                 height: FuelNozzleGraphic.height,
                 width: FuelNozzleGraphic.width,
@@ -583,11 +595,11 @@ class _LcdWithNozzle extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Padding(
-          padding: const EdgeInsets.only(right: 36),
+          padding: const EdgeInsets.only(right: FuelNozzleGraphic.width - 10),
           child: SizedBox(
             height: 42,
             child: SegmentLcd.meter(
-              offline: data.isOffline,
+              offline: data.isOffline && !data.isCycleComplete,
               lines: <SegmentLcdLine>[
                 SegmentLcdLine(label: 'METER', value: data.totalMeter),
               ],
@@ -634,14 +646,14 @@ class _LastTransaction extends StatelessWidget {
             Expanded(
               child: _Meta(
                 icon: Icons.receipt_long_outlined,
-                text: data.lastRupees,
+                text: data.lastRupees.isEmpty ? '—' : data.lastRupees,
                 tokens: tokens,
               ),
             ),
             Expanded(
               child: _Meta(
                 icon: Icons.water_drop_outlined,
-                text: data.lastLiters,
+                text: data.lastLiters.isEmpty ? '—' : data.lastLiters,
                 tokens: tokens,
               ),
             ),
@@ -653,14 +665,14 @@ class _LastTransaction extends StatelessWidget {
             Expanded(
               child: _Meta(
                 icon: Icons.schedule_outlined,
-                text: data.lastTime,
+                text: data.lastTime.isEmpty ? '—' : data.lastTime,
                 tokens: tokens,
               ),
             ),
             Expanded(
               child: _Meta(
                 icon: Icons.person_outline,
-                text: data.lastCashier,
+                text: data.lastCashier.isEmpty ? '—' : data.lastCashier,
                 tokens: tokens,
               ),
             ),

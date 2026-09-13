@@ -7,10 +7,12 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/google_drive_oauth_config.dart';
+import '../features/station/domain/fuel_precision.dart';
 import '../services/database_helper.dart';
 import '../services/google_drive_backup_service.dart';
 
-export '../services/google_drive_backup_service.dart' show GoogleDriveAccount;
+export '../services/google_drive_backup_service.dart'
+    show GoogleDriveAccount, GoogleDriveRemoteFile;
 
 /// Audit action names stored in `audit_logs.action_type`.
 class AuditActionType {
@@ -29,6 +31,8 @@ class AuditActionType {
   static const String oauthCredentialsSaved = 'OAUTH_CREDENTIALS_SAVED';
   static const String accountDisconnect = 'ACCOUNT_DISCONNECT';
   static const String periodicBackup = 'PERIODIC_BACKUP';
+  static const String ownerElevate = 'OWNER_ELEVATE';
+  static const String stockAdjust = 'STOCK_ADJUST';
 
   static const List<String> filterOptions = <String>[
     rateUpdate,
@@ -46,6 +50,8 @@ class AuditActionType {
     oauthCredentialsSaved,
     accountDisconnect,
     periodicBackup,
+    ownerElevate,
+    stockAdjust,
   ];
 }
 
@@ -120,7 +126,7 @@ class StationTableInfo {
       case DatabaseHelper.tableCloudBackupLogs:
         return 'Cloud backup logs';
       case DatabaseHelper.tableStationSettings:
-        return 'Station settings';
+        return 'Station settings (keeps Google Drive login)';
       default:
         return name;
     }
@@ -186,6 +192,8 @@ class SettingsState {
     this.actionFilter,
     this.errorMessage,
     this.statusMessage,
+    this.showUnit5 = false,
+    this.lowStockThresholdLiters = 0,
   });
 
   final bool loading;
@@ -207,6 +215,10 @@ class SettingsState {
   final String? actionFilter;
   final String? errorMessage;
   final String? statusMessage;
+  final bool showUnit5;
+
+  /// Diesel tank liters that trigger the post-sale toast. `0` disables it.
+  final double lowStockThresholdLiters;
 
   bool get isDriveConnected => account != null;
 
@@ -248,6 +260,8 @@ class SettingsState {
     bool clearError = false,
     String? statusMessage,
     bool clearStatus = false,
+    bool? showUnit5,
+    double? lowStockThresholdLiters,
   }) {
     return SettingsState(
       loading: loading ?? this.loading,
@@ -279,6 +293,9 @@ class SettingsState {
           : (actionFilter ?? this.actionFilter),
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       statusMessage: clearStatus ? null : (statusMessage ?? this.statusMessage),
+      showUnit5: showUnit5 ?? this.showUnit5,
+      lowStockThresholdLiters:
+          lowStockThresholdLiters ?? this.lowStockThresholdLiters,
     );
   }
 
@@ -295,6 +312,7 @@ class SettingsState {
       auditTotal: 0,
       auditPage: 0,
       auditPageSize: 12,
+      showUnit5: false,
     );
   }
 }
@@ -341,6 +359,12 @@ class SettingsNotifier extends Notifier<SettingsState> {
       final String? lastId = await _db.readSetting(
         DatabaseHelper.settingLastBackupDriveFileId,
       );
+      final String? showUnit5Raw = await _db.readSetting(
+        DatabaseHelper.settingShowUnit5,
+      );
+      final String? thresholdRaw = await _db.readSetting(
+        DatabaseHelper.settingLowStockThresholdLiters,
+      );
       final GoogleDriveAccount? account = await _drive.restoreSession();
       state = state.copyWith(
         loading: false,
@@ -353,6 +377,8 @@ class SettingsNotifier extends Notifier<SettingsState> {
         lastBackupAt: lastAt,
         lastBackupFileName: lastFile,
         lastBackupDriveFileId: lastId,
+        showUnit5: showUnit5Raw == '1',
+        lowStockThresholdLiters: sanitizeLowStockThreshold(thresholdRaw),
         clearLastBackup:
             lastAt == null && (lastFile == null || lastFile.isEmpty),
         account: account,
@@ -483,20 +509,29 @@ class SettingsNotifier extends Notifier<SettingsState> {
     }
   }
 
-  Future<bool> restoreDatabase(String sourcePath) async {
+  Future<bool> restoreDatabase(
+    String sourcePath, {
+    String? auditDetails,
+    String? statusMessage,
+  }) async {
     state = state.copyWith(busy: true, clearError: true, clearStatus: true);
     try {
+      final Map<String, String> googleIdentity = await _db
+          .snapshotGoogleIdentitySettings();
       await _db.restoreFromBackupFile(sourcePath);
+      await _db.restoreGoogleIdentitySettings(googleIdentity);
       await _db.insertAuditLog(
         actionType: AuditActionType.restoreCompleted,
-        details: 'Database restored from $sourcePath',
+        details: auditDetails ?? 'Database restored from $sourcePath',
       );
       await fetchDatabaseMetrics();
       await fetchAuditLogs(actionFilter: state.actionFilter);
       state = state.copyWith(
         busy: false,
         statusMessage:
-            'Database restored. Restart any open workspace screens if figures look stale.',
+            statusMessage ??
+            'Database restored. Google Drive login was kept. '
+                'Restart any open workspace screens if figures look stale.',
       );
       return true;
     } catch (error, stack) {
@@ -506,6 +541,90 @@ class SettingsNotifier extends Notifier<SettingsState> {
         errorMessage: 'Restore blocked. $error',
       );
       return false;
+    }
+  }
+
+  Future<List<GoogleDriveRemoteFile>> listDriveDatabaseBackups() async {
+    try {
+      if (_drive.account == null) {
+        await _drive.restoreSession();
+      }
+      if (_drive.account == null) {
+        throw StateError('Sign in to Google Drive before restoring a backup.');
+      }
+      final String? knownFolder = await _db.readSetting(
+        DatabaseHelper.settingDriveBackupFolderId,
+      );
+      return _drive.listDatabaseBackups(knownFolderId: knownFolder);
+    } catch (error, stack) {
+      debugPrint(
+        'SettingsNotifier.listDriveDatabaseBackups failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        errorMessage: 'Could not list Google Drive backups. $error',
+      );
+      return const <GoogleDriveRemoteFile>[];
+    }
+  }
+
+  Future<bool> restoreFromGoogleDrive(GoogleDriveRemoteFile remote) async {
+    state = state.copyWith(
+      backingUp: true,
+      busy: true,
+      clearError: true,
+      clearStatus: true,
+    );
+    File? downloaded;
+    try {
+      if (_drive.account == null) {
+        await _drive.restoreSession();
+      }
+      if (_drive.account == null) {
+        throw StateError('Sign in to Google Drive before restoring a backup.');
+      }
+      final String destPath = p.join(
+        await _db.dataDirectoryPath,
+        'backup_staging',
+        remote.name,
+      );
+      downloaded = await _drive.downloadFile(
+        fileId: remote.id,
+        destPath: destPath,
+      );
+      final bool ok = await restoreDatabase(
+        downloaded.path,
+        auditDetails:
+            'Database restored from Google Drive file ${remote.name} '
+            '(${remote.id})',
+        statusMessage:
+            'Restored ${remote.name} from Google Drive. '
+            'Google Drive login was kept.',
+      );
+      return ok;
+    } catch (error, stack) {
+      debugPrint(
+        'SettingsNotifier.restoreFromGoogleDrive failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        busy: false,
+        backingUp: false,
+        errorMessage: 'Google Drive restore failed. $error',
+      );
+      return false;
+    } finally {
+      state = state.copyWith(backingUp: false);
+      if (downloaded != null) {
+        try {
+          if (await downloaded.exists()) {
+            await downloaded.delete();
+          }
+        } catch (error, stack) {
+          debugPrint(
+            'SettingsNotifier: could not delete downloaded backup: '
+            '$error\n$stack',
+          );
+        }
+      }
     }
   }
 
@@ -541,13 +660,6 @@ class SettingsNotifier extends Notifier<SettingsState> {
         DatabaseHelper.tableStationSettings,
       );
       if (clearedSettings) {
-        try {
-          await _drive.signOut();
-        } catch (error, stack) {
-          debugPrint(
-            'SettingsNotifier: sign-out after settings erase: $error\n$stack',
-          );
-        }
         _periodicBackupTimer?.cancel();
         _periodicBackupTimer = null;
       }
@@ -559,13 +671,16 @@ class SettingsNotifier extends Notifier<SettingsState> {
         autoBackupIntervalHours: clearedSettings
             ? BackupIntervalHours.off
             : state.autoBackupIntervalHours,
-        oauthClientId: clearedSettings ? '' : state.oauthClientId,
-        hasOauthSecret: clearedSettings ? false : state.hasOauthSecret,
-        clearAccount: clearedSettings,
         clearLastBackup: clearedSettings,
-        statusMessage:
-            'Erased ${erased.length} table${erased.length == 1 ? '' : 's'}: '
-            '${erased.join(', ')}',
+        showUnit5: clearedSettings ? false : state.showUnit5,
+        lowStockThresholdLiters: clearedSettings
+            ? 0
+            : state.lowStockThresholdLiters,
+        statusMessage: clearedSettings
+            ? 'Erased ${erased.length} table${erased.length == 1 ? '' : 's'}. '
+                  'Google Drive Client ID, Client Secret, and login were kept.'
+            : 'Erased ${erased.length} table${erased.length == 1 ? '' : 's'}: '
+                  '${erased.join(', ')}',
       );
       return true;
     } catch (error, stack) {
@@ -927,6 +1042,48 @@ class SettingsNotifier extends Notifier<SettingsState> {
     } catch (error, stack) {
       debugPrint(
         'SettingsNotifier.maybeUploadOnShiftClose failed: $error\n$stack',
+      );
+    }
+  }
+
+  Future<void> setShowUnit5(bool enabled) async {
+    try {
+      await _db.writeSetting(
+        DatabaseHelper.settingShowUnit5,
+        enabled ? '1' : '0',
+      );
+      state = state.copyWith(showUnit5: enabled);
+    } catch (error, stack) {
+      debugPrint('SettingsNotifier.setShowUnit5 failed: $error\n$stack');
+      state = state.copyWith(
+        errorMessage: 'Could not save the Unit 5 display preference. $error',
+      );
+    }
+  }
+
+  /// `0` or empty turns the post-sale diesel toast off.
+  static double sanitizeLowStockThreshold(Object? raw) {
+    final double value = parseFuel(raw).toDouble();
+    if (!value.isFinite || value <= 0) {
+      return 0;
+    }
+    return value;
+  }
+
+  Future<void> setLowStockThresholdLiters(double liters) async {
+    try {
+      final double resolved = sanitizeLowStockThreshold(liters);
+      await _db.writeSetting(
+        DatabaseHelper.settingLowStockThresholdLiters,
+        resolved <= 0 ? '0' : fuelToText(resolved),
+      );
+      state = state.copyWith(lowStockThresholdLiters: resolved);
+    } catch (error, stack) {
+      debugPrint(
+        'SettingsNotifier.setLowStockThresholdLiters failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        errorMessage: 'Could not save the low stock threshold. $error',
       );
     }
   }

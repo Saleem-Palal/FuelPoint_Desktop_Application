@@ -15,6 +15,7 @@ const String kSettlementStationCopy = 'COPY 2: STATION RECORD';
 ThermalReceiptView settlementThermalReceipt(
   CustomerSettlement settlement, {
   String? copyBanner,
+  bool forPrint = false,
 }) {
   final List<ThermalReceiptDetail> details = <ThermalReceiptDetail>[
     ThermalReceiptDetail(label: 'Customer ID', value: settlement.customerId),
@@ -50,6 +51,7 @@ ThermalReceiptView settlementThermalReceipt(
       settlement.receiptNo,
     ).replaceFirst('Receipt #', '#'),
     showLcd: false,
+    forPrint: forPrint,
     copyBanner: copyBanner,
     details: details,
   );
@@ -82,7 +84,7 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
   final GlobalKey _customerKey = GlobalKey();
   final GlobalKey _stationKey = GlobalKey();
   bool _busy = false;
-  bool _autoPrinted = false;
+  bool _forPrint = false;
 
   String get _pngName => 'settlement-${widget.settlement.receiptNo}.png';
 
@@ -101,29 +103,16 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
     ].join('\n');
   }
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) {
-        return;
-      }
-      unawaited(_print(auto: true));
-    });
-  }
-
-  Future<void> _print({bool auto = false}) async {
+  Future<void> _print() async {
     if (_busy) {
-      return;
-    }
-    if (auto && _autoPrinted) {
       return;
     }
     setState(() {
       _busy = true;
+      _forPrint = true;
     });
     try {
+      await WidgetsBinding.instance.endOfFrame;
       await WidgetsBinding.instance.endOfFrame;
       final Uint8List customerCopy = await ReceiptGenerator.instance
           .capturePreview(_customerKey);
@@ -137,13 +126,10 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
           'settlement-$base-station.pdf',
         ],
       );
-      _autoPrinted = true;
       if (!mounted) {
         return;
       }
-      if (!auto) {
-        Navigator.of(context).pop();
-      }
+      Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -257,19 +243,21 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
                         ),
                       ),
                       const SizedBox(height: 10),
-                      RepaintBoundary(
-                        key: _customerKey,
+                      ThermalReceiptCapture(
+                        captureKey: _customerKey,
                         child: settlementThermalReceipt(
                           widget.settlement,
                           copyBanner: kSettlementCustomerCopy,
+                          forPrint: _forPrint,
                         ),
                       ),
                       const SizedBox(height: 16),
-                      RepaintBoundary(
-                        key: _stationKey,
+                      ThermalReceiptCapture(
+                        captureKey: _stationKey,
                         child: settlementThermalReceipt(
                           widget.settlement,
                           copyBanner: kSettlementStationCopy,
+                          forPrint: _forPrint,
                         ),
                       ),
                     ],

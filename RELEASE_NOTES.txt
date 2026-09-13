@@ -1,0 +1,18 @@
+FuelPoint Station OS  v1.0.0.7
+Release notes
+Publisher: RetroSoft
+
+1. Shift Management Cashier Issue & Workflow
+2. Timer for Auto Lock Owner Access
+3. LCD Font Size Increase
+4. Toggle Show/Hide 5th Unit in Settings
+5. Shift Wise Data Filter in Sale Ledger
+6. Sale Receipt Cashier Name Fix. And helper name.
+7. Remove Save as Draft from Purchase Screen
+8. Purchase Calculations fix
+9. Add Edit button in purchase Screen
+10. Remove Purchase Details from Reconciliation Sidebar and Amount should not be in decimal
+11. Remove Initial Dip
+12. Low Stock Threshold Notification Alert
+13. Owner Access Lock applies to all screens except Sale and Customers (Udhaar)
+14. Simulation demo removed from the release build

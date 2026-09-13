@@ -3,11 +3,13 @@ import 'package:flutter/foundation.dart';
 import '../../../services/database_helper.dart';
 import '../../shift/domain/shift_models.dart';
 import '../domain/dispenser_models.dart';
+import '../domain/average_rate.dart';
+import '../domain/fuel_precision.dart';
 import '../domain/money_format.dart';
 import 'sales_transaction_repository.dart';
 import 'transaction_store.dart';
 
-/// One row from SQLite `purchases`. Full `double` precision; do not round.
+/// One row from SQLite `purchases`. Liters/rate keep 13-place storage.
 class PurchaseRecord {
   const PurchaseRecord({
     required this.invNo,
@@ -27,10 +29,7 @@ class PurchaseRecord {
   final String tafseel;
   final String managerName;
 
-  bool get isInitialDip {
-    final String note = tafseel.trim().toUpperCase();
-    return note.startsWith('DIP');
-  }
+  bool get isInitialDip => isInitialDipTafseel(tafseel);
 }
 
 /// Maps Purchase Screen / ledger onto `purchases` + `diesel_stock`.
@@ -49,8 +48,8 @@ class PurchaseRepository {
     return _db.nextPurchaseInvoiceNo();
   }
 
-  Future<double> stockAmount() async {
-    return _db.getStockAmount();
+  Future<({double quantity, double averageRate, double amount})> stock() async {
+    return _db.getDieselStock();
   }
 
   Future<void> commitPurchase({
@@ -63,7 +62,6 @@ class PurchaseRepository {
     required String managerId,
     required String managerName,
     required String managerPin,
-    bool replaceStock = false,
   }) async {
     try {
       await _db.commitPurchase(
@@ -76,10 +74,30 @@ class PurchaseRepository {
         managerId: managerId,
         managerName: managerName,
         managerPin: managerPin,
-        replaceStock: replaceStock,
       );
     } catch (error, stack) {
       debugPrint('PurchaseRepository.commitPurchase failed: $error\n$stack');
+      rethrow;
+    }
+  }
+
+  Future<void> updatePurchase({
+    required String invNo,
+    required double quantity,
+    required double rate,
+    required double amount,
+    String tafseel = '',
+  }) async {
+    try {
+      await _db.updatePurchase(
+        invNo: invNo,
+        quantity: quantity,
+        rate: rate,
+        amount: amount,
+        tafseel: tafseel,
+      );
+    } catch (error, stack) {
+      debugPrint('PurchaseRepository.updatePurchase failed: $error\n$stack');
       rethrow;
     }
   }
@@ -176,12 +194,6 @@ class PurchaseRepository {
   }
 
   static double _asDouble(Object? value) {
-    if (value is double) {
-      return value;
-    }
-    if (value is num) {
-      return value.toDouble();
-    }
-    return 0.0;
+    return storedNumberToDouble(value);
   }
 }
