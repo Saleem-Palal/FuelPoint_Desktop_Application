@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../domain/dispenser_models.dart';
 import '../domain/dispenser_monitor_models.dart';
+import '../domain/esp_token_log.dart';
 import 'telemetry_parser.dart';
 
 typedef TelemetryHandler = void Function(DispenserTelemetry packet);
@@ -13,12 +15,15 @@ typedef OfflineHandler = void Function(int unitId);
 typedef ConnectedHandler = void Function(int unitId);
 typedef WireFrameHandler = void Function(DispenserWireFrame frame);
 typedef PendingSaleHandler = void Function(PendingEspSale sale);
+typedef NextSequenceLookup = int Function(int unitId);
+typedef SyncLogHandler = void Function(int unitId, List<EspTokenLogRow> rows);
 
 class StationNetDefaults {
   static const int port = 81;
   static const Duration heartbeat = Duration(milliseconds: 3000);
   static const Duration serialStall = Duration(milliseconds: 1500);
   static const Duration connectTimeout = Duration(seconds: 4);
+  static const Duration offlineDebounce = Duration(seconds: 4);
   static const String officeSsid = 'System';
   static const String gatewayHost = '192.168.0.110';
 
@@ -29,13 +34,30 @@ class StationNetDefaults {
   }
 }
 
+Duration unitWsRetryBackoff(int attempts) {
+  final int shift = attempts.clamp(1, 6);
+  return Duration(milliseconds: (1000 * (1 << (shift - 1))).clamp(1000, 30000));
+}
+
+bool unitWsCanRetry({
+  required bool wanted,
+  required bool hasLiveSocket,
+  required bool connecting,
+}) {
+  return wanted && !hasLiveSocket && !connecting;
+}
+
 class DispenserSocketManager {
+  static const Duration offlineDebounce = StationNetDefaults.offlineDebounce;
+
   DispenserSocketManager({
     required this.onTelemetry,
     required this.onOffline,
     this.onConnected,
     this.onWire,
     this.onPendingSale,
+    this.onSyncLog,
+    this.nextSequenceFor,
   });
 
   final TelemetryHandler onTelemetry;
@@ -43,12 +65,12 @@ class DispenserSocketManager {
   final ConnectedHandler? onConnected;
   final WireFrameHandler? onWire;
   final PendingSaleHandler? onPendingSale;
+  final SyncLogHandler? onSyncLog;
+  NextSequenceLookup? nextSequenceFor;
 
   final TelemetryParser _parser = TelemetryParser();
   final Map<int, _UnitLink> _links = <int, _UnitLink>{};
-  final Map<int, DateTime> _lastPacketAt = <int, DateTime>{};
 
-  Timer? _heartbeat;
   Timer? _appHeartbeat;
   bool _appHeartbeatEnabled = false;
   bool _shiftLive = false;
@@ -74,9 +96,6 @@ class DispenserSocketManager {
         onConnected: () => onConnected?.call(unitId),
       );
     }
-    _heartbeat = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      _checkHeartbeats();
-    });
   }
 
   static Future<void> persistEndpoint({
@@ -110,9 +129,25 @@ class DispenserSocketManager {
     if (trimmed.isEmpty) {
       return;
     }
+    final List<EspTokenLogRow> syncRows = EspTokenLogRow.tryParseSyncLog(
+      trimmed,
+    );
+    if (syncRows.isNotEmpty) {
+      final int unitId = syncRows.first.unitId;
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.command,
+          payload: trimmed,
+          unitId: unitId,
+        ),
+      );
+      onSyncLog?.call(unitId, syncRows);
+      return;
+    }
     final PendingEspSale? pending = PendingEspSale.tryParse(trimmed);
     if (pending != null) {
-      _lastPacketAt[pending.unitId] = DateTime.now();
       _emitWire(
         DispenserWireFrame(
           at: DateTime.now(),
@@ -145,7 +180,6 @@ class DispenserSocketManager {
       );
       return;
     }
-    _lastPacketAt[packet.unitId] = DateTime.now();
     _emitWire(
       DispenserWireFrame(
         at: DateTime.now(),
@@ -184,6 +218,7 @@ class DispenserSocketManager {
       if (link == null || !link.wanted) {
         continue;
       }
+      final int seq = nextSequenceFor?.call(unitId) ?? 1;
       await sendCommand(
         unitId: unitId,
         payload: <String, Object>{
@@ -191,6 +226,8 @@ class DispenserSocketManager {
           'unit': unitId,
           'live': _shiftLive,
           'at': at,
+          'next_sequence': seq,
+          'next_token': tokenIdFor(unitId: unitId, sequence: seq),
         },
       );
     }
@@ -198,19 +235,6 @@ class DispenserSocketManager {
 
   void _emitWire(DispenserWireFrame frame) {
     onWire?.call(frame);
-  }
-
-  void _checkHeartbeats() {
-    final DateTime now = DateTime.now();
-    for (final int unitId in dispenserUnitIds) {
-      final DateTime? last = _lastPacketAt[unitId];
-      if (last == null) {
-        continue;
-      }
-      if (now.difference(last) >= StationNetDefaults.heartbeat) {
-        onOffline(unitId);
-      }
-    }
   }
 
   Future<void> setKeypadRelay({required int unitId, required bool lock}) async {
@@ -225,12 +249,34 @@ class DispenserSocketManager {
     );
   }
 
-  Future<void> confirmBay(int unitId) async {
+  Future<void> confirmBay(int unitId, {int? token}) async {
+    final Map<String, Object> payload = <String, Object>{
+      'cmd': 'CONFIRM',
+      'unit': unitId,
+    };
+    if (token != null && token > 0) {
+      payload['token'] = token;
+    }
+    await sendCommand(unitId: unitId, payload: payload);
+    await setKeypadRelay(unitId: unitId, lock: false);
+  }
+
+  Future<void> ackToken({required int unitId, required int token}) async {
     await sendCommand(
       unitId: unitId,
-      payload: <String, Object>{'cmd': 'CONFIRM', 'unit': unitId},
+      payload: <String, Object>{
+        'cmd': 'ACK_TOKEN',
+        'unit': unitId,
+        'token': token,
+      },
     );
-    await setKeypadRelay(unitId: unitId, lock: false);
+  }
+
+  Future<void> requestSyncLog(int unitId) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{'cmd': 'GET_SYNC_LOG', 'unit': unitId},
+    );
   }
 
   Future<void> ackTransaction({
@@ -278,9 +324,7 @@ class DispenserSocketManager {
     required String host,
     required int port,
   }) async {
-    unawaited(
-      persistEndpoint(unitId: unitId, host: host, port: port),
-    );
+    unawaited(persistEndpoint(unitId: unitId, host: host, port: port));
     final _UnitLink link = _links.putIfAbsent(
       unitId,
       () => _UnitLink(
@@ -362,8 +406,6 @@ class DispenserSocketManager {
 
   Future<void> dispose() async {
     _disposed = true;
-    _heartbeat?.cancel();
-    _heartbeat = null;
     _appHeartbeat?.cancel();
     _appHeartbeat = null;
     for (final _UnitLink link in _links.values) {
@@ -395,23 +437,42 @@ class _UnitLink {
   WebSocket? _socket;
   StreamSubscription<dynamic>? _sub;
   int _attempts = 0;
+  int _generation = 0;
   bool _disposed = false;
   bool _connecting = false;
+  bool _dropping = false;
+  Timer? _offlineDebounce;
+
+  bool get _hasLiveSocket => _socket != null;
 
   Future<void> connect() async {
-    if (_disposed || _connecting || !wanted) {
+    if (_disposed || _connecting || !wanted || _hasLiveSocket) {
       return;
     }
     _connecting = true;
+    final int generation = ++_generation;
+    final String url = StationNetDefaults.gatewayUrl(host: host, port: port);
+    WebSocket? opened;
     try {
-      final WebSocket socket = await WebSocket.connect(
-        StationNetDefaults.gatewayUrl(host: host, port: port),
+      opened = await WebSocket.connect(
+        url,
+        compression: CompressionOptions.compressionOff,
       ).timeout(StationNetDefaults.connectTimeout);
-      _socket = socket;
-      _attempts = 0;
-      onConnected();
-      _sub = socket.listen(
+      if (_disposed || !wanted || generation != _generation) {
+        try {
+          await opened.close();
+        } catch (_) {}
+        if (identical(_socket, opened)) {
+          _socket = null;
+        }
+        _connecting = false;
+        return;
+      }
+      _sub = opened.listen(
         (dynamic data) {
+          if (generation != _generation) {
+            return;
+          }
           if (data is String) {
             onText(data);
           } else if (data is List<int>) {
@@ -419,23 +480,53 @@ class _UnitLink {
           }
         },
         onError: (Object error, StackTrace _) {
-          unawaited(_handleDrop());
+          if (generation != _generation) {
+            return;
+          }
+          unawaited(_handleDrop(generation));
         },
         onDone: () {
-          unawaited(_handleDrop());
+          if (generation != _generation) {
+            return;
+          }
+          unawaited(_handleDrop(generation));
         },
         cancelOnError: true,
       );
-    } catch (_) {
-      await _handleDrop();
+      if (_disposed || !wanted || generation != _generation) {
+        try {
+          await _sub?.cancel();
+        } catch (_) {}
+        _sub = null;
+        try {
+          await opened.close();
+        } catch (_) {}
+        if (identical(_socket, opened)) {
+          _socket = null;
+        }
+        _connecting = false;
+        return;
+      }
+      _socket = opened;
+      _attempts = 0;
+      _offlineDebounce?.cancel();
+      _offlineDebounce = null;
+      onConnected();
+    } catch (error) {
+      debugPrint('ESP WS connect failed unit=$unitId $url  $error');
+      if (generation == _generation) {
+        unawaited(_handleDrop(generation));
+      }
     } finally {
-      _connecting = false;
+      if (generation == _generation) {
+        _connecting = false;
+      }
     }
   }
 
   Future<void> sendLine(String line) async {
-    if (_socket == null) {
-      await connect();
+    if (_dropping || !_hasLiveSocket) {
+      throw const SocketException('Unit WebSocket unavailable');
     }
     final WebSocket? socket = _socket;
     if (socket == null) {
@@ -444,22 +535,39 @@ class _UnitLink {
     socket.add(line);
   }
 
-  Future<void> _handleDrop() async {
-    await _closeSocket();
-    if (_disposed || !wanted) {
+  Future<void> _handleDrop(int generation) async {
+    if (_disposed || generation != _generation || _dropping) {
       return;
     }
-    onOffline();
+    _dropping = true;
+    await _closeSocket();
+    if (_disposed || !wanted) {
+      _dropping = false;
+      return;
+    }
+    _offlineDebounce?.cancel();
+    _offlineDebounce = Timer(StationNetDefaults.offlineDebounce, () {
+      if (_disposed || !wanted || _hasLiveSocket) {
+        return;
+      }
+      onOffline();
+    });
     _attempts += 1;
-    final int shift = _attempts.clamp(1, 5);
-    final int ms = (1000 * (1 << (shift - 1))).clamp(1000, 30000);
-    await Future<void>.delayed(Duration(milliseconds: ms));
-    if (!_disposed && wanted) {
+    await Future<void>.delayed(unitWsRetryBackoff(_attempts));
+    _dropping = false;
+    if (!_disposed &&
+        unitWsCanRetry(
+          wanted: wanted,
+          hasLiveSocket: _hasLiveSocket,
+          connecting: _connecting,
+        )) {
       unawaited(connect());
     }
   }
 
   Future<void> _closeSocket() async {
+    _generation += 1;
+    _connecting = false;
     try {
       await _sub?.cancel();
     } catch (_) {}
@@ -475,12 +583,20 @@ class _UnitLink {
 
   Future<void> hangUp() async {
     wanted = false;
+    _connecting = false;
+    _dropping = false;
+    _offlineDebounce?.cancel();
+    _offlineDebounce = null;
     await _closeSocket();
   }
 
   Future<void> reset() async {
     _attempts = 0;
+    _offlineDebounce?.cancel();
+    _offlineDebounce = null;
     await _closeSocket();
+    _dropping = false;
+    _connecting = false;
     if (!_disposed && wanted) {
       unawaited(connect());
     }
@@ -489,6 +605,10 @@ class _UnitLink {
   Future<void> dispose() async {
     _disposed = true;
     wanted = false;
+    _connecting = false;
+    _dropping = false;
+    _offlineDebounce?.cancel();
+    _offlineDebounce = null;
     await _closeSocket();
   }
 }

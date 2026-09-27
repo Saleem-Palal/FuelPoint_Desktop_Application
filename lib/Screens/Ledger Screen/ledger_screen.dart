@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +11,7 @@ import '../../core/widgets/date_range_selector.dart';
 import '../../features/station/data/ledger_pdf_export.dart';
 import '../../features/station/data/transaction_store.dart';
 import '../../features/station/domain/dispenser_models.dart';
+import '../../features/station/domain/ledger_rate_bands.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/domain/shift_ledger_models.dart';
 import '../../features/station/presentation/ledger_providers.dart';
@@ -17,6 +19,7 @@ import '../../features/station/presentation/station_providers.dart';
 import '../Sale Screen/Widgets/Services/generate_receipt.dart';
 import '../Sale Screen/Widgets/Services/receipt_preview_widget.dart';
 import 'Widgets/edit_purchase_dialog.dart';
+import 'Widgets/shift_transaction_audit_dialog.dart';
 import 'Widgets/shift_wise_ledger_view.dart';
 
 class LedgerScreen extends ConsumerStatefulWidget {
@@ -273,7 +276,12 @@ class _SalesLedgerView extends ConsumerWidget {
                     children: <Widget>[
                       Expanded(
                         child: shiftWise
-                            ? ShiftLedgerTableHeader(summary: selectedShift)
+                            ? ShiftLedgerTableHeader(
+                                summary: selectedShift,
+                                unitId: query.unitId,
+                                saleLiters: slice.totalVolumeLiters,
+                                sales: slice.meterRows,
+                              )
                             : Text(
                                 'Sales History',
                                 style: TextStyle(
@@ -284,7 +292,28 @@ class _SalesLedgerView extends ConsumerWidget {
                                 ),
                               ),
                       ),
-                      if (shiftWise) ShiftLedgerPager(shifts: shifts),
+                      if (shiftWise) ...<Widget>[
+                        DsPillButton(
+                          label: 'Audit',
+                          icon: Icons.fact_check_outlined,
+                          compact: true,
+                          variant: DsPillVariant.outline,
+                          onPressed: selectedShift == null
+                              ? null
+                              : () {
+                                  unawaited(
+                                    showShiftTransactionAuditDialog(
+                                      context,
+                                      summary: selectedShift,
+                                      rows: slice.meterRows,
+                                      unitId: query.unitId,
+                                    ),
+                                  );
+                                },
+                        ),
+                        const SizedBox(width: 8),
+                        ShiftLedgerPager(shifts: shifts),
+                      ],
                     ],
                   ),
                 ),
@@ -576,7 +605,7 @@ class _SalesKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Total Sales Amount',
-              value: formatPkr(slice.totalAmountPkr),
+              value: formatTablePkr(slice.totalAmountPkr),
               hint: '${slice.totalCount} rows',
               icon: Icons.trending_up,
               tint: tokens.good,
@@ -588,7 +617,7 @@ class _SalesKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Total Volume Dispensed',
-              value: formatLiters(slice.totalVolumeLiters),
+              value: formatTableLiters(slice.totalVolumeLiters),
               hint: 'Filtered view',
               icon: Icons.water_drop_outlined,
               tint: tokens.coral,
@@ -600,7 +629,7 @@ class _SalesKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Total Udhaar Amount',
-              value: formatPkr(slice.udhaarAmountPkr),
+              value: formatTablePkr(slice.udhaarAmountPkr),
               hint: 'Credit sales',
               icon: Icons.handshake_outlined,
               tint: tokens.warn,
@@ -611,10 +640,10 @@ class _SalesKpiBar extends StatelessWidget {
         Expanded(
           child: _KpiCard(
             spec: _KpiSpec(
-              label: 'Total Udhaar Transactions',
-              value: '${slice.udhaarCount}',
-              hint: slice.udhaarCount == 1 ? 'entry' : 'entries',
-              icon: Icons.receipt_long_outlined,
+              label: 'Total Account Amount',
+              value: formatTablePkr(slice.totalAccountAmountPkr),
+              hint: 'Bank / account',
+              icon: Icons.account_balance_outlined,
               tint: tokens.bad,
             ),
           ),
@@ -638,7 +667,7 @@ class _PurchaseKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Total Purchase Amount',
-              value: formatPkr(slice.totalAmountPkr),
+              value: formatTablePkr(slice.totalAmountPkr),
               hint: '${slice.totalCount} loads',
               icon: Icons.account_balance_wallet_outlined,
               tint: tokens.good,
@@ -650,7 +679,7 @@ class _PurchaseKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Total Net Volume Purchased',
-              value: formatLiters(slice.totalVolumeLiters),
+              value: formatTableLiters(slice.totalVolumeLiters),
               hint: 'Into storage tanks',
               icon: Icons.opacity_outlined,
               tint: tokens.coral,
@@ -662,7 +691,7 @@ class _PurchaseKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Average Purchase Rate',
-              value: formatAverageRateValue(slice.averageRate),
+              value: formatTableRate(slice.averageRate),
               hint: 'PKR / L',
               icon: Icons.speed_outlined,
               tint: tokens.warn,
@@ -674,7 +703,7 @@ class _PurchaseKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Largest Delivery Volume',
-              value: formatLiters(slice.largestDeliveryLiters),
+              value: formatTableLiters(slice.largestDeliveryLiters),
               hint: 'Single load',
               icon: Icons.local_shipping_outlined,
               tint: tokens.inkMuted,
@@ -830,6 +859,16 @@ class _SalesToolbar extends ConsumerWidget {
                       },
                     ),
                   ],
+                  const SizedBox(width: 6),
+                  _UnitChip(
+                    label: formatUnitLabel(kDirectSaleUnitId),
+                    selected: query.unitId == kDirectSaleUnitId,
+                    onTap: () {
+                      ref
+                          .read(ledgerQueryProvider.notifier)
+                          .setUnit(kDirectSaleUnitId);
+                    },
+                  ),
                 ],
               ),
             ),
@@ -975,7 +1014,7 @@ class _GeneratePdfButton extends StatelessWidget {
 Future<void> _exportLedgerPdf(
   BuildContext context, {
   required bool empty,
-  required Future<void> Function() export,
+  required Future<File> Function() export,
 }) async {
   if (empty) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -984,7 +1023,13 @@ Future<void> _exportLedgerPdf(
     return;
   }
   try {
-    await export();
+    final File file = await export();
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('PDF saved: ${file.path}')));
   } catch (error) {
     if (!context.mounted) {
       return;
@@ -1105,6 +1150,8 @@ const List<_SalesCol> _salesCols = <_SalesCol>[
   _SalesCol('OPENING READING', 110, numeric: true),
   _SalesCol('CLOSING READING', 110, numeric: true),
   _SalesCol('PAYMENT METHOD', 130),
+  _SalesCol('CASH', 80, numeric: true),
+  _SalesCol('ACCOUNT', 80, numeric: true),
   _SalesCol('CUSTOMER NAME', 130),
   _SalesCol('VEHICLE NO', 96),
   _SalesCol('HELPER', 90),
@@ -1112,9 +1159,24 @@ const List<_SalesCol> _salesCols = <_SalesCol>[
   _SalesCol('ACTIONS', 86),
 ];
 
-const double _salesTableMinWidth = 1680;
+const double _salesTableMinWidth = 1880;
 const double _salesHeaderHeight = 32;
 const double _salesRowExtent = 52;
+
+Color? _rateBandFill(DispensrTokens tokens, int? index) {
+  if (index == null) {
+    return null;
+  }
+  const double alpha = 0.10;
+  final List<Color> palette = <Color>[
+    tokens.blush,
+    tokens.coral,
+    tokens.good,
+    tokens.warn,
+    tokens.inkMuted,
+  ];
+  return palette[index % palette.length].withValues(alpha: alpha);
+}
 
 class _SalesDataTable extends StatelessWidget {
   const _SalesDataTable({required this.rows});
@@ -1158,6 +1220,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
+    final Map<String, int> bands = rateBandIndexes(widget.rows);
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         return Scrollbar(
@@ -1193,10 +1256,13 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
                         itemExtent: _salesRowExtent,
                         itemCount: widget.rows.length,
                         itemBuilder: (BuildContext context, int index) {
+                          final SaleTransaction row = widget.rows[index];
+                          final int? band = bands[displayedRateKey(row.rate)];
                           return _salesDataRow(
                             context,
                             tokens,
-                            widget.rows[index],
+                            row,
+                            rateTint: _rateBandFill(tokens, band),
                           );
                         },
                       ),
@@ -1243,8 +1309,9 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
   Widget _salesDataRow(
     BuildContext context,
     DispensrTokens tokens,
-    SaleTransaction row,
-  ) {
+    SaleTransaction row, {
+    Color? rateTint,
+  }) {
     final TextStyle dataStyle = TextStyle(
       fontFamily: 'Roboto',
       fontWeight: FontWeight.w500,
@@ -1255,7 +1322,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
       decoration: BoxDecoration(
         color: row.isUnsettledUdhaar
             ? tokens.bad.withValues(alpha: 0.10)
-            : Colors.transparent,
+            : (rateTint ?? Colors.transparent),
         border: Border(bottom: BorderSide(color: tokens.line)),
       ),
       child: Padding(
@@ -1292,6 +1359,18 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
                       ),
                     ),
                   ),
+                  if (row.isTest) ...<Widget>[
+                    const SizedBox(width: 6),
+                    Text(
+                      'Test',
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 10,
+                        color: tokens.warn,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1320,7 +1399,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
               width: _salesCols[3].width,
               numeric: true,
               child: Text(
-                formatPkr(row.amountPkr),
+                formatTablePkr(row.amountPkr),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: dataStyle.copyWith(fontWeight: FontWeight.w700),
@@ -1331,7 +1410,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
               width: _salesCols[4].width,
               numeric: true,
               child: Text(
-                formatLiters(row.volumeLiters),
+                formatTableLiters(row.volumeLiters),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: dataStyle,
@@ -1342,7 +1421,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
               width: _salesCols[5].width,
               numeric: true,
               child: Text(
-                formatRate(row.rate),
+                formatTableRate(row.rate),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: dataStyle,
@@ -1373,19 +1452,43 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
             const SizedBox(width: 14),
             _salesCell(
               width: _salesCols[8].width,
-              child: _PaymentPill(
-                method: row.payment,
-                settled: row.udhaarSettled,
-              ),
+              child: row.isTest
+                  ? _PaymentPill(method: row.payment, isTest: true)
+                  : _PaymentPill(
+                      method: row.payment,
+                      settled: row.udhaarSettled,
+                    ),
             ),
             const SizedBox(width: 14),
             _salesCell(
               width: _salesCols[9].width,
-              child: _CustomerCell(name: row.customerName, notes: row.notes),
+              numeric: true,
+              child: Text(
+                formatTableTenderPkr(row.cashAmount),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
             ),
             const SizedBox(width: 14),
             _salesCell(
               width: _salesCols[10].width,
+              numeric: true,
+              child: Text(
+                formatTableTenderPkr(row.accountAmount),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: dataStyle,
+              ),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[11].width,
+              child: _CustomerCell(name: row.customerName, notes: row.notes),
+            ),
+            const SizedBox(width: 14),
+            _salesCell(
+              width: _salesCols[12].width,
               child: Text(
                 displayVehicleNo(row.vehicleNo),
                 maxLines: 1,
@@ -1395,7 +1498,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
             ),
             const SizedBox(width: 14),
             _salesCell(
-              width: _salesCols[11].width,
+              width: _salesCols[13].width,
               child: Text(
                 row.helperName.trim().isEmpty ? '—' : row.helperName,
                 maxLines: 1,
@@ -1405,7 +1508,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
             ),
             const SizedBox(width: 14),
             _salesCell(
-              width: _salesCols[12].width,
+              width: _salesCols[14].width,
               child: Text(
                 row.cashierName,
                 maxLines: 1,
@@ -1415,15 +1518,17 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
             ),
             const SizedBox(width: 14),
             _salesCell(
-              width: _salesCols[13].width,
-              child: _RowActions(
-                onPrint: () {
-                  unawaited(_reprint(context, ref, row));
-                },
-                onEdit: () {
-                  unawaited(_editSale(context, ref, row));
-                },
-              ),
+              width: _salesCols[15].width,
+              child: row.isTest
+                  ? Text('—', style: dataStyle.copyWith(color: tokens.inkMuted))
+                  : _RowActions(
+                      onPrint: () {
+                        unawaited(_reprint(context, ref, row));
+                      },
+                      onEdit: () {
+                        unawaited(_editSale(context, ref, row));
+                      },
+                    ),
             ),
           ],
         ),
@@ -1506,11 +1611,11 @@ class _PurchaseDataTable extends StatelessWidget {
                         style: TextStyle(color: tokens.inkMuted),
                       ),
                     ),
-                    DataCell(Text(formatLiters(row.netLiters))),
+                    DataCell(Text(formatTableLiters(row.netLiters))),
                     DataCell(Text(formatTruncatedDecimal(row.ratePerLiter))),
                     DataCell(
                       Text(
-                        formatPkr(row.totalAmount),
+                        formatTablePkr(row.totalAmount),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -1638,14 +1743,28 @@ class _ActionIcon extends StatelessWidget {
 }
 
 class _PaymentPill extends StatelessWidget {
-  const _PaymentPill({required this.method, this.settled = false});
+  const _PaymentPill({
+    required this.method,
+    this.settled = false,
+    this.isTest = false,
+  });
 
   final PaymentMethod method;
   final bool settled;
+  final bool isTest;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
+    if (isTest) {
+      return DsStatusPill(
+        label: 'TEST',
+        foreground: tokens.warn,
+        background: tokens.warn.withValues(alpha: 0.12),
+        border: tokens.warn.withValues(alpha: 0.35),
+        dot: false,
+      );
+    }
     late final Color fg;
     late final Color bg;
     switch (method) {
@@ -1710,7 +1829,7 @@ Future<void> _editSale(
   final bool? saved = await showDialog<bool>(
     context: context,
     builder: (BuildContext context) {
-      return _EditSaleDialog(txn: row);
+      return EditSaleDialog(txn: row);
     },
   );
   if (!context.mounted || saved != true) {
@@ -1850,6 +1969,13 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
                         copyBanner: ReceiptCopy.bannerFor(
                           payment: widget.txn.payment,
                           stationCopy: _stationCapture,
+                          kind: ReceiptPrintKind.secondCopy,
+                        ),
+                        details: saleReceiptDetails(widget.txn),
+                        handwritingLines: ReceiptCopy.handwritingLinesFor(
+                          payment: widget.txn.payment,
+                          stationCopy: _stationCapture,
+                          kind: ReceiptPrintKind.secondCopy,
                         ),
                       ),
                     ),
@@ -1886,22 +2012,23 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
   }
 }
 
-class _EditSaleDialog extends ConsumerStatefulWidget {
-  const _EditSaleDialog({required this.txn});
+class EditSaleDialog extends ConsumerStatefulWidget {
+  const EditSaleDialog({super.key, required this.txn});
 
   final SaleTransaction txn;
 
   @override
-  ConsumerState<_EditSaleDialog> createState() => _EditSaleDialogState();
+  ConsumerState<EditSaleDialog> createState() => _EditSaleDialogState();
 }
 
 enum _EditPill { cash, udhaar, account }
 
 enum _EditRail { bank, easyPaisa }
 
-class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
+class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
   late final TextEditingController _customer;
   late final TextEditingController _vehicle;
+  late final TextEditingController _cashNow;
   late _EditPill _pill;
   late _EditRail _rail;
   bool _saving = false;
@@ -1914,6 +2041,8 @@ class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
       text: customer.toLowerCase() == 'walk-in' ? '' : customer,
     );
     _vehicle = TextEditingController(text: widget.txn.vehicleNo);
+    final int cashNow = widget.txn.cashAmount.round();
+    _cashNow = TextEditingController(text: cashNow > 0 ? '$cashNow' : '');
     switch (widget.txn.payment) {
       case PaymentMethod.cash:
         _pill = _EditPill.cash;
@@ -1934,6 +2063,7 @@ class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
   void dispose() {
     _customer.dispose();
     _vehicle.dispose();
+    _cashNow.dispose();
     super.dispose();
   }
 
@@ -1973,6 +2103,8 @@ class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
             customerName: _customer.text,
             vehicleNo: _vehicle.text,
             payment: _payment,
+            cashNow: double.tryParse(_cashNow.text.trim()) ?? 0,
+            saleAmount: widget.txn.amountPkr,
           );
       if (!mounted) {
         return;
@@ -1998,6 +2130,45 @@ class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
           _saving = false;
         });
       }
+    }
+  }
+
+  Future<void> _printEdited() async {
+    final ({PaymentMethod payment, double cashAmount, double accountAmount})
+    split = resolveAccountSplit(
+      payment: _payment,
+      saleAmount: widget.txn.amountPkr,
+      cashNow: double.tryParse(_cashNow.text.trim()) ?? 0,
+    );
+    final SaleTransaction preview = widget.txn.copyWith(
+      customerName: _customer.text.trim().isEmpty
+          ? 'Walk-in'
+          : _customer.text.trim(),
+      vehicleNo: _vehicle.text,
+      payment: split.payment,
+      cashAmount: split.cashAmount,
+      accountAmount: split.accountAmount,
+    );
+    try {
+      await spoolSaleReceipt(
+        context: context,
+        txn: preview,
+        kind: ReceiptPrintKind.editedCopy,
+      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Edited copy sent to printer')),
+      );
+    } catch (error, stack) {
+      debugPrint('Edited copy print failed: $error\n$stack');
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not print. $error')));
     }
   }
 
@@ -2117,6 +2288,22 @@ class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _cashNow,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
+                  decoration: InputDecoration(
+                    labelText: 'Cash now (Rs.)',
+                    hintText: '0 = full account',
+                    helperText:
+                        'Account ${formatTablePkr((widget.txn.amountPkr - (double.tryParse(_cashNow.text.trim()) ?? 0)).clamp(0, widget.txn.amountPkr))}',
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
               ],
               const SizedBox(height: 12),
               TextField(
@@ -2149,6 +2336,16 @@ class _EditSaleDialogState extends ConsumerState<_EditSaleDialog> {
                       onPressed: _saving
                           ? null
                           : () => Navigator.of(context).pop(false),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DsPillButton(
+                      label: 'Print',
+                      variant: DsPillVariant.ink,
+                      onPressed: _saving
+                          ? null
+                          : () => unawaited(_printEdited()),
                     ),
                   ),
                   const SizedBox(width: 8),

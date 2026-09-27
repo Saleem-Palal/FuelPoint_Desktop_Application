@@ -28,7 +28,14 @@ class ManagerShiftsTab extends ConsumerWidget {
   Future<void> _endShift(BuildContext context, WidgetRef ref) async {
     final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
     if (!workspace.canEndShift) {
-      if (workspace.pendingReconciliation != null && context.mounted) {
+      if (workspace.hasUnconfirmedAccount && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ShiftLifecycleGuard.pendingAccountBlockedMessage()),
+            backgroundColor: DispensrTokens.of(context).warn,
+          ),
+        );
+      } else if (workspace.pendingReconciliation != null && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -41,6 +48,17 @@ class ManagerShiftsTab extends ConsumerWidget {
     }
     final ManagerShiftRecord? shift = workspace.activeShift;
     if (shift == null) {
+      return;
+    }
+    if (workspace.hasUnconfirmedAccount) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ShiftLifecycleGuard.pendingAccountBlockedMessage()),
+            backgroundColor: DispensrTokens.of(context).warn,
+          ),
+        );
+      }
       return;
     }
     final int? blockingBay = shouldEnforceStationGuards
@@ -121,6 +139,15 @@ class ManagerShiftsTab extends ConsumerWidget {
                 result.blockedBayId ?? 0,
               ),
             ),
+          ),
+        );
+        return;
+      }
+      if (result.outcome == HandoverOutcome.pendingAccount && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ShiftLifecycleGuard.pendingAccountBlockedMessage()),
+            backgroundColor: DispensrTokens.of(context).warn,
           ),
         );
         return;
@@ -834,7 +861,7 @@ class _TodaySalesCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
             child: Text(
-              '${metrics.sales.length} ${metrics.sales.length == 1 ? 'transaction' : 'transactions'}',
+              '${metrics.commercialSaleCount} ${metrics.commercialSaleCount == 1 ? 'transaction' : 'transactions'}',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w500,
@@ -963,7 +990,7 @@ class _HistoricalShiftTable extends StatelessWidget {
                     ),
                     DataCell(
                       Text(
-                        formatPkr(row.expectedCash),
+                        formatTablePkr(row.expectedCash),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -971,7 +998,7 @@ class _HistoricalShiftTable extends StatelessWidget {
                       Text(
                         row.actualCash == null
                             ? '—'
-                            : formatPkr(row.actualCash!),
+                            : formatTablePkr(row.actualCash!),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -1009,7 +1036,7 @@ class _DiscrepancyCell extends StatelessWidget {
         ? tokens.good
         : tokens.ink;
     return Text(
-      formatSignedPkr(value),
+      formatTableSignedPkr(value),
       style: TextStyle(fontWeight: FontWeight.w700, color: color),
     );
   }

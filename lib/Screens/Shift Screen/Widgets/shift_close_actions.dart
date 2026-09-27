@@ -12,7 +12,13 @@ import 'shift_close_warning_dialog.dart';
 Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
   final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
   if (!workspace.canEndShift) {
-    if (workspace.pendingReconciliation != null && context.mounted) {
+    if (workspace.hasUnconfirmedAccount && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ShiftLifecycleGuard.pendingAccountBlockedMessage()),
+        ),
+      );
+    } else if (workspace.pendingReconciliation != null && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Finish the pending cash tally in the sidebar.'),
@@ -23,6 +29,16 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
   }
   final ManagerShiftRecord? shift = workspace.activeShift;
   if (shift == null) {
+    return;
+  }
+  if (workspace.hasUnconfirmedAccount) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ShiftLifecycleGuard.pendingAccountBlockedMessage()),
+        ),
+      );
+    }
     return;
   }
   final int? blockingBay = shouldEnforceStationGuards
@@ -76,6 +92,14 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
           content: Text(
             ShiftLifecycleGuard.endBlockedMessage(result.blockedBayId ?? 0),
           ),
+        ),
+      );
+      return;
+    }
+    if (result.outcome == HandoverOutcome.pendingAccount) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ShiftLifecycleGuard.pendingAccountBlockedMessage()),
         ),
       );
       return;

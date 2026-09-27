@@ -31,28 +31,46 @@ class TransactionStore {
 class SalesLedgerSnapshot {
   const SalesLedgerSnapshot({
     required this.rows,
+    required this.meterRows,
     required this.totalCount,
     required this.totalAmountPkr,
     required this.totalVolumeLiters,
     required this.udhaarAmountPkr,
     required this.udhaarCount,
+    required this.totalAccountAmountPkr,
   });
 
   static const SalesLedgerSnapshot empty = SalesLedgerSnapshot(
     rows: <SaleTransaction>[],
+    meterRows: <SaleTransaction>[],
     totalCount: 0,
     totalAmountPkr: 0,
     totalVolumeLiters: 0,
     udhaarAmountPkr: 0,
     udhaarCount: 0,
+    totalAccountAmountPkr: 0,
   );
 
+  /// Visible ledger rows, including tagged test fills.
   final List<SaleTransaction> rows;
+
+  /// Same slice including test fills, for meter chain / audit / live closing.
+  final List<SaleTransaction> meterRows;
   final int totalCount;
   final double totalAmountPkr;
   final double totalVolumeLiters;
   final double udhaarAmountPkr;
   final int udhaarCount;
+  final double totalAccountAmountPkr;
+
+  /// Pump volume for the focused slice, including test fills.
+  double get physicalVolumeLiters {
+    double total = 0;
+    for (final SaleTransaction row in meterRows) {
+      total += row.volumeLiters;
+    }
+    return total;
+  }
 }
 
 class PurchaseLedgerSnapshot {

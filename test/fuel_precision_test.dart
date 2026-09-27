@@ -23,6 +23,25 @@ void main() {
       expect(roundRupees(Decimal.parse('10.5')), 11);
       expect(roundRupees(Decimal.parse('-10.5')), -11);
     });
+
+    test('saleLitersMatchMeter ignores 13th-place meter delta noise', () {
+      expect(
+        saleLitersMatchMeter(
+          liters: '12.3400000000001',
+          openingMeter: '100',
+          closingMeter: '112.3400000000002',
+        ),
+        isTrue,
+      );
+      expect(
+        saleLitersMatchMeter(
+          liters: '12.34',
+          openingMeter: '100',
+          closingMeter: '112.35',
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('nextAverageRate', () {
@@ -61,10 +80,10 @@ void main() {
       expect(FuelFormatter.formatCurrency(1234.6), 'Rs. 1,235');
     });
 
-    test('live dispenser amount truncates two decimals and does not round up', () {
-      expect(FuelFormatter.lcdDispenserAmount(6618.50), '6618.50');
-      expect(FuelFormatter.lcdDispenserAmount(10.5), '10.50');
-      expect(FuelFormatter.lcdDispenserAmount(10.999), '10.99');
+    test('live dispenser amount is whole rupees with no decimal places', () {
+      expect(FuelFormatter.lcdDispenserAmount(6618.50), '6619');
+      expect(FuelFormatter.lcdDispenserAmount(10.4), '10');
+      expect(FuelFormatter.lcdDispenserAmount(10.5), '11');
     });
   });
 }

@@ -79,7 +79,7 @@ class _FdxAppState extends State<FdxApp> {
       child: MaterialApp(
         title: AppBrand.name,
         navigatorKey: appNavigatorKey,
-        debugShowCheckedModeBanner: false,
+        debugShowCheckedModeBanner: kDebugMode,
         theme: buildDispensrTheme(),
         home: screenForRoute(widget.initialRoute),
         onGenerateRoute: (RouteSettings settings) {

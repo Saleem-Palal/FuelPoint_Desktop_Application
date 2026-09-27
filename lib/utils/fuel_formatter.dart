@@ -23,12 +23,24 @@ class FuelFormatter {
     return 'Rs. ${_whole.format(amount.round())}';
   }
 
+  static String formatTableCurrency(double amount) {
+    return _whole.format(amount.round());
+  }
+
   static String formatVolume(double liters) {
     return '${groupTruncatedDecimal(liters)} Ltr';
   }
 
+  static String formatTableVolume(double liters) {
+    return groupTruncatedDecimal(liters);
+  }
+
   static String formatRate(double rate) {
     return formatAverageRate(rate);
+  }
+
+  static String formatTableRate(double rate) {
+    return groupTruncatedDecimal(rate);
   }
 
   /// WAC / average rate for UI: two decimal digits, truncated, not rounded.
@@ -44,9 +56,9 @@ class FuelFormatter {
     return _lcdWhole.format(value.round());
   }
 
-  /// Live dispenser rupees: two decimals, truncated toward zero, never rounded.
+  /// Live dispenser rupees: whole PKR, no decimal places.
   static String lcdDispenserAmount(double value) {
-    return truncateToDecimalPlaces(value, 2);
+    return lcdAmount(value);
   }
 
   static String lcdVolume(double value) {

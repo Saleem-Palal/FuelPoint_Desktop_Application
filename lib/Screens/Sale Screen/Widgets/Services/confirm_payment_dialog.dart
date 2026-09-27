@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,7 +8,11 @@ import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../features/customer/domain/customer_models.dart';
 import '../../../../features/customer/presentation/customer_providers.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
+import '../../../../features/station/domain/fuel_precision.dart';
 import '../../../../features/station/presentation/station_providers.dart';
+import '../../../../providers/settings_provider.dart';
+import 'generate_receipt.dart';
+import 'receipt_preview_widget.dart';
 
 class ConfirmPaymentSheet extends ConsumerStatefulWidget {
   const ConfirmPaymentSheet({super.key, required this.unitId});
@@ -22,10 +28,13 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
   final TextEditingController _customerId = TextEditingController();
   final TextEditingController _customer = TextEditingController();
   final TextEditingController _vehicle = TextEditingController();
+  final TextEditingController _cashNow = TextEditingController();
+  final TextEditingController _accountNow = TextEditingController();
 
   _PayPill _pill = _PayPill.cash;
   _AccountRail _rail = _AccountRail.bank;
   bool _submitting = false;
+  bool _syncingSplit = false;
 
   bool get _udhaarSelected => _pill == _PayPill.udhaar;
 
@@ -38,6 +47,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     super.initState();
     _customer.addListener(_onFieldChanged);
     _customerId.addListener(_onCustomerIdChanged);
+    _vehicle.addListener(_onFieldChanged);
   }
 
   CustomerProfile? _matchedCustomer() {
@@ -77,7 +87,11 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     _customer
       ..removeListener(_onFieldChanged)
       ..dispose();
-    _vehicle.dispose();
+    _vehicle
+      ..removeListener(_onFieldChanged)
+      ..dispose();
+    _cashNow.dispose();
+    _accountNow.dispose();
     super.dispose();
   }
 
@@ -110,6 +124,9 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     }
     setState(() {
       _pill = methods[index];
+      if (_pill == _PayPill.account) {
+        _seedAccountSplit();
+      }
     });
   }
 
@@ -118,6 +135,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
       if (_pill != _PayPill.account) {
         _pill = _PayPill.account;
         _rail = delta < 0 ? _AccountRail.bank : _AccountRail.easyPaisa;
+        _seedAccountSplit();
       } else {
         int index = _rail == _AccountRail.bank ? 0 : 1;
         index = (index + delta) % 2;
@@ -133,14 +151,74 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     if (_submitting || !bay.canConfirmPayment) {
       return false;
     }
-    if (_udhaarSelected && _matchedCustomer() == null) {
+    if (_vehicle.text.trim().isEmpty) {
+      return false;
+    }
+    if (!bay.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
       return false;
     }
     return true;
   }
 
   bool _canPreview(DispenserBay bay) {
-    return !_submitting && bay.canConfirmPayment;
+    return !_submitting && bay.canConfirmPayment && !bay.isTestRun;
+  }
+
+  double get _cashNowValue {
+    return double.tryParse(_cashNow.text.trim()) ?? 0;
+  }
+
+  int get _saleRupees {
+    return roundRupees(
+      ref.read(stationControllerProvider).bay(widget.unitId).amountPkr,
+    );
+  }
+
+  void _setSplitText(TextEditingController controller, int rupees) {
+    final String next = rupees <= 0 ? '' : '$rupees';
+    if (controller.text == next) {
+      return;
+    }
+    controller.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: next.length),
+    );
+  }
+
+  void _seedAccountSplit() {
+    _syncingSplit = true;
+    _cashNow.clear();
+    _setSplitText(_accountNow, _saleRupees);
+    _syncingSplit = false;
+  }
+
+  void _onCashSplitChanged(String _) {
+    if (_syncingSplit) {
+      _onFieldChanged();
+      return;
+    }
+    _syncingSplit = true;
+    final int sale = _saleRupees;
+    final int cash = (int.tryParse(_cashNow.text.trim()) ?? 0).clamp(0, sale);
+    _setSplitText(_accountNow, sale - cash);
+    _syncingSplit = false;
+    _onFieldChanged();
+  }
+
+  void _onAccountSplitChanged(String _) {
+    if (_syncingSplit) {
+      _onFieldChanged();
+      return;
+    }
+    _syncingSplit = true;
+    final int sale = _saleRupees;
+    final int account = (int.tryParse(_accountNow.text.trim()) ?? 0).clamp(
+      0,
+      sale,
+    );
+    _setSplitText(_cashNow, sale - account);
+    _syncingSplit = false;
+    _onFieldChanged();
   }
 
   void _preview() {
@@ -157,13 +235,64 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
       );
       return;
     }
+    final String customerName = _udhaarSelected
+        ? (_matchedCustomer()?.name ?? '')
+        : '';
+    if (!ref.read(settingsProvider).showReceiptPreview) {
+      final SaleTransaction? draft = ref
+          .read(stationControllerProvider.notifier)
+          .receiptDraftForBay(
+            unitId: widget.unitId,
+            customerName: customerName,
+            vehicleNo: _vehicle.text,
+            payment: _paymentMethod,
+            cashNow: _cashNowValue,
+          );
+      if (draft == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This bay is not ready to print')),
+        );
+        return;
+      }
+      unawaited(() async {
+        try {
+          await spoolSaleReceipt(
+            context: context,
+            txn: draft,
+            kind: ReceiptPrintKind.live,
+          );
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                draft.payment.printsTwoCopies
+                    ? '2 copies sent to printer'
+                    : 'Receipt sent to printer',
+              ),
+            ),
+          );
+        } catch (error, stack) {
+          debugPrint('Unit print failed: $error\n$stack');
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not print receipt. $error')),
+          );
+        }
+      }());
+      return;
+    }
     final bool shown = ref
         .read(stationControllerProvider.notifier)
         .previewReceiptForBay(
           unitId: widget.unitId,
-          customerName: _udhaarSelected ? (_matchedCustomer()?.name ?? '') : '',
+          customerName: customerName,
           vehicleNo: _vehicle.text,
           payment: _paymentMethod,
+          cashNow: _cashNowValue,
         );
     if (!shown && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -180,7 +309,10 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     if (_submitting) {
       return;
     }
-    if (_udhaarSelected && _matchedCustomer() == null) {
+    if (!bay.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid customer ID')),
+      );
       return;
     }
     if (!_canSubmit(bay)) {
@@ -201,6 +333,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
             vehicleNo: _vehicle.text,
             payment: _paymentMethod,
             customerId: _udhaarSelected ? (_matchedCustomer()?.id ?? '') : '',
+            cashNow: _cashNowValue,
           );
       if (!mounted) {
         return;
@@ -214,12 +347,26 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
         );
         return;
       }
+      final bool wasTest = txn.notes == 'TEST_METER';
       _customerId.clear();
       _customer.clear();
       _vehicle.clear();
+      _cashNow.clear();
+      _accountNow.clear();
       setState(() {
+        _pill = _PayPill.cash;
+        _rail = _AccountRail.bank;
         _submitting = false;
       });
+      if (wasTest) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Test fill saved (opening/closing meters). Not a sale — stock unchanged.',
+            ),
+          ),
+        );
+      }
     } catch (error, stack) {
       debugPrint('Could not commit this sale: $error\n$stack');
       if (!mounted) {
@@ -305,12 +452,14 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Text(
-                'Payment method',
+                bay.isTestRun
+                    ? 'Test fill — Confirm saves meters only. Not a sale.'
+                    : 'Payment method',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w500,
                   fontSize: 13,
-                  color: tokens.inkMuted,
+                  color: bay.isTestRun ? tokens.warn : tokens.inkMuted,
                 ),
               ),
               const SizedBox(height: _kGap),
@@ -348,6 +497,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                       _selectThisUnit();
                       setState(() {
                         _pill = _PayPill.account;
+                        _seedAccountSplit();
                       });
                     },
                   ),
@@ -382,11 +532,52 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                     ),
                   ],
                 ),
+                const SizedBox(height: _kGap),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Expanded(
+                      child: _ShellField(
+                        tokens: tokens,
+                        hint: '0',
+                        inlineLabel: 'Cash',
+                        icon: Icons.payments_outlined,
+                        controller: _cashNow,
+                        onTap: _selectThisUnit,
+                        textInputAction: TextInputAction.next,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: <TextInputFormatter>[
+                          FilteringTextInputFormatter.digitsOnly,
+                        ],
+                        onChanged: _onCashSplitChanged,
+                        onSubmitted: (_) => _confirm(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _ShellField(
+                        tokens: tokens,
+                        hint: '0',
+                        inlineLabel: 'Account',
+                        icon: Icons.account_balance_outlined,
+                        controller: _accountNow,
+                        onTap: _selectThisUnit,
+                        textInputAction: TextInputAction.done,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: <TextInputFormatter>[
+                          FilteringTextInputFormatter.digitsOnly,
+                        ],
+                        onChanged: _onAccountSplitChanged,
+                        onSubmitted: (_) => _confirm(),
+                      ),
+                    ),
+                  ],
+                ),
               ],
               const SizedBox(height: _kGap),
               _ShellField(
                 tokens: tokens,
-                hint: 'Vehicle number (optional)',
+                hint: 'Vehicle number',
                 icon: Icons.directions_car_outlined,
                 controller: _vehicle,
                 onTap: _selectThisUnit,
@@ -656,16 +847,24 @@ class _ShellField extends StatelessWidget {
     required this.controller,
     required this.onTap,
     required this.textInputAction,
+    this.inlineLabel,
     this.onSubmitted,
+    this.onChanged,
+    this.keyboardType,
+    this.inputFormatters,
   });
 
   final DispensrTokens tokens;
   final String hint;
+  final String? inlineLabel;
   final IconData icon;
   final TextEditingController controller;
   final VoidCallback onTap;
   final TextInputAction textInputAction;
   final ValueChanged<String>? onSubmitted;
+  final ValueChanged<String>? onChanged;
+  final TextInputType? keyboardType;
+  final List<TextInputFormatter>? inputFormatters;
 
   @override
   Widget build(BuildContext context) {
@@ -681,6 +880,18 @@ class _ShellField extends StatelessWidget {
       child: Row(
         children: <Widget>[
           Icon(icon, size: 16, color: tokens.inkMuted),
+          if (inlineLabel case final String label) ...<Widget>[
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: tokens.inkMuted,
+              ),
+            ),
+          ],
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
@@ -690,6 +901,9 @@ class _ShellField extends StatelessWidget {
               textAlignVertical: TextAlignVertical.center,
               textInputAction: textInputAction,
               onSubmitted: onSubmitted,
+              onChanged: onChanged,
+              keyboardType: keyboardType,
+              inputFormatters: inputFormatters,
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontSize: 11,

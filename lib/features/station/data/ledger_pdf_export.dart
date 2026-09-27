@@ -1,10 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 
 import '../../../core/constants.dart';
+import '../../../core/pdf_file_export.dart';
 import '../domain/dispenser_models.dart';
 import '../domain/money_format.dart';
 import 'transaction_store.dart';
@@ -14,45 +16,44 @@ class LedgerPdfExport {
 
   static final LedgerPdfExport instance = LedgerPdfExport._();
 
-  Future<void> exportSales({
+  Future<File> exportSales({
     required SalesLedgerSnapshot slice,
     int? unitId,
     DateTimeRange? range,
     String search = '',
     String? shiftLabel,
   }) async {
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) {
-        return _buildSalesPdf(
-          slice: slice,
-          unitId: unitId,
-          range: range,
-          search: search,
-          shiftLabel: shiftLabel,
-          pageFormat: format.landscape,
-        );
-      },
-      format: PdfPageFormat.a4.landscape,
-      name: shiftLabel == null || shiftLabel.trim().isEmpty
-          ? 'sales-ledger.pdf'
-          : 'sales-ledger-${shiftLabel.split(' · ').first}.pdf',
+    final Uint8List bytes = await _buildSalesPdf(
+      slice: slice,
+      unitId: unitId,
+      range: range,
+      search: search,
+      shiftLabel: shiftLabel,
+      pageFormat: PdfPageFormat.a4.landscape,
+    );
+    final String name = shiftLabel == null || shiftLabel.trim().isEmpty
+        ? 'sales-ledger.pdf'
+        : 'sales-ledger-${shiftLabel.split(' · ').first}.pdf';
+    return PdfFileExport.saveAndOpen(
+      bytes: bytes,
+      folder: 'Ledgers',
+      fileName: name,
     );
   }
 
-  Future<void> exportPurchases({
+  Future<File> exportPurchases({
     required PurchaseLedgerSnapshot slice,
     DateTimeRange? range,
   }) async {
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) {
-        return _buildPurchasesPdf(
-          slice: slice,
-          range: range,
-          pageFormat: format.landscape,
-        );
-      },
-      format: PdfPageFormat.a4.landscape,
-      name: 'purchase-ledger.pdf',
+    final Uint8List bytes = await _buildPurchasesPdf(
+      slice: slice,
+      range: range,
+      pageFormat: PdfPageFormat.a4.landscape,
+    );
+    return PdfFileExport.saveAndOpen(
+      bytes: bytes,
+      folder: 'Ledgers',
+      fileName: 'purchase-ledger.pdf',
     );
   }
 
@@ -76,6 +77,8 @@ class LedgerPdfExport {
       'Opening',
       'Closing',
       'Payment',
+      'Cash',
+      'Account',
       'Customer',
       'Vehicle',
       'Helper',
@@ -87,12 +90,18 @@ class LedgerPdfExport {
           formatLedgerToken(row.tokenNo),
           formatDateTime(row.timestamp),
           formatUnitLabel(row.unitId),
-          formatPkr(row.amountPkr),
-          formatLiters(row.volumeLiters),
-          formatRate(row.rate),
+          formatTablePkr(row.amountPkr),
+          formatTableLiters(row.volumeLiters),
+          formatTableRate(row.rate),
           formatMeterReading(row.openingMeter),
           formatMeterReading(row.closingMeter),
-          row.udhaarSettled ? 'UDHAAR · SETTLED' : row.payment.ledgerPill,
+          row.isTest
+              ? 'Test'
+              : (row.udhaarSettled
+                    ? 'UDHAAR · SETTLED'
+                    : row.payment.ledgerPill),
+          formatTableTenderPkr(row.cashAmount),
+          formatTableTenderPkr(row.accountAmount),
           displayCustomerName(row.customerName),
           displayVehicleNo(row.vehicleNo),
           row.helperName.trim().isEmpty ? '—' : row.helperName,
@@ -123,9 +132,9 @@ class LedgerPdfExport {
         build: (pw.Context context) {
           return <pw.Widget>[
             _kpiRow(theme, <_KpiLine>[
-              _KpiLine('Total Sales', formatPkr(slice.totalAmountPkr)),
-              _KpiLine('Volume', formatLiters(slice.totalVolumeLiters)),
-              _KpiLine('Udhaar Amount', formatPkr(slice.udhaarAmountPkr)),
+              _KpiLine('Total Sales', formatTablePkr(slice.totalAmountPkr)),
+              _KpiLine('Volume', formatTableLiters(slice.totalVolumeLiters)),
+              _KpiLine('Udhaar Amount', formatTablePkr(slice.udhaarAmountPkr)),
               _KpiLine('Udhaar Txns', '${slice.udhaarCount}'),
             ]),
             pw.SizedBox(height: 12),
@@ -177,9 +186,9 @@ class LedgerPdfExport {
         <String>[
           formatInvoiceNo(row.refNo),
           formatDateTime(row.timestamp),
-          formatLiters(row.netLiters),
-          formatTruncatedDecimal(row.ratePerLiter),
-          formatPkr(row.totalAmount),
+          formatTableLiters(row.netLiters),
+          formatTableRate(row.ratePerLiter),
+          formatTablePkr(row.totalAmount),
           row.tafseelDisplay,
           row.user,
         ],
@@ -202,12 +211,15 @@ class LedgerPdfExport {
         build: (pw.Context context) {
           return <pw.Widget>[
             _kpiRow(theme, <_KpiLine>[
-              _KpiLine('Total Amount', formatPkr(slice.totalAmountPkr)),
-              _KpiLine('Net Volume', formatLiters(slice.totalVolumeLiters)),
-              _KpiLine('Avg Rate', formatAverageRateValue(slice.averageRate)),
+              _KpiLine('Total Amount', formatTablePkr(slice.totalAmountPkr)),
+              _KpiLine(
+                'Net Volume',
+                formatTableLiters(slice.totalVolumeLiters),
+              ),
+              _KpiLine('Avg Rate', formatTableRate(slice.averageRate)),
               _KpiLine(
                 'Largest Delivery',
-                formatLiters(slice.largestDeliveryLiters),
+                formatTableLiters(slice.largestDeliveryLiters),
               ),
             ]),
             pw.SizedBox(height: 12),

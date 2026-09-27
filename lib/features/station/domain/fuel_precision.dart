@@ -53,6 +53,33 @@ double storedNumberToDouble(Object? value) {
   return parseDecimal(value).toDouble();
 }
 
+/// Meter delta from two Total Meter snapshots, truncated like stored liters.
+Decimal meterDeltaLiters(Object? openingMeter, Object? closingMeter) {
+  return truncateFuel(parseDecimal(closingMeter) - parseDecimal(openingMeter));
+}
+
+/// Fractional digits used for same-unit meter continuity (2-place display).
+/// Finer noise, including [fuelScale] / 13th-place, is not a mismatch.
+const int meterMismatchScale = 2;
+
+Decimal truncateMeterCheck(Object? value) {
+  return parseDecimal(value).truncate(scale: meterMismatchScale);
+}
+
+bool metersMatchAtAuditScale(Object? left, Object? right) {
+  return truncateMeterCheck(left) == truncateMeterCheck(right);
+}
+
+/// True when ESP liters and Closing − Opening agree at [meterMismatchScale].
+bool saleLitersMatchMeter({
+  required Object? liters,
+  required Object? openingMeter,
+  required Object? closingMeter,
+}) {
+  final Decimal delta = parseDecimal(closingMeter) - parseDecimal(openingMeter);
+  return metersMatchAtAuditScale(liters, delta);
+}
+
 /// Convert a Decimal division result to [fuelScale] places, truncated.
 Decimal divideFuel(Decimal numerator, Decimal denominator) {
   return truncateFuel(

@@ -2,9 +2,13 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/widgets/segment_lcd.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
+import '../../../../features/station/domain/money_format.dart';
+import '../../../../features/station/domain/receipt_footer_settings.dart';
+import '../../../../providers/settings_provider.dart';
 import 'generate_receipt.dart';
 
 class UnitReceiptOverlay extends StatefulWidget {
@@ -12,10 +16,12 @@ class UnitReceiptOverlay extends StatefulWidget {
     super.key,
     required this.txn,
     required this.onDismiss,
+    this.printKind = ReceiptPrintKind.live,
   });
 
   final SaleTransaction txn;
   final VoidCallback onDismiss;
+  final ReceiptPrintKind printKind;
 
   @override
   State<UnitReceiptOverlay> createState() => _UnitReceiptOverlayState();
@@ -34,29 +40,8 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
     return ReceiptCopy.bannerFor(
       payment: widget.txn.payment,
       stationCopy: _stationCapture,
+      kind: widget.printKind,
     );
-  }
-
-  Future<bool> _run(Future<void> Function() action, String okMessage) async {
-    try {
-      await action();
-    } catch (error, stack) {
-      debugPrint('Receipt action failed: $error\n$stack');
-      if (!mounted) {
-        return false;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not complete receipt. $error')),
-      );
-      return false;
-    }
-    if (!mounted) {
-      return false;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(okMessage)));
-    return true;
   }
 
   Future<void> _printThenClose() async {
@@ -153,6 +138,12 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
                   ticket: ticket,
                   copyBanner: _copyBanner,
                   forPrint: _forPrint,
+                  details: saleReceiptDetails(widget.txn),
+                  handwritingLines: ReceiptCopy.handwritingLinesFor(
+                    payment: widget.txn.payment,
+                    stationCopy: _stationCapture,
+                    kind: widget.printKind,
+                  ),
                 ),
               ),
             ),
@@ -168,23 +159,6 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
                   color: const Color(ColorData.printTerracotta),
                   onPressed: () {
                     unawaited(_printThenClose());
-                  },
-                ),
-                const SizedBox(height: 6),
-                _ReceiptActionButton(
-                  label: 'WhatsApp',
-                  icon: Icons.chat_outlined,
-                  color: const Color(ColorData.whatsAppGreen),
-                  onPressed: () {
-                    unawaited(
-                      _run(
-                        () => ReceiptGenerator.instance.sharePreview(
-                          _previewKey,
-                          ticket,
-                        ),
-                        'Receipt shared',
-                      ),
-                    );
                   },
                 ),
               ],
@@ -222,8 +196,111 @@ class ThermalReceiptDetail {
   final String value;
 }
 
+List<ThermalReceiptDetail> saleReceiptDetails(SaleTransaction txn) {
+  final List<ThermalReceiptDetail> rows = <ThermalReceiptDetail>[
+    ThermalReceiptDetail(label: 'Customer', value: txn.customerName),
+    ThermalReceiptDetail(
+      label: 'Vehicle No.',
+      value: txn.vehicleNo.trim().isEmpty ? '—' : txn.vehicleNo.trim(),
+    ),
+    ThermalReceiptDetail(label: 'Payment', value: txn.payment.label),
+  ];
+  switch (txn.payment) {
+    case PaymentMethod.bankAccount:
+    case PaymentMethod.easyPaisa:
+      rows.add(
+        ThermalReceiptDetail(
+          label: 'Account',
+          value: formatPkr(txn.receiptAccountAmount),
+        ),
+      );
+      rows.add(
+        ThermalReceiptDetail(label: 'Cash', value: formatPkr(txn.cashAmount)),
+      );
+    case PaymentMethod.cash:
+    case PaymentMethod.udhaar:
+      break;
+  }
+  rows.add(ThermalReceiptDetail(label: 'Manager', value: txn.cashierName));
+  rows.add(
+    ThermalReceiptDetail(
+      label: 'Helper',
+      value: txn.helperName.trim().isEmpty ? '—' : txn.helperName.trim(),
+    ),
+  );
+  return rows;
+}
+
+Future<void> spoolSaleReceipt({
+  required BuildContext context,
+  required SaleTransaction txn,
+  ReceiptPrintKind kind = ReceiptPrintKind.live,
+}) async {
+  final OverlayState overlay = Overlay.of(context, rootOverlay: true);
+  final GlobalKey previewKey = GlobalKey();
+  bool stationCapture = false;
+  late final OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (BuildContext context) {
+      return Positioned(
+        left: -2400,
+        top: 0,
+        child: Material(
+          color: Colors.transparent,
+          child: ThermalReceiptCapture(
+            captureKey: previewKey,
+            child: ThermalReceiptView(
+              ticket: ReceiptTicket.fromTransaction(txn),
+              details: saleReceiptDetails(txn),
+              forPrint: true,
+              copyBanner: ReceiptCopy.bannerFor(
+                payment: txn.payment,
+                stationCopy: stationCapture,
+                kind: kind,
+              ),
+              handwritingLines: ReceiptCopy.handwritingLinesFor(
+                payment: txn.payment,
+                stationCopy: stationCapture,
+                kind: kind,
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+  overlay.insert(entry);
+  try {
+    await WidgetsBinding.instance.endOfFrame;
+    await WidgetsBinding.instance.endOfFrame;
+    await WidgetsBinding.instance.endOfFrame;
+    final Uint8List customerPng = await ReceiptGenerator.instance
+        .capturePreview(previewKey);
+    Uint8List stationPng = customerPng;
+    if (txn.payment.printsTwoCopies && kind == ReceiptPrintKind.live) {
+      stationCapture = true;
+      entry.markNeedsBuild();
+      await WidgetsBinding.instance.endOfFrame;
+      await WidgetsBinding.instance.endOfFrame;
+      stationPng = await ReceiptGenerator.instance.capturePreview(previewKey);
+    }
+    final ReceiptTicket slip = ReceiptTicket.fromTransaction(txn);
+    if (txn.payment.printsTwoCopies) {
+      await ReceiptGenerator.instance.printDualCopies(
+        customerPng: customerPng,
+        stationPng: stationPng,
+        ticket: slip,
+      );
+    } else {
+      await ReceiptGenerator.instance.printCapturedPng(customerPng, slip);
+    }
+  } finally {
+    entry.remove();
+  }
+}
+
 /// Compact thermal slip. Sale tickets keep the LCD; other slips can hide it.
-class ThermalReceiptView extends StatelessWidget {
+class ThermalReceiptView extends ConsumerWidget {
   ThermalReceiptView({
     Key? key,
     required ReceiptTicket ticket,
@@ -234,6 +311,7 @@ class ThermalReceiptView extends StatelessWidget {
     String? referenceValue,
     String? copyBanner,
     List<ThermalReceiptDetail>? details,
+    List<String> handwritingLines = const <String>[],
   }) : this.custom(
          key: key,
          dateLabel: ticket.dateLabel,
@@ -247,6 +325,7 @@ class ThermalReceiptView extends StatelessWidget {
          liters: ticket.liters,
          rate: ticket.rate,
          copyBanner: copyBanner,
+         handwritingLines: handwritingLines,
          details:
              details ??
              <ThermalReceiptDetail>[
@@ -287,6 +366,7 @@ class ThermalReceiptView extends StatelessWidget {
     this.liters = '',
     this.rate = '',
     this.copyBanner,
+    this.handwritingLines = const <String>[],
   });
 
   static const double width = 456;
@@ -299,10 +379,6 @@ class ThermalReceiptView extends StatelessWidget {
   static const double _latinSize = 13 * _bodyScale * _textScale;
   static const double _bannerSize = 10 * _bodyScale * _textScale;
   static const double _detailSize = 13 * _bodyScale * _textScale;
-  static const double _addressSize = 10 * _bodyScale * _textScale;
-  static const double _staffSize = 13 * _bodyScale * _textScale;
-  static const double _phoneSize = 10 * _bodyScale * _textScale;
-  static const double _thanksSize = 13 * _bodyScale * _textScale;
 
   /// Title-to-date gap on the cash sale slip (no copy banner).
   static const double _headerGap = 17;
@@ -335,9 +411,15 @@ class ThermalReceiptView extends StatelessWidget {
   final String rate;
   final String? copyBanner;
   final List<ThermalReceiptDetail> details;
+  final List<String> handwritingLines;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ReceiptFooterSettings footer = ref.watch(
+      settingsProvider.select(
+        (SettingsState settings) => settings.receiptFooter,
+      ),
+    );
     final Color paper = forPrint ? const Color(0xFFFFFFFF) : _paper;
     final String banner = (copyBanner ?? '').trim();
     return SizedBox(
@@ -488,40 +570,33 @@ class ThermalReceiptView extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 8),
+                    if (handwritingLines.isNotEmpty) ...<Widget>[
+                      for (final String line in handwritingLines)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text(
+                            line,
+                            textAlign: TextAlign.left,
+                            style: const TextStyle(
+                              fontFamily: ReceiptCopy.latinFontFamily,
+                              fontWeight: FontWeight.w600,
+                              fontSize: _latinSize,
+                              color: _ink,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 4),
+                    ],
                     const _DashRule(color: Color(0x55211C1A)),
                     const SizedBox(height: 8),
-                    _UrduText(
-                      ReceiptCopy.addressUrdu,
-                      size: _addressSize,
-                      color: _ink,
-                      height: 1.7,
-                    ),
-                    const SizedBox(height: 4),
-                    _UrduText(
-                      ReceiptCopy.staffLineUrdu,
-                      size: _staffSize,
-                      color: _ink,
-                      height: 1.7,
-                    ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      ReceiptCopy.stationPhone,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: ReceiptCopy.latinFontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: _phoneSize,
-                        color: _ink,
+                    for (int i = 0; i < footer.lines.length; i++) ...<Widget>[
+                      if (i > 0) const SizedBox(height: 2),
+                      _ReceiptFooterLine(
+                        text: footer.lines[i],
+                        fontSize: footer.fontSize,
+                        lineHeight: footer.lineHeight,
                       ),
-                    ),
-                    const SizedBox(height: 6),
-                    _UrduText(
-                      ReceiptCopy.thankYouUrdu,
-                      size: _thanksSize,
-                      weight: FontWeight.w700,
-                      color: _ink,
-                      height: 1.7,
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -578,6 +653,44 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
+class _ReceiptFooterLine extends StatelessWidget {
+  const _ReceiptFooterLine({
+    required this.text,
+    required this.fontSize,
+    required this.lineHeight,
+  });
+
+  final String text;
+  final double fontSize;
+  final double lineHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    if (ReceiptFooterSettings.isLatinLine(text)) {
+      return Text(
+        text,
+        textAlign: TextAlign.center,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontFamily: ReceiptCopy.latinFontFamily,
+          fontWeight: FontWeight.w700,
+          fontSize: fontSize,
+          height: lineHeight,
+          color: ThermalReceiptView._ink,
+        ),
+      );
+    }
+    return _UrduText(
+      text,
+      size: fontSize,
+      color: ThermalReceiptView._ink,
+      height: lineHeight,
+      maxLines: 1,
+    );
+  }
+}
+
 class _UrduText extends StatelessWidget {
   const _UrduText(
     this.text, {
@@ -585,6 +698,7 @@ class _UrduText extends StatelessWidget {
     required this.color,
     this.weight = FontWeight.w400,
     this.height = 1.85,
+    this.maxLines,
   });
 
   final String text;
@@ -592,6 +706,7 @@ class _UrduText extends StatelessWidget {
   final Color color;
   final FontWeight weight;
   final double height;
+  final int? maxLines;
 
   @override
   Widget build(BuildContext context) {
@@ -600,6 +715,10 @@ class _UrduText extends StatelessWidget {
       child: Text(
         text,
         textAlign: TextAlign.center,
+        maxLines: maxLines,
+        overflow: maxLines == null
+            ? TextOverflow.clip
+            : TextOverflow.ellipsis,
         style: TextStyle(
           fontFamily: ReceiptCopy.urduFontFamily,
           fontFamilyFallback: const <String>[ReceiptCopy.latinFontFamily],

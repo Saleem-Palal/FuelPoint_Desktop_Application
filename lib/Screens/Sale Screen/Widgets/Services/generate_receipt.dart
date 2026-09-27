@@ -18,6 +18,8 @@ import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/domain/money_format.dart';
 import '../../../../utils/fuel_formatter.dart';
 
+enum ReceiptPrintKind { live, secondCopy, editedCopy }
+
 /// Station copy, PDF layout, print, and share for the sale receipt.
 class ReceiptCopy {
   static const String stationNameUrdu = 'شہید نذیر عمرانی پیٹرولیم سروس';
@@ -26,20 +28,61 @@ class ReceiptCopy {
   static const String staffLineUrdu =
       'پروپرائیٹر: حاجی عبدالحلیم عمرانی — مینیجر: لطیف عمرانی';
   static const String stationPhone = '0334 3706655';
+  static const String complaintUrdu =
+      'کسی بھی قسم کی شکایت کے لیے رابطہ کریں';
   static const String thankYouUrdu =
       'آپ کا شکریہ — آپ کا بھروسہ ہماری اولین ترجیح۔';
 
+  static const List<String> accountHandwritingLines = <String>[
+    'Txn ID # ____________________',
+    'Bank _______________________',
+    'Account Title _______________',
+  ];
+
+  static List<String> handwritingLinesFor({
+    required PaymentMethod payment,
+    required bool stationCopy,
+    ReceiptPrintKind kind = ReceiptPrintKind.live,
+  }) {
+    switch (payment) {
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+        break;
+      case PaymentMethod.cash:
+      case PaymentMethod.udhaar:
+        return const <String>[];
+    }
+    switch (kind) {
+      case ReceiptPrintKind.live:
+        return stationCopy ? accountHandwritingLines : const <String>[];
+      case ReceiptPrintKind.secondCopy:
+        return accountHandwritingLines;
+      case ReceiptPrintKind.editedCopy:
+        return const <String>[];
+    }
+  }
+
   static const String customerCopyBanner = 'COPY 1: CUSTOMER RECEIPT';
   static const String stationCopyBanner = 'COPY 2: STATION RECORD';
+  static const String secondCopyBanner = 'SECOND COPY';
+  static const String editedCopyBanner = 'EDITED COPY';
 
   static String? bannerFor({
     required PaymentMethod payment,
     required bool stationCopy,
+    ReceiptPrintKind kind = ReceiptPrintKind.live,
   }) {
-    if (!payment.printsTwoCopies) {
-      return null;
+    switch (kind) {
+      case ReceiptPrintKind.secondCopy:
+        return secondCopyBanner;
+      case ReceiptPrintKind.editedCopy:
+        return editedCopyBanner;
+      case ReceiptPrintKind.live:
+        if (!payment.printsTwoCopies) {
+          return null;
+        }
+        return stationCopy ? stationCopyBanner : customerCopyBanner;
     }
-    return stationCopy ? stationCopyBanner : customerCopyBanner;
   }
 
   static const String urduFontFamily = 'NotoNastaliqUrdu';
@@ -56,7 +99,6 @@ class ColorData {
   static const int lcdInset = 0xFF1C1A17;
   static const int steel = 0xFF3D5A80;
   static const int printTerracotta = 0xFFC9603E;
-  static const int whatsAppGreen = 0xFF3C8A5C;
 }
 
 class ReceiptTicket {
@@ -73,6 +115,8 @@ class ReceiptTicket {
     required this.customerName,
     required this.vehicleNo,
     required this.payment,
+    this.cashAmount = 0,
+    this.accountAmount = 0,
   });
 
   factory ReceiptTicket.fromBay({
@@ -109,6 +153,8 @@ class ReceiptTicket {
       customerName: txn.customerName,
       vehicleNo: txn.vehicleNo,
       payment: txn.payment,
+      cashAmount: txn.cashAmount,
+      accountAmount: txn.accountAmount,
     );
   }
 
@@ -124,10 +170,14 @@ class ReceiptTicket {
   final String customerName;
   final String vehicleNo;
   final PaymentMethod payment;
+  final double cashAmount;
+  final double accountAmount;
 
   String get unitPad => unitId.toString().padLeft(2, '0');
 
-  String get unitBadge => 'Unit $unitPad · $fuelType';
+  String get unitBadge => isDirectSaleUnit(unitId)
+      ? 'Direct · $fuelType'
+      : 'Unit $unitPad · $fuelType';
 
   String get dateLabel {
     final String day = issuedAt.day.toString().padLeft(2, '0');
@@ -155,7 +205,9 @@ class ReceiptTicket {
 
   String get paymentLabel => payment.label;
 
-  String get tokenLabel => formatTokenNo(tokenNo);
+  String get tokenLabel => isDirectSaleToken(tokenNo)
+      ? formatLedgerToken(tokenNo)
+      : formatTokenNo(tokenNo);
 
   String get fileName => 'receipt-$tokenLabel.pdf';
 
@@ -238,23 +290,6 @@ class ReceiptGenerator {
     return pdf.save();
   }
 
-  String _whatsAppCaption(ReceiptTicket ticket) {
-    return <String>[
-      ReceiptCopy.stationNameUrdu,
-      'Token ${ticket.tokenLabel}',
-      ticket.unitBadge,
-      'Date ${ticket.dateLabel}  ${ticket.timeLabel}',
-      'Amount  Rs. ${ticket.amount}',
-      'Liters  ${ticket.liters}',
-      'Rate  ${ticket.rate}',
-      'Customer  ${ticket.customerName}',
-      'Vehicle  ${ticket.vehicleDisplay}',
-      'Payment  ${ticket.paymentLabel}',
-      'Manager  ${ticket.cashierName}',
-      'Helper  ${ticket.helperDisplay}',
-    ].join('\n');
-  }
-
   Future<File> _writeTempFile(String name, Uint8List bytes) async {
     final Directory dir = await getTemporaryDirectory();
     final File file = File(p.join(dir.path, name));
@@ -317,11 +352,7 @@ class ReceiptGenerator {
 
   Future<void> printCapturedPng(Uint8List png, ReceiptTicket ticket) async {
     if (ticket.payment.printsTwoCopies) {
-      await printDualCopies(
-        customerPng: png,
-        stationPng: png,
-        ticket: ticket,
-      );
+      await printDualCopies(customerPng: png, stationPng: png, ticket: ticket);
       return;
     }
     await printPng(png, fileName: ticket.fileName);
@@ -420,15 +451,5 @@ class ReceiptGenerator {
     if (!openedFile) {
       throw Exception('Could not share the receipt');
     }
-  }
-
-  Future<void> sharePreview(GlobalKey previewKey, ReceiptTicket ticket) async {
-    final Uint8List png = await capturePreview(previewKey);
-    await sharePng(
-      png: png,
-      fileName: ticket.pngFileName,
-      caption: _whatsAppCaption(ticket),
-      subject: 'Receipt ${ticket.tokenLabel}',
-    );
   }
 }

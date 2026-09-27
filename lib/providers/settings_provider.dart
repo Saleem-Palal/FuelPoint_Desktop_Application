@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../core/google_drive_oauth_config.dart';
 import '../features/station/domain/fuel_precision.dart';
+import '../features/station/domain/receipt_footer_settings.dart';
 import '../services/database_helper.dart';
 import '../services/google_drive_backup_service.dart';
 
@@ -193,7 +194,10 @@ class SettingsState {
     this.errorMessage,
     this.statusMessage,
     this.showUnit5 = false,
+    this.showReceiptPreview = false,
+    this.showRecentSaleEdit = false,
     this.lowStockThresholdLiters = 0,
+    this.receiptFooter = ReceiptFooterSettings.defaults,
   });
 
   final bool loading;
@@ -216,9 +220,14 @@ class SettingsState {
   final String? errorMessage;
   final String? statusMessage;
   final bool showUnit5;
+  final bool showReceiptPreview;
+  final bool showRecentSaleEdit;
 
   /// Diesel tank liters that trigger the post-sale toast. `0` disables it.
   final double lowStockThresholdLiters;
+
+  /// Receipt text under the dashed rule (preview and thermal print).
+  final ReceiptFooterSettings receiptFooter;
 
   bool get isDriveConnected => account != null;
 
@@ -261,7 +270,10 @@ class SettingsState {
     String? statusMessage,
     bool clearStatus = false,
     bool? showUnit5,
+    bool? showReceiptPreview,
+    bool? showRecentSaleEdit,
     double? lowStockThresholdLiters,
+    ReceiptFooterSettings? receiptFooter,
   }) {
     return SettingsState(
       loading: loading ?? this.loading,
@@ -294,8 +306,11 @@ class SettingsState {
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       statusMessage: clearStatus ? null : (statusMessage ?? this.statusMessage),
       showUnit5: showUnit5 ?? this.showUnit5,
+      showReceiptPreview: showReceiptPreview ?? this.showReceiptPreview,
+      showRecentSaleEdit: showRecentSaleEdit ?? this.showRecentSaleEdit,
       lowStockThresholdLiters:
           lowStockThresholdLiters ?? this.lowStockThresholdLiters,
+      receiptFooter: receiptFooter ?? this.receiptFooter,
     );
   }
 
@@ -313,6 +328,8 @@ class SettingsState {
       auditPage: 0,
       auditPageSize: 12,
       showUnit5: false,
+      showReceiptPreview: false,
+      showRecentSaleEdit: false,
     );
   }
 }
@@ -362,8 +379,23 @@ class SettingsNotifier extends Notifier<SettingsState> {
       final String? showUnit5Raw = await _db.readSetting(
         DatabaseHelper.settingShowUnit5,
       );
+      final String? showReceiptPreviewRaw = await _db.readSetting(
+        DatabaseHelper.settingShowReceiptPreview,
+      );
+      final String? showRecentSaleEditRaw = await _db.readSetting(
+        DatabaseHelper.settingShowRecentSaleEdit,
+      );
       final String? thresholdRaw = await _db.readSetting(
         DatabaseHelper.settingLowStockThresholdLiters,
+      );
+      final String? footerText = await _db.readSetting(
+        DatabaseHelper.settingReceiptFooterText,
+      );
+      final String? footerFont = await _db.readSetting(
+        DatabaseHelper.settingReceiptFooterFontSize,
+      );
+      final String? footerHeight = await _db.readSetting(
+        DatabaseHelper.settingReceiptFooterLineHeight,
       );
       final GoogleDriveAccount? account = await _drive.restoreSession();
       state = state.copyWith(
@@ -378,7 +410,14 @@ class SettingsNotifier extends Notifier<SettingsState> {
         lastBackupFileName: lastFile,
         lastBackupDriveFileId: lastId,
         showUnit5: showUnit5Raw == '1',
+        showReceiptPreview: showReceiptPreviewRaw == '1',
+        showRecentSaleEdit: showRecentSaleEditRaw == '1',
         lowStockThresholdLiters: sanitizeLowStockThreshold(thresholdRaw),
+        receiptFooter: ReceiptFooterSettings.fromStorage(
+          text: footerText,
+          fontSizeRaw: footerFont,
+          lineHeightRaw: footerHeight,
+        ),
         clearLastBackup:
             lastAt == null && (lastFile == null || lastFile.isEmpty),
         account: account,
@@ -673,9 +712,14 @@ class SettingsNotifier extends Notifier<SettingsState> {
             : state.autoBackupIntervalHours,
         clearLastBackup: clearedSettings,
         showUnit5: clearedSettings ? false : state.showUnit5,
+        showReceiptPreview: clearedSettings ? false : state.showReceiptPreview,
+        showRecentSaleEdit: clearedSettings ? false : state.showRecentSaleEdit,
         lowStockThresholdLiters: clearedSettings
             ? 0
             : state.lowStockThresholdLiters,
+        receiptFooter: clearedSettings
+            ? ReceiptFooterSettings.defaults
+            : state.receiptFooter,
         statusMessage: clearedSettings
             ? 'Erased ${erased.length} table${erased.length == 1 ? '' : 's'}. '
                   'Google Drive Client ID, Client Secret, and login were kept.'
@@ -1061,6 +1105,40 @@ class SettingsNotifier extends Notifier<SettingsState> {
     }
   }
 
+  Future<void> setShowReceiptPreview(bool enabled) async {
+    try {
+      await _db.writeSetting(
+        DatabaseHelper.settingShowReceiptPreview,
+        enabled ? '1' : '0',
+      );
+      state = state.copyWith(showReceiptPreview: enabled);
+    } catch (error, stack) {
+      debugPrint(
+        'SettingsNotifier.setShowReceiptPreview failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        errorMessage: 'Could not save the receipt preview preference. $error',
+      );
+    }
+  }
+
+  Future<void> setShowRecentSaleEdit(bool enabled) async {
+    try {
+      await _db.writeSetting(
+        DatabaseHelper.settingShowRecentSaleEdit,
+        enabled ? '1' : '0',
+      );
+      state = state.copyWith(showRecentSaleEdit: enabled);
+    } catch (error, stack) {
+      debugPrint(
+        'SettingsNotifier.setShowRecentSaleEdit failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        errorMessage: 'Could not save the recent-sale edit preference. $error',
+      );
+    }
+  }
+
   /// `0` or empty turns the post-sale diesel toast off.
   static double sanitizeLowStockThreshold(Object? raw) {
     final double value = parseFuel(raw).toDouble();
@@ -1084,6 +1162,30 @@ class SettingsNotifier extends Notifier<SettingsState> {
       );
       state = state.copyWith(
         errorMessage: 'Could not save the low stock threshold. $error',
+      );
+    }
+  }
+
+  Future<void> setReceiptFooter(ReceiptFooterSettings footer) async {
+    try {
+      final ReceiptFooterSettings safe = footer.sanitized();
+      await _db.writeSetting(
+        DatabaseHelper.settingReceiptFooterText,
+        safe.encodedText,
+      );
+      await _db.writeSetting(
+        DatabaseHelper.settingReceiptFooterFontSize,
+        '${safe.fontSize}',
+      );
+      await _db.writeSetting(
+        DatabaseHelper.settingReceiptFooterLineHeight,
+        '${safe.lineHeight}',
+      );
+      state = state.copyWith(receiptFooter: safe);
+    } catch (error, stack) {
+      debugPrint('SettingsNotifier.setReceiptFooter failed: $error\n$stack');
+      state = state.copyWith(
+        errorMessage: 'Could not save the receipt footer. $error',
       );
     }
   }

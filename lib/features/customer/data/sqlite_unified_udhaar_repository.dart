@@ -61,6 +61,30 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
     return fromRow(row);
   }
 
+  @override
+  Future<UnifiedUdhaarRow> insertOpeningBalance({
+    required String customerId,
+    required String customerName,
+    required double amountPkr,
+    required String shiftId,
+    String notes = '',
+    DateTime? timestamp,
+  }) async {
+    final String description = notes.trim().isEmpty
+        ? 'Previous Udhaar'
+        : notes.trim();
+    final Map<String, Object?> row = await _db.insertUnifiedUdhaarEntry(
+      type: UnifiedUdhaarType.sale.storage,
+      shiftId: shiftId,
+      customerId: customerId,
+      customerName: customerName,
+      at: timestamp ?? DateTime.now(),
+      amount: amountPkr,
+      description: description,
+    );
+    return fromRow(row);
+  }
+
   static UnifiedUdhaarRow fromRow(Map<String, Object?> row) {
     return UnifiedUdhaarRow(
       primaryKey: '${row['PRIMARY_KEY'] ?? ''}',

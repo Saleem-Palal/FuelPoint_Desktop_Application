@@ -72,9 +72,9 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
     setState(() {
       _saving = true;
     });
-    Navigator.of(context).pop(
-      SettleBillDraft(amountPkr: value, notes: _notes.text.trim()),
-    );
+    Navigator.of(
+      context,
+    ).pop(SettleBillDraft(amountPkr: value, notes: _notes.text.trim()));
   }
 
   @override

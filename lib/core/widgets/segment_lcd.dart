@@ -12,7 +12,7 @@ class SegmentLcdLine {
   final String label;
   final String value;
 
-  /// Unlit 7-segment mask painted behind [value], e.g. `888888.88`.
+  /// Unlit 7-segment mask painted behind [value], e.g. `88888888`.
   final String? placeholder;
 
   /// Overrides the panel value size for this row only.
@@ -47,7 +47,8 @@ class SegmentLcd extends StatelessWidget {
     this.gapBeforeLast = 0,
   });
 
-  static const String saleAmountMask = '888888.88';
+  static const String saleAmountMask = '88888888';
+  static const String saleFuelMask = '888888.88';
   static const String saleMeterMask = '88888888.888';
 
   /// Pump-head type. Receipt LCD uses these same sizes.
@@ -70,13 +71,20 @@ class SegmentLcd extends StatelessWidget {
     }
   }
 
+  static String _salePlaceholder(String label) {
+    if (label.toUpperCase() == 'AMOUNT') {
+      return saleAmountMask;
+    }
+    return saleFuelMask;
+  }
+
   static List<SegmentLcdLine> _saleReadoutLines(List<SegmentLcdLine> lines) {
     return <SegmentLcdLine>[
       for (final SegmentLcdLine line in lines)
         SegmentLcdLine(
           label: line.label,
           value: line.value,
-          placeholder: line.placeholder ?? saleAmountMask,
+          placeholder: line.placeholder ?? _salePlaceholder(line.label),
           valueSize: line.valueSize ?? _dispenserValueSize(line.label),
         ),
     ];

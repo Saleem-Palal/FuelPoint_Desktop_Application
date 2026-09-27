@@ -366,7 +366,7 @@ double cashInHandFromLedgers({
 }) {
   double total = 0;
   for (final SaleTransaction sale in sales) {
-    if (sale.payment == PaymentMethod.cash) {
+    if (!sale.isTest && sale.payment == PaymentMethod.cash) {
       total += sale.amountPkr;
     }
   }

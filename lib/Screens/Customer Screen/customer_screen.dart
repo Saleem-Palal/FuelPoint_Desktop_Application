@@ -8,11 +8,13 @@ import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
 import '../../core/widgets/fuel_point_stat_card.dart';
 import '../../features/customer/data/customer_directory_pdf.dart';
+import '../../features/customer/data/customer_ledger_pdf.dart';
 import '../../features/customer/domain/customer_models.dart';
 import '../../features/customer/presentation/customer_providers.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/presentation/workspace_refresh.dart';
 import 'Widgets/add_customer_dialog.dart';
+import 'Widgets/previous_udhaar_dialog.dart';
 import 'Widgets/settle_bill_dialog.dart';
 import 'Widgets/settlement_receipt_dialog.dart';
 
@@ -84,6 +86,12 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
           .map((CustomerAccount account) => account.profile)
           .toList();
       await CustomerDirectoryPdf.instance.export(rows);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Customer directory PDF saved')));
     } catch (error) {
       if (!mounted) {
         return;
@@ -136,6 +144,67 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not settle bill. $error')));
+    }
+  }
+
+  Future<void> _previousUdhaar(CustomerAccount account) async {
+    final PreviousUdhaarDraft? draft = await showPreviousUdhaarDialog(
+      context,
+      account: account,
+    );
+    if (draft == null || !mounted) {
+      return;
+    }
+    try {
+      await ref
+          .read(customerWorkspaceProvider.notifier)
+          .postPreviousUdhaar(
+            customer: account.profile,
+            amountPkr: draft.amountPkr,
+            notes: draft.notes,
+          );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Previous udhaar ${formatPkrStatement(draft.amountPkr)} posted for ${account.profile.name}',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not post previous udhaar. $error')),
+      );
+    }
+  }
+
+  Future<void> _exportLedgerPdf(CustomerAccount account) async {
+    if (account.ledger.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No unified ledger rows to export')),
+      );
+      return;
+    }
+    try {
+      await CustomerLedgerPdf.instance.export(account);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Customer ledger PDF saved')));
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not export ledger. $error')),
+      );
     }
   }
 
@@ -217,6 +286,12 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
                                       account: selected,
                                       onSettle: () {
                                         unawaited(_settle(selected));
+                                      },
+                                      onPreviousUdhaar: () {
+                                        unawaited(_previousUdhaar(selected));
+                                      },
+                                      onExportLedger: () {
+                                        unawaited(_exportLedgerPdf(selected));
                                       },
                                     ),
                             ),
@@ -565,10 +640,17 @@ class _EmptyWorkspace extends StatelessWidget {
 }
 
 class _CustomerWorkspace extends StatelessWidget {
-  const _CustomerWorkspace({required this.account, required this.onSettle});
+  const _CustomerWorkspace({
+    required this.account,
+    required this.onSettle,
+    required this.onPreviousUdhaar,
+    required this.onExportLedger,
+  });
 
   final CustomerAccount account;
   final VoidCallback onSettle;
+  final VoidCallback onPreviousUdhaar;
+  final VoidCallback onExportLedger;
 
   @override
   Widget build(BuildContext context) {
@@ -634,7 +716,35 @@ class _CustomerWorkspace extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.end,
+                  children: <Widget>[
+                    DsPillButton(
+                      label: 'Previous Udhaar',
+                      icon: Icons.history,
+                      compact: true,
+                      variant: DsPillVariant.outline,
+                      onPressed: onPreviousUdhaar,
+                    ),
+                    DsPillButton(
+                      label: 'Generate PDF',
+                      icon: Icons.picture_as_pdf_outlined,
+                      compact: true,
+                      variant: DsPillVariant.outline,
+                      onPressed: onExportLedger,
+                    ),
+                    DsPillButton(
+                      label: 'Settle Bill',
+                      icon: Icons.payments_outlined,
+                      compact: true,
+                      onPressed: account.hasDebt ? onSettle : null,
+                    ),
+                  ],
+                ),
+                const SizedBox(width: 16),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: <Widget>[
@@ -658,12 +768,6 @@ class _CustomerWorkspace extends StatelessWidget {
                       ),
                     ),
                   ],
-                ),
-                const SizedBox(width: 14),
-                DsPillButton(
-                  label: 'Settle Bill',
-                  icon: Icons.payments_outlined,
-                  onPressed: account.hasDebt ? onSettle : null,
                 ),
               ],
             ),
@@ -793,11 +897,11 @@ class _LedgerTable extends StatelessWidget {
                       ),
                     ),
                     DataCell(
-                      Text(line.rate == null ? '—' : formatRate(line.rate!)),
+                      Text(line.rate == null ? '—' : formatTableRate(line.rate!)),
                     ),
                     DataCell(
                       Text(
-                        formatPkr(line.amountPkr),
+                        formatTablePkr(line.amountPkr),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -812,7 +916,7 @@ class _LedgerTable extends StatelessWidget {
                     DataCell(Text(line.vehicleLabel)),
                     DataCell(
                       Text(
-                        line.debitPkr > 0 ? formatPkr(line.debitPkr) : '—',
+                        line.debitPkr > 0 ? formatTablePkr(line.debitPkr) : '—',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: line.isSale ? tokens.bad : tokens.inkMuted,
@@ -821,7 +925,7 @@ class _LedgerTable extends StatelessWidget {
                     ),
                     DataCell(
                       Text(
-                        line.creditPkr > 0 ? formatPkr(line.creditPkr) : '—',
+                        line.creditPkr > 0 ? formatTablePkr(line.creditPkr) : '—',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: line.isSale ? tokens.inkMuted : tokens.good,
@@ -830,7 +934,7 @@ class _LedgerTable extends StatelessWidget {
                     ),
                     DataCell(
                       Text(
-                        formatPkr(line.runningBalance),
+                        formatTablePkr(line.runningBalance),
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),

@@ -70,6 +70,7 @@ class NetworkMonitor {
       wifiIp: wifiIp,
       summary: summary,
       onDispenserAp: onDispenserAp,
+      onOfficeLan: isOnOfficeLan(wifiName: wifiName, wifiIp: wifiIp),
     );
   }
 

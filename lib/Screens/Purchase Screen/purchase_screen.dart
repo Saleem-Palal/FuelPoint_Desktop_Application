@@ -1378,7 +1378,7 @@ class _LastPurchasesTableState extends State<_LastPurchasesTable> {
                       ),
                       DataCell(
                         Text(
-                          FuelFormatter.formatVolume(row.quantity),
+                          FuelFormatter.formatTableVolume(row.quantity),
                           style: row.isInitialDip
                               ? TextStyle(color: tokens.bad)
                               : null,
@@ -1386,7 +1386,7 @@ class _LastPurchasesTableState extends State<_LastPurchasesTable> {
                       ),
                       DataCell(
                         Text(
-                          FuelFormatter.formatRate(row.rate),
+                          FuelFormatter.formatTableRate(row.rate),
                           style: row.isInitialDip
                               ? TextStyle(color: tokens.bad)
                               : null,
@@ -1394,7 +1394,7 @@ class _LastPurchasesTableState extends State<_LastPurchasesTable> {
                       ),
                       DataCell(
                         Text(
-                          FuelFormatter.formatCurrency(row.amount),
+                          FuelFormatter.formatTableCurrency(row.amount),
                           style: TextStyle(
                             fontWeight: FontWeight.w700,
                             color: row.isInitialDip ? tokens.bad : tokens.ink,

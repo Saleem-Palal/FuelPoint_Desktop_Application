@@ -14,6 +14,7 @@ SaleTransaction _sale({
   int unitId = 1,
   DateTime? timestamp,
   PaymentMethod payment = PaymentMethod.cash,
+  bool isTest = false,
 }) {
   return SaleTransaction(
     tokenNo: tokenNo,
@@ -26,6 +27,7 @@ SaleTransaction _sale({
     timestamp: timestamp ?? DateTime(2026, 9, 8, 10),
     shiftId: shiftId,
     payment: payment,
+    isTest: isTest,
   );
 }
 
@@ -71,6 +73,30 @@ void main() {
       expect(next.totalTransactions, 2);
       expect(next.totalShiftPkr, 4200);
       expect(next.totalShiftLiters, 15);
+    });
+
+    test('leaves test fills out of live shift totals', () {
+      final ShiftLedgerSummary live = _summary(
+        shiftId: 'SHF-12',
+        status: ManagerShiftStatus.open,
+        totalTransactions: 1,
+        totalShiftPkr: 100,
+        totalShiftLiters: 1,
+      );
+      final ShiftLedgerSummary next = live.overlayWithSales(<SaleTransaction>[
+        _sale(shiftId: 'SHF-12', liters: 10, pkr: 2800, tokenNo: 100001),
+        _sale(
+          shiftId: 'SHF-12',
+          liters: 5,
+          pkr: 1400,
+          tokenNo: 100002,
+          isTest: true,
+        ),
+      ]);
+
+      expect(next.totalTransactions, 1);
+      expect(next.totalShiftPkr, 2800);
+      expect(next.totalShiftLiters, 10);
     });
 
     test('keeps SQLite totals when memory cache has not caught up', () {
@@ -122,6 +148,54 @@ void main() {
       expect(next.totalTransactions, 1);
       expect(next.totalShiftPkr, 3360);
       expect(next.totalShiftLiters, 12);
+    });
+
+    test('leaves Direct sales out of live shift totals', () {
+      final ShiftLedgerSummary live = _summary(
+        shiftId: 'SHF-12',
+        status: ManagerShiftStatus.open,
+        totalTransactions: 0,
+        totalShiftPkr: 0,
+        totalShiftLiters: 0,
+      );
+      final ShiftLedgerSummary next = live.overlayWithSales(<SaleTransaction>[
+        _sale(shiftId: 'SHF-12', liters: 10, pkr: 2800, tokenNo: 100001),
+        _sale(
+          shiftId: '',
+          liters: 50,
+          pkr: 14000,
+          tokenNo: 600000,
+          unitId: kDirectSaleUnitId,
+        ),
+      ]);
+
+      expect(next.totalTransactions, 1);
+      expect(next.totalShiftPkr, 2800);
+      expect(next.totalShiftLiters, 10);
+    });
+
+    test('leaves Direct sales out of live shift totals', () {
+      final ShiftLedgerSummary live = _summary(
+        shiftId: 'SHF-12',
+        status: ManagerShiftStatus.open,
+        totalTransactions: 0,
+        totalShiftPkr: 0,
+        totalShiftLiters: 0,
+      );
+      final ShiftLedgerSummary next = live.overlayWithSales(<SaleTransaction>[
+        _sale(shiftId: 'SHF-12', liters: 10, pkr: 2800, tokenNo: 100001),
+        _sale(
+          shiftId: '',
+          liters: 50,
+          pkr: 14000,
+          tokenNo: 600000,
+          unitId: kDirectSaleUnitId,
+        ),
+      ]);
+
+      expect(next.totalTransactions, 1);
+      expect(next.totalShiftPkr, 2800);
+      expect(next.totalShiftLiters, 10);
     });
 
     test('merges in-memory workspace sales before SQLite refresh', () {
@@ -274,5 +348,77 @@ void main() {
         <int>[100003, 100001],
       );
     });
+
+    test('keeps test fills on the meter slice and out of KPI totals', () {
+      final ShiftLedgerSummary shift = _summary(
+        shiftId: 'SHF-1',
+        status: ManagerShiftStatus.closed,
+        endTime: DateTime(2026, 9, 8, 20),
+      );
+      final List<SaleTransaction> source = liveSalesForShift(
+        summary: shift,
+        committed: <SaleTransaction>[
+          _sale(
+            shiftId: 'SHF-1',
+            liters: 10,
+            pkr: 2800,
+            tokenNo: 100001,
+            unitId: 1,
+          ),
+          _sale(
+            shiftId: 'SHF-1',
+            liters: 4,
+            pkr: 1,
+            tokenNo: 100002,
+            unitId: 1,
+            isTest: true,
+          ),
+        ],
+      );
+      final SalesLedgerSnapshot slice =
+          SalesTransactionRepository.querySnapshot(source, unitId: 1);
+
+      expect(slice.totalCount, 1);
+      expect(slice.totalAmountPkr, 2800);
+      expect(slice.totalVolumeLiters, 10);
+      expect(slice.physicalVolumeLiters, 14);
+      expect(
+        slice.rows.map((SaleTransaction row) => row.tokenNo).toList(),
+        <int>[100001, 100002],
+      );
+      expect(
+        slice.meterRows.map((SaleTransaction row) => row.tokenNo).toList(),
+        <int>[100001, 100002],
+      );
+      expect(slice.rows.where((SaleTransaction row) => row.isTest).length, 1);
+    });
+  });
+
+  test('querySnapshot keeps Direct rows visible but out of KPI totals', () {
+    final SalesLedgerSnapshot slice = SalesTransactionRepository.querySnapshot(
+      <SaleTransaction>[
+        _sale(shiftId: 'SHF-1', liters: 10, pkr: 2800, tokenNo: 100001),
+        _sale(
+          shiftId: '',
+          liters: 50,
+          pkr: 14000,
+          tokenNo: 600000,
+          unitId: kDirectSaleUnitId,
+        ),
+      ],
+    );
+
+    expect(slice.totalCount, 1);
+    expect(slice.totalAmountPkr, 2800);
+    expect(slice.totalVolumeLiters, 10);
+    expect(slice.physicalVolumeLiters, 10);
+    expect(
+      slice.rows.map((SaleTransaction row) => row.tokenNo).toList(),
+      <int>[100001, 600000],
+    );
+    expect(
+      slice.meterRows.map((SaleTransaction row) => row.tokenNo).toList(),
+      <int>[100001],
+    );
   });
 }

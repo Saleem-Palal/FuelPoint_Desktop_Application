@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,11 +7,11 @@ import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/presentation/station_providers.dart';
 import '../../../../providers/settings_provider.dart';
 
-/// Mock-hardware bar. Hidden in release / MSIX station installs.
+/// Mock-hardware bar. Compiled into debug runs only (`kDebugMode`).
 class DemoControlsBar extends ConsumerStatefulWidget {
   const DemoControlsBar({super.key});
 
-  static const bool visible = false;
+  static bool get visible => kDebugMode;
 
   @override
   ConsumerState<DemoControlsBar> createState() => _DemoControlsBarState();

@@ -11,11 +11,15 @@ class GatewayHeaderCard extends StatelessWidget {
     super.key,
     required this.station,
     required this.monitor,
+    required this.onOfficeLan,
+    required this.anyKeypadLocked,
     required this.onGlobalLock,
   });
 
   final StationState station;
   final DispenserMonitorState monitor;
+  final bool onOfficeLan;
+  final bool anyKeypadLocked;
   final VoidCallback onGlobalLock;
 
   @override
@@ -27,16 +31,14 @@ class GatewayHeaderCard extends StatelessWidget {
               row.key != kOptionalDispenserUnitId && row.value.connected,
         )
         .length;
-    final bool muxUp = active > 0;
-    final bool heartbeatLost = station.bays.values.any((DispenserBay bay) {
-      final UnitEndpoint endpoint = station.endpoint(bay.unitId);
-      return BayLinkHealth.evaluate(
-        bay: bay,
-        endpoint: endpoint,
-        snapshot: monitor.diagnosticFor(bay.unitId),
-        now: monitor.clock,
-      ).muxHeartbeatLost;
-    });
+    final int fdxLive = station.endpoints.entries.where((
+      MapEntry<int, UnitEndpoint> row,
+    ) {
+      if (row.key == kOptionalDispenserUnitId || !row.value.connected) {
+        return false;
+      }
+      return monitor.diagnosticFor(row.key).espToBoardLink != false;
+    }).length;
     final String url = StationNetDefaults.gatewayUrl();
     final int? latencyMs = monitor.gatewayLatencyMs;
 
@@ -69,9 +71,8 @@ class GatewayHeaderCard extends StatelessWidget {
               final bool compact = bounds.maxWidth < 1180;
               final Widget mux = _GatewayStatusBlock(
                 url: url,
-                connected: muxUp && !heartbeatLost,
+                connected: active > 0,
                 latencyMs: latencyMs,
-                heartbeatLost: heartbeatLost && muxUp,
               );
               final Widget metrics = compact
                   ? Column(
@@ -79,18 +80,28 @@ class GatewayHeaderCard extends StatelessWidget {
                         _MetricChip(
                           icon: Icons.wifi_tethering,
                           label: StationNetDefaults.officeSsid,
-                          value: muxUp
-                              ? 'OFFICE ROUTER UP'
-                              : 'OFFICE ROUTER DOWN',
-                          good: muxUp && !heartbeatLost,
-                          warn: muxUp && heartbeatLost,
+                          value: onOfficeLan
+                              ? 'TENDA SYSTEM UP'
+                              : 'NOT ON TENDA SYSTEM',
+                          good: onOfficeLan,
+                          warn: !onOfficeLan,
                         ),
                         const SizedBox(height: 8),
                         _MetricChip(
                           icon: Icons.dns_outlined,
                           label: 'Bay sockets',
-                          value: '$active / $kHardwareDispenserUnitCount Connected',
+                          value:
+                              '$active / $kHardwareDispenserUnitCount Connected',
                           good: active > 0,
+                        ),
+                        const SizedBox(height: 8),
+                        _MetricChip(
+                          icon: Icons.cable,
+                          label: 'FDX UART',
+                          value:
+                              '$fdxLive / $kHardwareDispenserUnitCount Linked',
+                          good: fdxLive > 0,
+                          warn: active > 0 && fdxLive < active,
                         ),
                       ],
                     )
@@ -100,11 +111,11 @@ class GatewayHeaderCard extends StatelessWidget {
                           child: _MetricChip(
                             icon: Icons.wifi_tethering,
                             label: StationNetDefaults.officeSsid,
-                            value: muxUp
-                                ? 'OFFICE ROUTER UP'
-                                : 'OFFICE ROUTER DOWN',
-                            good: muxUp && !heartbeatLost,
-                            warn: muxUp && heartbeatLost,
+                            value: onOfficeLan
+                                ? 'TENDA SYSTEM UP'
+                                : 'NOT ON TENDA SYSTEM',
+                            good: onOfficeLan,
+                            warn: !onOfficeLan,
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -112,16 +123,32 @@ class GatewayHeaderCard extends StatelessWidget {
                           child: _MetricChip(
                             icon: Icons.dns_outlined,
                             label: 'Bay sockets',
-                            value: '$active / $kHardwareDispenserUnitCount Connected',
+                            value:
+                                '$active / $kHardwareDispenserUnitCount Connected',
                             good: active > 0,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _MetricChip(
+                            icon: Icons.cable,
+                            label: 'FDX UART',
+                            value:
+                                '$fdxLive / $kHardwareDispenserUnitCount Linked',
+                            good: fdxLive > 0,
+                            warn: active > 0 && fdxLive < active,
                           ),
                         ),
                       ],
                     );
               final Widget lock = DsPillButton(
-                label: 'GLOBAL KEYPAD LOCK',
-                icon: Icons.lock_outline,
-                variant: DsPillVariant.danger,
+                label: anyKeypadLocked
+                    ? 'GLOBAL KEYPAD UNLOCK'
+                    : 'GLOBAL KEYPAD LOCK',
+                icon: anyKeypadLocked ? Icons.lock_open : Icons.lock_outline,
+                variant: anyKeypadLocked
+                    ? DsPillVariant.good
+                    : DsPillVariant.danger,
                 onPressed: onGlobalLock,
               );
               if (compact) {
@@ -158,20 +185,16 @@ class _GatewayStatusBlock extends StatelessWidget {
     required this.url,
     required this.connected,
     required this.latencyMs,
-    required this.heartbeatLost,
   });
 
   final String url;
   final bool connected;
   final int? latencyMs;
-  final bool heartbeatLost;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final Color accent = heartbeatLost
-        ? tokens.bad
-        : (connected ? tokens.good : tokens.inkMuted);
+    final Color accent = connected ? tokens.good : tokens.inkMuted;
     return Row(
       children: <Widget>[
         Container(
@@ -215,9 +238,7 @@ class _GatewayStatusBlock extends StatelessWidget {
                 runSpacing: 6,
                 children: <Widget>[
                   DsStatusPill(
-                    label: heartbeatLost
-                        ? 'RED ALERT · HEARTBEAT >3000ms'
-                        : (connected ? 'CONNECTED' : 'DISCONNECTED'),
+                    label: connected ? 'CONNECTED' : 'DISCONNECTED',
                     foreground: accent,
                     background: accent.withValues(alpha: 0.12),
                     border: accent.withValues(alpha: 0.35),

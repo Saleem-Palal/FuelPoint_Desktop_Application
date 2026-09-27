@@ -91,9 +91,10 @@ class _LowStockToastHostState extends ConsumerState<LowStockToastHost>
     });
 
     final LowStockAlert? alert = _held;
+    final bool recoverShowing = ref.watch(espRecoverOffersProvider).isNotEmpty;
     return Positioned(
       right: 16,
-      bottom: 16,
+      bottom: recoverShowing ? 100 : 16,
       child: IgnorePointer(
         child: FadeTransition(
           opacity: _controller,

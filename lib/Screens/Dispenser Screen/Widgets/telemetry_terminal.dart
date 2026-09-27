@@ -9,6 +9,8 @@ class TelemetryTerminal extends StatefulWidget {
   const TelemetryTerminal({
     super.key,
     required this.monitor,
+    required this.expanded,
+    required this.onToggleExpanded,
     required this.onUnitFilter,
     required this.onKindFilter,
     required this.onPause,
@@ -16,6 +18,8 @@ class TelemetryTerminal extends StatefulWidget {
   });
 
   final DispenserMonitorState monitor;
+  final bool expanded;
+  final VoidCallback onToggleExpanded;
   final ValueChanged<int?> onUnitFilter;
   final ValueChanged<DispenserWireKind?> onKindFilter;
   final ValueChanged<bool> onPause;
@@ -65,6 +69,7 @@ class _TelemetryTerminalState extends State<TelemetryTerminal> {
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
+        mainAxisSize: widget.expanded ? MainAxisSize.max : MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Padding(
@@ -80,17 +85,20 @@ class _TelemetryTerminalState extends State<TelemetryTerminal> {
                       color: tokens.card.withValues(alpha: 0.85),
                     ),
                     const SizedBox(width: 8),
-                    Text(
-                      'LIVE TELEMETRY STREAM',
-                      style: TextStyle(
-                        fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                        letterSpacing: 0.8,
-                        color: tokens.card,
+                    Expanded(
+                      child: Text(
+                        'LIVE TELEMETRY STREAM',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                          letterSpacing: 0.8,
+                          color: tokens.card,
+                        ),
                       ),
                     ),
-                    const Spacer(),
                     Text(
                       '${lines.length} frames',
                       style: TextStyle(
@@ -99,80 +107,101 @@ class _TelemetryTerminalState extends State<TelemetryTerminal> {
                         color: tokens.canvas.withValues(alpha: 0.7),
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: <Widget>[
-                    _FilterChip(
-                      label: 'All Units',
-                      selected: widget.monitor.unitFilter == null,
-                      onTap: () => widget.onUnitFilter(null),
-                    ),
-                    for (int unitId = 1; unitId <= kHardwareDispenserUnitCount; unitId++)
-                      _FilterChip(
-                        label: 'Unit $unitId',
-                        selected: widget.monitor.unitFilter == unitId,
-                        onTap: () => widget.onUnitFilter(unitId),
+                    const SizedBox(width: 4),
+                    IconButton(
+                      tooltip: widget.expanded
+                          ? 'Collapse telemetry'
+                          : 'Expand telemetry',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: widget.onToggleExpanded,
+                      icon: Icon(
+                        widget.expanded ? Icons.expand_less : Icons.expand_more,
+                        color: tokens.canvas,
+                        size: 20,
                       ),
-                    _FilterChip(
-                      label: 'All types',
-                      selected: widget.monitor.kindFilter == null,
-                      onTap: () => widget.onKindFilter(null),
-                    ),
-                    for (final DispenserWireKind kind
-                        in DispenserWireKind.values)
-                      _FilterChip(
-                        label: kind.label,
-                        selected: widget.monitor.kindFilter == kind,
-                        onTap: () => widget.onKindFilter(kind),
-                      ),
-                    AppHeaderLikeButton(
-                      label: widget.monitor.paused
-                          ? 'Resume Stream'
-                          : 'Pause Stream',
-                      icon: widget.monitor.paused
-                          ? Icons.play_arrow
-                          : Icons.pause,
-                      onPressed: () => widget.onPause(!widget.monitor.paused),
-                    ),
-                    AppHeaderLikeButton(
-                      label: 'Clear Log',
-                      icon: Icons.delete_outline,
-                      onPressed: widget.onClear,
                     ),
                   ],
                 ),
+                if (widget.expanded) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: <Widget>[
+                      _FilterChip(
+                        label: 'All Units',
+                        selected: widget.monitor.unitFilter == null,
+                        onTap: () => widget.onUnitFilter(null),
+                      ),
+                      for (
+                        int unitId = 1;
+                        unitId <= kHardwareDispenserUnitCount;
+                        unitId++
+                      )
+                        _FilterChip(
+                          label: 'Unit $unitId',
+                          selected: widget.monitor.unitFilter == unitId,
+                          onTap: () => widget.onUnitFilter(unitId),
+                        ),
+                      _FilterChip(
+                        label: 'All types',
+                        selected: widget.monitor.kindFilter == null,
+                        onTap: () => widget.onKindFilter(null),
+                      ),
+                      for (final DispenserWireKind kind
+                          in DispenserWireKind.values)
+                        _FilterChip(
+                          label: kind.label,
+                          selected: widget.monitor.kindFilter == kind,
+                          onTap: () => widget.onKindFilter(kind),
+                        ),
+                      AppHeaderLikeButton(
+                        label: widget.monitor.paused
+                            ? 'Resume Stream'
+                            : 'Pause Stream',
+                        icon: widget.monitor.paused
+                            ? Icons.play_arrow
+                            : Icons.pause,
+                        onPressed: () => widget.onPause(!widget.monitor.paused),
+                      ),
+                      AppHeaderLikeButton(
+                        label: 'Clear Log',
+                        icon: Icons.delete_outline,
+                        onPressed: widget.onClear,
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
-          Divider(height: 1, color: tokens.inkMuted.withValues(alpha: 0.35)),
-          Expanded(
-            child: lines.isEmpty
-                ? Center(
-                    child: Text(
-                      widget.monitor.paused
-                          ? 'Stream paused.'
-                          : 'Waiting for WebSocket frames…',
-                      style: TextStyle(
-                        fontFamily: 'Roboto',
-                        fontSize: 13,
-                        color: tokens.canvas.withValues(alpha: 0.55),
+          if (widget.expanded) ...<Widget>[
+            Divider(height: 1, color: tokens.inkMuted.withValues(alpha: 0.35)),
+            Expanded(
+              child: lines.isEmpty
+                  ? Center(
+                      child: Text(
+                        widget.monitor.paused
+                            ? 'Stream paused.'
+                            : 'Waiting for WebSocket frames…',
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: 13,
+                          color: tokens.canvas.withValues(alpha: 0.55),
+                        ),
                       ),
+                    )
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                      itemCount: lines.length,
+                      itemBuilder: (BuildContext context, int index) {
+                        return _LogLine(frame: lines[index], clock: _clock);
+                      },
                     ),
-                  )
-                : ListView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                    itemCount: lines.length,
-                    itemBuilder: (BuildContext context, int index) {
-                      return _LogLine(frame: lines[index], clock: _clock);
-                    },
-                  ),
-          ),
+            ),
+          ],
         ],
       ),
     );

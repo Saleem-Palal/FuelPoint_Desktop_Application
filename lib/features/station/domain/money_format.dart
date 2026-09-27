@@ -1,4 +1,5 @@
 import '../../../core/decimal_display.dart';
+import 'fuel_precision.dart';
 
 String formatSignedPkr(double value) {
   if (value == 0) {
@@ -18,6 +19,50 @@ String _groupThousands(String whole) {
     }
   }
   return grouped.toString();
+}
+
+/// Blank when the tender column is unused (Udhaar, or Account-only Cash).
+String formatTenderPkr(double value) {
+  if (roundRupees(value) == 0) {
+    return '—';
+  }
+  return formatPkr(value);
+}
+
+/// Table amount: grouped whole rupees, no `Rs.` prefix.
+String formatTablePkr(double value) {
+  final int rounded = value.round();
+  final String grouped = _groupThousands(rounded.abs().toString());
+  if (rounded < 0) {
+    return '-$grouped';
+  }
+  return grouped;
+}
+
+String formatTableSignedPkr(double value) {
+  if (value == 0) {
+    return formatTablePkr(0);
+  }
+  final String formatted = formatTablePkr(value.abs());
+  return value > 0 ? '+$formatted' : '-$formatted';
+}
+
+/// Table volume: truncated decimals, no `Ltr` suffix.
+String formatTableLiters(double value) {
+  return groupTruncatedDecimal(value);
+}
+
+/// Table rate: truncated decimals, no `Rs.` or `/ L`.
+String formatTableRate(double value) {
+  return groupTruncatedDecimal(value);
+}
+
+/// Table tender column: em dash when unused, otherwise [formatTablePkr].
+String formatTableTenderPkr(double value) {
+  if (roundRupees(value) == 0) {
+    return '—';
+  }
+  return formatTablePkr(value);
 }
 
 String formatPkr(double value) {
@@ -77,6 +122,14 @@ String formatClock(DateTime time) {
   return '$hour:$minute $period';
 }
 
+String formatClockWithSeconds(DateTime time) {
+  final int hour = time.hour % 12 == 0 ? 12 : time.hour % 12;
+  final String minute = time.minute.toString().padLeft(2, '0');
+  final String second = time.second.toString().padLeft(2, '0');
+  final String period = time.hour >= 12 ? 'PM' : 'AM';
+  return '$hour:$minute:$second $period';
+}
+
 String formatDateTime(DateTime time) {
   final String day = time.day.toString().padLeft(2, '0');
   final String month = time.month.toString().padLeft(2, '0');
@@ -94,7 +147,7 @@ String formatDateRangeLabel(DateTime start, DateTime end) {
 }
 
 String formatMeterReading(double value) {
-  return value.toStringAsFixed(3);
+  return groupTruncatedDecimal(value);
 }
 
 String formatInvoiceNo(int invoiceNo) {

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../services/database_helper.dart';
+import '../../shift/domain/shift_lifecycle.dart';
 import '../../shift/domain/shift_models.dart';
 import '../domain/dispenser_models.dart';
 import '../domain/fuel_precision.dart';
@@ -59,6 +60,12 @@ class SalesLedgerRepository {
       totalTransactions: _asInt(row['total_transactions']),
       totalShiftPkr: _asDouble(row['total_shift_pkr']),
       totalShiftLiters: _asDouble(row['total_shift_liters']),
+      openingMeters: ShiftMeterSnapshot.decode(
+        row['opening_meters'] as String?,
+      ),
+      closingMeters: ShiftMeterSnapshot.decode(
+        row['closing_meters'] as String?,
+      ),
     );
   }
 

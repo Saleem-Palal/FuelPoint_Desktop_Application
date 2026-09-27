@@ -1,7 +1,54 @@
-FuelPoint Station OS  v1.0.0.7
+FuelPoint Station OS  v1.0.0.13
 Release notes
 Publisher: RetroSoft
 
+Update 1.0.13
+1. Direct Sale Card: manual liters and rate, Unit Direct, deducts stock only
+2. Vehicle number required before Confirm
+3. LCD amount without decimal point
+4. Test mode no longer saves two transactions for one fill
+5. Manual keypad unlock for 5 seconds on Dispenser Monitor
+6. Editable Urdu receipt footer in Settings
+7. Previous Udhaar entry and customer table PDF
+8. Shift Report PDF KPI and column cleanup
+
+Update 1.0.12
+1. Test sales show in ledgers with Test tag; excluded from totals
+2. Audit meter chain includes test sales so they do not flag mismatch
+3. Compact Connect and Rescan icon buttons on unit cards
+4. Account confirm dialog: Cash and Account fields plus Print
+
+Update 1.0.11
+1. Dynamic Cash / Account split on payment overlay
+2. Pending Account banner until bank transfer is confirmed
+3. ESP auto-reconnect; Connect and Rescan on Sale unit cards
+4. Helpers stay assigned after app resume
+5. Remove Rs. and Ltr from table cells
+6. Shift Report PDF with all sale columns; save PDF directly
+7. Test sale Token# increment and test toggle fix
+
+Update 1.0.9
+1. Recover missing ESP sales from Token# log
+2. Auto-save sale on hang-up; Confirm updates payment
+3. Cash and Account split columns
+4. Token# pill on unit cards
+5. Test transaction toggle (not counted as sale)
+6. Shift volume and amount KPI on Sale Screen
+7. ESP Wi-Fi hold to stop flicker disconnects
+8. Release notes grouped by update with 5-line scroll
+
+Update 1.0.8
+1. Tenda WiFi, ESP and FDX Board connection alerts
+2. No LIVE Shift lock on Sale Screen
+3. Shift Transaction Audit in Sale Ledger
+4. Rate change color bands in Sale Ledger
+5. Meter mismatch notice
+6. Toggle Show/Hide Receipt Preview in Settings
+7. Toggle Show/Hide Recent Sale Edit in Settings
+8. Customer ID auto-fill on payment
+9. Amounts shown as whole rupees
+
+Update 1.0.7
 1. Shift Management Cashier Issue & Workflow
 2. Timer for Auto Lock Owner Access
 3. LCD Font Size Increase

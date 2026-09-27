@@ -275,7 +275,7 @@ DashboardSnapshot assembleDashboardSnapshot({
   );
 
   for (final SaleTransaction row in sales) {
-    if (!isDieselSale(row)) {
+    if (row.isTest || isDirectSaleUnit(row.unitId) || !isDieselSale(row)) {
       continue;
     }
     final bool in24h =
@@ -470,7 +470,7 @@ List<DashboardStaffPerformance> _assembleStaff({
     for (final DashboardStaffMember member in roster) member.id: _MetricAcc(),
   };
   for (final SaleTransaction row in sales) {
-    if (!isDieselSale(row)) {
+    if (row.isTest || isDirectSaleUnit(row.unitId) || !isDieselSale(row)) {
       continue;
     }
     if (!isInDashboardRange(row.timestamp, range) ||

@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fuel_dispenser/features/shift/domain/shift_lifecycle.dart';
 import 'package:fuel_dispenser/features/shift/domain/shift_models.dart';
+import 'package:fuel_dispenser/features/station/domain/dispenser_models.dart';
 
 void main() {
   group('ShiftStatusStorage', () {
@@ -52,6 +53,22 @@ void main() {
       final Map<int, double> decoded = ShiftMeterSnapshot.decode(encoded);
       expect(decoded[1], 1200.5);
       expect(decoded[2], 88);
+    });
+  });
+
+  group('HelperUnitAssignmentSnapshot', () {
+    test('round-trips assigned bays so duty survives app resume', () {
+      const List<int> units = <int>[3, 1, 1, 2];
+      final String encoded = HelperUnitAssignmentSnapshot.encode(units);
+      expect(encoded, '[1,2,3]');
+      expect(HelperUnitAssignmentSnapshot.decode(encoded), <int>[1, 2, 3]);
+    });
+
+    test('empty or invalid storage is unassigned, not a crash', () {
+      expect(HelperUnitAssignmentSnapshot.encode(const <int>[]), '[]');
+      expect(HelperUnitAssignmentSnapshot.decode(null), isEmpty);
+      expect(HelperUnitAssignmentSnapshot.decode('[]'), isEmpty);
+      expect(HelperUnitAssignmentSnapshot.decode('{bad'), isEmpty);
     });
   });
 
@@ -121,6 +138,78 @@ void main() {
       );
       expect(metrics.expectedCashInHand, 1200);
       expect(metrics.totalSale, 5250);
+    });
+  });
+
+  group('partial account sale metrics', () {
+    HelperSaleRecord sale({
+      required PaymentMethod payment,
+      required double amountPkr,
+      double cashAmount = 0,
+      double accountAmount = 0,
+    }) {
+      return HelperSaleRecord(
+        tokenNo: 200004,
+        timestamp: DateTime(2026, 9, 14, 10),
+        helperId: 'h-1',
+        helperName: 'Ali',
+        unitId: 2,
+        fuelType: kDieselFuelType,
+        volumeLiters: 10,
+        rate: 256.32,
+        amountPkr: amountPkr,
+        payment: payment,
+        cashAmount: cashAmount,
+        accountAmount: accountAmount,
+      );
+    }
+
+    test('splits Cash Now into cash and remainder into account', () {
+      final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
+        sale(
+          payment: PaymentMethod.bankAccount,
+          amountPkr: 2989,
+          cashAmount: 2000,
+          accountAmount: 989,
+        ),
+      ]);
+      expect(metrics.fuelCashSales, 2000);
+      expect(metrics.accountSales, 989);
+      expect(metrics.totalSale, 2989);
+      expect(metrics.expectedCashInHand, 2000);
+    });
+
+    test('cash-only with cashAmount set uses Cash column not AMOUNT twice', () {
+      final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
+        sale(payment: PaymentMethod.cash, amountPkr: 2989, cashAmount: 2989),
+      ]);
+      expect(metrics.fuelCashSales, 2989);
+      expect(metrics.accountSales, 0);
+      expect(metrics.totalSale, 2989);
+    });
+
+    test('legacy account rows with empty split columns stay all account', () {
+      final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
+        sale(payment: PaymentMethod.easyPaisa, amountPkr: 5000),
+      ]);
+      expect(metrics.fuelCashSales, 0);
+      expect(metrics.accountSales, 5000);
+      expect(metrics.expectedCashInHand, 0);
+    });
+
+    test('test fills stay listed but do not add to cash, liters, or count', () {
+      final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
+        sale(payment: PaymentMethod.cash, amountPkr: 1000, cashAmount: 1000),
+        sale(
+          payment: PaymentMethod.cash,
+          amountPkr: 500,
+        ).copyWith(isTest: true, tokenNo: 200005, volumeLiters: 5),
+      ]);
+      expect(metrics.sales.length, 2);
+      expect(metrics.commercialSaleCount, 1);
+      expect(metrics.fuelCashSales, 1000);
+      expect(metrics.totalLiters, 10);
+      expect(metrics.expectedCashInHand, 1000);
     });
   });
 

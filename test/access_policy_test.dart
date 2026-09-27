@@ -6,45 +6,42 @@ import 'package:fuel_dispenser/features/access/domain/access_policy.dart';
 
 void main() {
   group('AccessPolicy', () {
-    test(
-      'locks owner-only screens and keeps sale and customers open',
-      () {
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.dashboard),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.purchase),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.ledger),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.reports),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(
-            ShellDestinations.dispenserMonitor,
-          ),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.settings),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.managers),
-          isTrue,
-        );
-        expect(
-          AccessPolicy.destinationRequiresOwner(ShellDestinations.shifts),
-          isTrue,
-        );
-      },
-    );
+    test('locks owner-only screens and keeps sale and customers open', () {
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.dashboard),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.purchase),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.ledger),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.reports),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(
+          ShellDestinations.dispenserMonitor,
+        ),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.settings),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.managers),
+        isTrue,
+      );
+      expect(
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.shifts),
+        isTrue,
+      );
+    });
 
     test('keeps sale and customers unlocked; shifts requires owner', () {
       expect(

@@ -34,6 +34,7 @@ class NetworkSnapshot {
     this.wifiIp,
     this.summary = 'Unknown',
     this.onDispenserAp = false,
+    this.onOfficeLan = false,
   });
 
   final bool offline;
@@ -42,12 +43,23 @@ class NetworkSnapshot {
   final String? wifiIp;
   final String summary;
   final bool onDispenserAp;
+  final bool onOfficeLan;
 
   static const NetworkSnapshot unknown = NetworkSnapshot(
     offline: false,
     onWifi: false,
     summary: 'Checking Wi-Fi…',
   );
+}
+
+/// Tenda office LAN: SSID `System` or any 192.168.0.x address (Ethernet counts).
+bool isOnOfficeLan({String? wifiName, String? wifiIp}) {
+  final String ssid = (wifiName ?? '').replaceAll('"', '').trim().toLowerCase();
+  if (ssid == 'system') {
+    return true;
+  }
+  final String ip = (wifiIp ?? '').trim();
+  return ip.startsWith('192.168.0.');
 }
 
 class LogLine {

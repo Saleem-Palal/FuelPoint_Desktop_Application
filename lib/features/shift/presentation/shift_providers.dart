@@ -90,6 +90,19 @@ class ShiftWorkspaceState {
 
   bool get canEndShift => activeShift != null && pendingReconciliation == null;
 
+  bool get hasUnconfirmedAccount => pendingAccountSales.isNotEmpty;
+
+  List<HelperSaleRecord> get pendingAccountSales {
+    final ManagerShiftRecord? open = activeShift;
+    if (open == null) {
+      return const <HelperSaleRecord>[];
+    }
+    return salesForOutgoingManager(
+      sales,
+      open,
+    ).where((HelperSaleRecord row) => row.pendingAccountAmount > 0).toList();
+  }
+
   /// OPEN shift or unfinished tally — blocks native window close.
   bool get hasActiveShift {
     return (activeShift != null && activeShift!.isOpen) ||
@@ -287,8 +300,11 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final List<HelperProfile> helpers = snapshot.helpers.map((
       HelperProfile helper,
     ) {
+      if (helper.assignedUnitIds.isNotEmpty) {
+        return helper;
+      }
       final HelperProfile? existing = helperById(preserve.helpers, helper.id);
-      if (existing == null) {
+      if (existing == null || existing.assignedUnitIds.isEmpty) {
         return helper;
       }
       return helper.copyWith(assignedUnitIds: existing.assignedUnitIds);
@@ -307,6 +323,13 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       preserve.selectedHelperId,
     );
 
+    final bool hasOpenDuty = preserve.dutySessions.any(
+      (HelperDutySession session) => session.isOpen,
+    );
+    final List<HelperDutySession> dutySessions = hasOpenDuty
+        ? preserve.dutySessions
+        : _dutySessionsFromAssignments(helpers);
+
     return preserve.copyWith(
       managers: snapshot.managers.map((ManagerProfile manager) {
         return manager.copyWith(
@@ -316,6 +339,11 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
         );
       }).toList(),
       helpers: helpers,
+      dutySessions: dutySessions,
+      nextDutySeq: _nextIdSeq(
+        dutySessions.map((HelperDutySession session) => session.id),
+        'duty-',
+      ),
       activeShift: open,
       clearActiveShift: open == null,
       pendingReconciliation: pendingSnapshot,
@@ -390,8 +418,9 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     for (final int unitId in dispenserUnitIds) {
       final String? raw = unitHelperIds[unitId];
       final String? helperId = (raw == null || raw.isEmpty) ? null : raw;
-      assignHelperToUnit(unitId: unitId, helperId: helperId);
+      _assignHelperToUnit(unitId: unitId, helperId: helperId, persist: false);
     }
+    unawaited(_persistHelperAssignments());
   }
 
   void unassignAllHelpers() {
@@ -403,6 +432,14 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
   /// One helper per bay. A helper may cover multiple bays.
   /// Passing a null [helperId] clears only this unit.
   void assignHelperToUnit({required int unitId, String? helperId}) {
+    _assignHelperToUnit(unitId: unitId, helperId: helperId, persist: true);
+  }
+
+  void _assignHelperToUnit({
+    required int unitId,
+    required String? helperId,
+    required bool persist,
+  }) {
     final DateTime now = DateTime.now();
     final List<HelperDutySession> sessions = state.dutySessions.map((
       HelperDutySession session,
@@ -446,10 +483,49 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       dutySessions: sessions,
       nextDutySeq: seq,
     );
+    if (persist) {
+      unawaited(_persistHelperAssignments());
+    }
+  }
+
+  Future<void> _persistHelperAssignments() async {
+    try {
+      await _repo.persistHelperAssignments(state.helpers);
+    } catch (error, stack) {
+      debugPrint(
+        'ShiftWorkspaceNotifier.persistHelperAssignments failed: $error\n$stack',
+      );
+    }
+  }
+
+  static List<HelperDutySession> _dutySessionsFromAssignments(
+    List<HelperProfile> helpers,
+  ) {
+    int seq = 1;
+    final DateTime now = DateTime.now();
+    final List<HelperDutySession> sessions = <HelperDutySession>[];
+    for (final HelperProfile helper in helpers) {
+      for (final int unitId in helper.assignedUnitIds) {
+        sessions.add(
+          HelperDutySession(
+            id: 'duty-$seq',
+            helperId: helper.id,
+            helperName: helper.name,
+            unitId: unitId,
+            startTime: now,
+          ),
+        );
+        seq += 1;
+      }
+    }
+    return sessions;
   }
 
   void recordSale(HelperSaleRecord sale) {
-    state = state.copyWith(sales: <HelperSaleRecord>[sale, ...state.sales]);
+    final List<HelperSaleRecord> next = state.sales
+        .where((HelperSaleRecord row) => row.tokenNo != sale.tokenNo)
+        .toList();
+    state = state.copyWith(sales: <HelperSaleRecord>[sale, ...next]);
   }
 
   void addUdhaarRecovery(double amountPaid) {
@@ -618,6 +694,9 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     if (state.pendingReconciliation != null) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.alreadyPending);
     }
+    if (state.hasUnconfirmedAccount) {
+      return const ShiftHandoverResult(outcome: HandoverOutcome.pendingAccount);
+    }
     final ManagerShiftRecord? open = state.activeShift;
     if (open == null) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.noActiveShift);
@@ -773,6 +852,9 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     }
     if (state.pendingReconciliation != null) {
       return const ShiftHandoverResult(outcome: HandoverOutcome.alreadyPending);
+    }
+    if (state.hasUnconfirmedAccount) {
+      return const ShiftHandoverResult(outcome: HandoverOutcome.pendingAccount);
     }
     final ManagerShiftRecord? open = state.activeShift;
     if (open == null) {

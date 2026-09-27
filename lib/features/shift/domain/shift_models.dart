@@ -26,6 +26,7 @@ enum HandoverOutcome {
   sameManager,
   alreadyPending,
   baysDispensing,
+  pendingAccount,
 }
 
 /// Default attendant reward until a station setting is persisted.
@@ -268,6 +269,19 @@ class HelperSaleRecord {
     this.shiftId = '',
     this.cashierName = '',
     this.managerId = '',
+    this.cashAmount = 0,
+    this.accountAmount = 0,
+    this.pendingAccountAmount = 0,
+    this.openingMeter = 0,
+    this.closingMeter = 0,
+    this.customerName = '',
+    this.vehicleNo = '',
+    this.managerStaffId = '',
+    this.helperStaffId = '',
+    this.actions = '',
+    this.espTxId = '',
+    this.edited = false,
+    this.isTest = false,
   });
 
   final int tokenNo;
@@ -283,6 +297,108 @@ class HelperSaleRecord {
   final String shiftId;
   final String cashierName;
   final String managerId;
+  final double cashAmount;
+  final double accountAmount;
+  final double pendingAccountAmount;
+  final double openingMeter;
+  final double closingMeter;
+  final String customerName;
+  final String vehicleNo;
+  final String managerStaffId;
+  final String helperStaffId;
+  final String actions;
+  final String espTxId;
+  final bool edited;
+  final bool isTest;
+
+  /// Cash column only. Never [amountPkr] (that would double-count the ticket).
+  double get cashTender {
+    switch (payment) {
+      case PaymentMethod.udhaar:
+        return 0;
+      case PaymentMethod.cash:
+        return cashAmount > 0 ? cashAmount : amountPkr;
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+        return cashAmount;
+    }
+  }
+
+  /// Account column only. Legacy Account rows with empty split use [amountPkr].
+  double get accountTender {
+    switch (payment) {
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+        if (pendingAccountAmount > 0) {
+          return accountAmount;
+        }
+        if (cashAmount > 0 || accountAmount > 0) {
+          return accountAmount;
+        }
+        return amountPkr;
+      case PaymentMethod.cash:
+      case PaymentMethod.udhaar:
+        return 0;
+    }
+  }
+
+  HelperSaleRecord copyWith({
+    int? tokenNo,
+    DateTime? timestamp,
+    String? helperId,
+    String? helperName,
+    int? unitId,
+    String? fuelType,
+    double? volumeLiters,
+    double? rate,
+    double? amountPkr,
+    PaymentMethod? payment,
+    String? shiftId,
+    String? cashierName,
+    String? managerId,
+    double? cashAmount,
+    double? accountAmount,
+    double? pendingAccountAmount,
+    double? openingMeter,
+    double? closingMeter,
+    String? customerName,
+    String? vehicleNo,
+    String? managerStaffId,
+    String? helperStaffId,
+    String? actions,
+    String? espTxId,
+    bool? edited,
+    bool? isTest,
+  }) {
+    return HelperSaleRecord(
+      tokenNo: tokenNo ?? this.tokenNo,
+      timestamp: timestamp ?? this.timestamp,
+      helperId: helperId ?? this.helperId,
+      helperName: helperName ?? this.helperName,
+      unitId: unitId ?? this.unitId,
+      fuelType: fuelType ?? this.fuelType,
+      volumeLiters: volumeLiters ?? this.volumeLiters,
+      rate: rate ?? this.rate,
+      amountPkr: amountPkr ?? this.amountPkr,
+      payment: payment ?? this.payment,
+      shiftId: shiftId ?? this.shiftId,
+      cashierName: cashierName ?? this.cashierName,
+      managerId: managerId ?? this.managerId,
+      cashAmount: cashAmount ?? this.cashAmount,
+      accountAmount: accountAmount ?? this.accountAmount,
+      pendingAccountAmount: pendingAccountAmount ?? this.pendingAccountAmount,
+      openingMeter: openingMeter ?? this.openingMeter,
+      closingMeter: closingMeter ?? this.closingMeter,
+      customerName: customerName ?? this.customerName,
+      vehicleNo: vehicleNo ?? this.vehicleNo,
+      managerStaffId: managerStaffId ?? this.managerStaffId,
+      helperStaffId: helperStaffId ?? this.helperStaffId,
+      actions: actions ?? this.actions,
+      espTxId: espTxId ?? this.espTxId,
+      edited: edited ?? this.edited,
+      isTest: isTest ?? this.isTest,
+    );
+  }
 }
 
 @immutable
@@ -325,13 +441,22 @@ HelperPerformanceSnapshot helperPerformanceSnapshot(
       (HelperSaleRecord a, HelperSaleRecord b) =>
           b.timestamp.compareTo(a.timestamp),
     );
-  final double liters = sorted.fold<double>(
-    0,
-    (double sum, HelperSaleRecord row) => sum + row.volumeLiters,
-  );
+  final double liters = sorted.fold<double>(0, (
+    double sum,
+    HelperSaleRecord row,
+  ) {
+    return row.isTest || isDirectSaleUnit(row.unitId)
+        ? sum
+        : sum + row.volumeLiters;
+  });
   DateTime? firstSale;
   DateTime? lastSale;
+  int commercialCount = 0;
   for (final HelperSaleRecord row in sorted) {
+    if (row.isTest || isDirectSaleUnit(row.unitId)) {
+      continue;
+    }
+    commercialCount += 1;
     if (firstSale == null || row.timestamp.isBefore(firstSale)) {
       firstSale = row.timestamp;
     }
@@ -341,13 +466,15 @@ HelperPerformanceSnapshot helperPerformanceSnapshot(
   }
   final double rate = rewardRate < 0 ? 0 : rewardRate;
   return HelperPerformanceSnapshot(
-    transactionCount: sorted.length,
+    transactionCount: commercialCount,
     totalLiters: liters,
-    rewardPayout: sorted.length * rate,
+    rewardPayout: commercialCount * rate,
     rewardRate: rate,
     firstSaleAt: firstSale,
     lastSaleAt: lastSale,
-    sales: sorted,
+    sales: sorted
+        .where((HelperSaleRecord row) => !isDirectSaleUnit(row.unitId))
+        .toList(),
   );
 }
 
@@ -364,6 +491,7 @@ class ShiftWindowMetrics {
     this.lastToken,
   });
 
+  /// Visible tickets including tagged test fills. KPIs below exclude tests.
   final List<HelperSaleRecord> sales;
   final double fuelCashSales;
   final double udhaarSales;
@@ -373,10 +501,20 @@ class ShiftWindowMetrics {
   final int? firstToken;
   final int? lastToken;
 
-  /// Cash sales + account + udhaar issued.
+  int get commercialSaleCount {
+    int count = 0;
+    for (final HelperSaleRecord row in sales) {
+      if (!row.isTest) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  /// Cash (incl. Cash Now) + Account remainder + Udhaar issued.
   double get totalSale => fuelCashSales + accountSales + udhaarSales;
 
-  /// Cash sales + udhaar recovery collected in cash. Purchases are not shift cash.
+  /// Cash sales + Cash Now on Account + Udhaar recovery. Purchases are not shift cash.
   double get expectedCashInHand => fuelCashSales + udhaarRecoveryTotal;
 
   static const ShiftWindowMetrics empty = ShiftWindowMetrics(
@@ -389,12 +527,13 @@ class ShiftWindowMetrics {
   );
 
   static const String totalSaleFormula =
-      'Cash Sales + Account + Udhaar Issued';
+      'Cash Sales + Cash Now + Account remainder + Udhaar Issued';
   static const String expectedCashFormula =
-      'Cash Sales + Udhaar Recovery (Cash)';
+      'Cash Sales + Cash Now + Udhaar Recovery (Cash)';
   static const String udhaarIssuedHint = 'Credit sales this shift';
   static const String udhaarRecoveryHint = 'Cash settlements this shift';
-  static const String accountPaymentsHint = 'Bank / EasyPaisa';
+  static const String accountPaymentsHint =
+      'Bank / EasyPaisa remainder (not Cash Now)';
 }
 
 @immutable
@@ -575,14 +714,18 @@ ShiftWindowMetrics metricsForSales(
   int? firstToken;
   int? lastToken;
   for (final HelperSaleRecord row in sorted) {
+    if (row.isTest || isDirectSaleUnit(row.unitId)) {
+      continue;
+    }
     switch (row.payment) {
       case PaymentMethod.cash:
-        cash += row.amountPkr;
+        cash += row.cashTender;
       case PaymentMethod.udhaar:
         udhaar += row.amountPkr;
       case PaymentMethod.bankAccount:
       case PaymentMethod.easyPaisa:
-        account += row.amountPkr;
+        cash += row.cashTender;
+        account += row.accountTender;
     }
     liters += row.volumeLiters;
     if (firstToken == null || row.tokenNo < firstToken) {
@@ -593,7 +736,9 @@ ShiftWindowMetrics metricsForSales(
     }
   }
   return ShiftWindowMetrics(
-    sales: sorted.reversed.toList(),
+    sales: sorted.reversed
+        .where((HelperSaleRecord row) => !isDirectSaleUnit(row.unitId))
+        .toList(),
     fuelCashSales: cash,
     udhaarSales: udhaar,
     accountSales: account,

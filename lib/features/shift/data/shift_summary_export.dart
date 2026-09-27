@@ -2,14 +2,13 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/constants.dart';
+import '../../../core/pdf_file_export.dart';
 import '../../station/domain/dispenser_models.dart';
 import '../../station/domain/money_format.dart';
 import '../domain/shift_models.dart';
@@ -28,26 +27,48 @@ class ShiftSummaryExport {
 
   static const String _stationTitle = '${AppBrand.name} ${AppBrand.tagline}';
 
-  Future<void> printPdf(ShiftSummary summary) async {
-    final Uint8List bytes = await buildPdf(summary);
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) async => bytes,
-      name: '${summary.shift.shiftId}-summary.pdf',
-    );
+  static const PdfPageFormat _sheetFormat = PdfPageFormat(
+    48.0 * PdfPageFormat.cm,
+    21.0 * PdfPageFormat.cm,
+  );
+
+  static const List<String> _saleHeaders = <String>[
+    'TOKEN',
+    'DATE_TIME',
+    'UNIT_NO',
+    'AMOUNT',
+    'LITERS',
+    'RATE',
+    'OPENING_READING',
+    'CLOSING_READING',
+    'PAYMENT_METHOD',
+    'CASH_AMOUNT',
+    'ACCOUNT_AMOUNT',
+    'PENDING_ACCOUNT',
+    'CUSTOMER_NAME',
+    'VEHICLE_NO',
+    'HELPER',
+    'Manager',
+    'SHIFT_ID',
+    'EDITED',
+    'IS_TEST',
+  ];
+
+  Future<File> printPdf(ShiftSummary summary) async {
+    return savePdf(summary, open: true);
   }
 
-  Future<File> savePdf(ShiftSummary summary) async {
+  Future<File> savePdf(ShiftSummary summary, {bool open = false}) async {
     final Uint8List bytes = await buildPdf(summary);
-    final Directory docs = await getApplicationDocumentsDirectory();
-    final Directory dir = Directory(
-      p.join(docs.path, 'Exported_Reports', 'Shifts'),
-    );
-    await dir.create(recursive: true);
     final String stamp = _fileStamp(summary.shift.endTime ?? DateTime.now());
-    final File file = File(
-      p.join(dir.path, '${summary.shift.shiftId}-handover-$stamp.pdf'),
+    final File file = await PdfFileExport.save(
+      bytes: bytes,
+      folder: 'Shifts',
+      fileName: '${summary.shift.shiftId}-handover-$stamp.pdf',
     );
-    await file.writeAsBytes(bytes, flush: true);
+    if (open) {
+      await PdfFileExport.open(file);
+    }
     return file;
   }
 
@@ -112,43 +133,46 @@ class ShiftSummaryExport {
     final double? actual = shift.actualCash;
     final String varianceText = actual == null
         ? '—'
-        : _varianceCopy(actual - shift.expectedCash);
+        : _varianceCopy(actual - metrics.expectedCashInHand);
     final List<List<String>> tableRows = metrics.sales.map((
       HelperSaleRecord row,
     ) {
       return <String>[
         formatLedgerToken(row.tokenNo),
         formatDateTime(row.timestamp),
-        formatUnitLabel(row.unitId),
-        row.fuelType.toUpperCase(),
-        formatLiters(row.volumeLiters),
-        formatRate(row.rate),
-        formatPkr(row.amountPkr),
+        '${row.unitId}',
+        formatTablePkr(row.amountPkr),
+        formatTableLiters(row.volumeLiters),
+        formatTableRate(row.rate),
+        formatMeterReading(row.openingMeter),
+        formatMeterReading(row.closingMeter),
         row.payment.label,
+        formatTableTenderPkr(row.cashAmount),
+        formatTableTenderPkr(row.accountAmount),
+        formatTableTenderPkr(row.pendingAccountAmount),
+        row.customerName.trim().isEmpty ? '—' : row.customerName,
+        row.vehicleNo.trim().isEmpty ? '—' : row.vehicleNo,
+        row.helperId.trim().isEmpty ? '—' : row.helperId,
+        row.managerId.trim().isEmpty ? '—' : row.managerId,
+        row.shiftId.trim().isEmpty ? '—' : row.shiftId,
+        row.edited ? '1' : '0',
+        row.isTest ? '1' : '0',
       ];
     }).toList();
 
     doc.addPage(
       pw.MultiPage(
-        pageFormat: PdfPageFormat.a4.landscape,
-        margin: const pw.EdgeInsets.fromLTRB(28, 28, 28, 32),
+        pageFormat: _sheetFormat,
+        margin: const pw.EdgeInsets.fromLTRB(16, 16, 16, 20),
         footer: (pw.Context context) {
           return pw.Padding(
             padding: const pw.EdgeInsets.only(top: 8),
-            child: pw.Row(
-              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-              children: <pw.Widget>[
-                pw.Text(
-                  'Expected cash = Cash sales + Udhaar recovery (cash). '
-                  'Total sale = Cash sales + Account + Udhaar issued. '
-                  '${AppBrand.developer}',
-                  style: pw.TextStyle(color: muted, fontSize: 8),
-                ),
-                pw.Text(
-                  'Page ${context.pageNumber} of ${context.pagesCount}',
-                  style: pw.TextStyle(color: muted, fontSize: 8),
-                ),
-              ],
+            child: pw.Align(
+              alignment: pw.Alignment.centerRight,
+              child: pw.Text(
+                'Page ${context.pageNumber} of ${context.pagesCount}',
+                style: pw.TextStyle(color: muted, fontSize: 8),
+              ),
             ),
           );
         },
@@ -244,32 +268,32 @@ class ShiftSummaryExport {
                       muted,
                       line,
                       canvas,
-                      'Direct cash sales',
-                      formatPkr(metrics.fuelCashSales),
+                      'Total Sale',
+                      formatTablePkr(metrics.totalSale),
                     ),
                     _moneyCell(
                       ink,
                       muted,
                       line,
                       canvas,
-                      'Udhaar issued',
-                      formatPkr(metrics.udhaarSales),
+                      'Udhaar Issued',
+                      formatTablePkr(metrics.udhaarSales),
                     ),
                     _moneyCell(
                       ink,
                       muted,
                       line,
                       canvas,
-                      'Bank / account sales',
-                      formatPkr(metrics.accountSales),
+                      'Udhaar Recovery',
+                      formatTablePkr(metrics.udhaarRecoveryTotal),
                     ),
                     _moneyCell(
                       ink,
                       muted,
                       line,
                       canvas,
-                      'Udhaar recovery',
-                      formatPkr(metrics.udhaarRecoveryTotal),
+                      'Account Payments',
+                      formatTablePkr(metrics.accountSales),
                     ),
                   ],
                 ),
@@ -280,23 +304,23 @@ class ShiftSummaryExport {
                       muted,
                       line,
                       canvas,
-                      'Expected cash',
-                      formatPkr(shift.expectedCash),
+                      'Expected cash in Hand',
+                      formatTablePkr(metrics.expectedCashInHand),
                     ),
                     _moneyCell(
                       ink,
                       muted,
                       line,
                       canvas,
-                      'Actual cash',
-                      actual == null ? '—' : formatPkr(actual),
+                      'Actual Cash Collected',
+                      actual == null ? '—' : formatTablePkr(actual),
                     ),
                     _moneyCell(
                       ink,
                       muted,
                       line,
                       canvas,
-                      'Variance (over / short)',
+                      'Variance',
                       varianceText,
                     ),
                     pw.SizedBox(),
@@ -320,36 +344,30 @@ class ShiftSummaryExport {
               headerDecoration: pw.BoxDecoration(color: canvas),
               headerStyle: pw.TextStyle(
                 color: muted,
-                fontSize: 8,
+                fontSize: 6,
                 fontWeight: pw.FontWeight.bold,
               ),
-              cellStyle: pw.TextStyle(color: ink, fontSize: 8),
+              cellStyle: pw.TextStyle(color: ink, fontSize: 6),
+              cellPadding: const pw.EdgeInsets.symmetric(
+                horizontal: 3,
+                vertical: 3,
+              ),
               cellAlignments: <int, pw.Alignment>{
+                3: pw.Alignment.centerRight,
                 4: pw.Alignment.centerRight,
                 5: pw.Alignment.centerRight,
                 6: pw.Alignment.centerRight,
+                7: pw.Alignment.centerRight,
+                9: pw.Alignment.centerRight,
+                10: pw.Alignment.centerRight,
+                11: pw.Alignment.centerRight,
               },
-              headers: const <String>[
-                'Token #',
-                'Date & Time',
-                'Dispenser Unit',
-                'Fuel Type',
-                'Volume (L)',
-                'Rate (PKR)',
-                'Total Amount (PKR)',
-                'Payment Method',
-              ],
+              headers: _saleHeaders,
               data: tableRows.isEmpty
-                  ? const <List<String>>[
+                  ? <List<String>>[
                       <String>[
-                        '—',
                         'No sales on this shift',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
-                        '',
+                        ...List<String>.filled(_saleHeaders.length - 1, ''),
                       ],
                     ]
                   : tableRows,
@@ -368,7 +386,7 @@ class ShiftSummaryExport {
                   ),
                 ),
                 pw.Text(
-                  'Total liters dispensed  ${formatLiters(metrics.totalLiters)}',
+                  'Total liters dispensed  ${formatTableLiters(metrics.totalLiters)}',
                   style: pw.TextStyle(
                     color: ink,
                     fontSize: 10,
@@ -505,12 +523,12 @@ class ShiftSummaryExport {
 
   String _varianceCopy(double variance) {
     if (variance > 0) {
-      return 'Over  ${formatSignedPkr(variance)}';
+      return 'Over  ${formatTableSignedPkr(variance)}';
     }
     if (variance < 0) {
-      return 'Short  ${formatSignedPkr(variance)}';
+      return 'Short  ${formatTableSignedPkr(variance)}';
     }
-    return 'Matched  ${formatPkr(0)}';
+    return 'Matched  ${formatTablePkr(0)}';
   }
 }
 

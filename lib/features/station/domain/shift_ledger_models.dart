@@ -18,6 +18,8 @@ class ShiftLedgerSummary {
     required this.totalShiftPkr,
     required this.totalShiftLiters,
     this.endTime,
+    this.openingMeters = const <int, double>{},
+    this.closingMeters = const <int, double>{},
   });
 
   final String shiftId;
@@ -30,6 +32,8 @@ class ShiftLedgerSummary {
   final int totalTransactions;
   final double totalShiftPkr;
   final double totalShiftLiters;
+  final Map<int, double> openingMeters;
+  final Map<int, double> closingMeters;
 
   bool get isLive => status == ManagerShiftStatus.open;
 
@@ -48,6 +52,8 @@ class ShiftLedgerSummary {
     int? totalTransactions,
     double? totalShiftPkr,
     double? totalShiftLiters,
+    Map<int, double>? openingMeters,
+    Map<int, double>? closingMeters,
   }) {
     return ShiftLedgerSummary(
       shiftId: shiftId,
@@ -60,6 +66,8 @@ class ShiftLedgerSummary {
       totalTransactions: totalTransactions ?? this.totalTransactions,
       totalShiftPkr: totalShiftPkr ?? this.totalShiftPkr,
       totalShiftLiters: totalShiftLiters ?? this.totalShiftLiters,
+      openingMeters: openingMeters ?? this.openingMeters,
+      closingMeters: closingMeters ?? this.closingMeters,
     );
   }
 
@@ -81,12 +89,17 @@ class ShiftLedgerSummary {
     }
     double pkr = 0;
     double liters = 0;
+    int count = 0;
     for (final SaleTransaction row in rows) {
+      if (row.isTest || isDirectSaleUnit(row.unitId)) {
+        continue;
+      }
       pkr += row.amountPkr;
       liters += row.volumeLiters;
+      count += 1;
     }
     return copyWith(
-      totalTransactions: rows.length,
+      totalTransactions: count,
       totalShiftPkr: pkr,
       totalShiftLiters: liters,
     );
@@ -94,6 +107,9 @@ class ShiftLedgerSummary {
 }
 
 bool saleBelongsToShift(SaleTransaction row, ShiftLedgerSummary summary) {
+  if (isDirectSaleUnit(row.unitId)) {
+    return false;
+  }
   if (row.shiftId == summary.shiftId) {
     return true;
   }
@@ -111,6 +127,9 @@ bool helperSaleBelongsToShift(
   HelperSaleRecord row,
   ShiftLedgerSummary summary,
 ) {
+  if (isDirectSaleUnit(row.unitId)) {
+    return false;
+  }
   if (row.shiftId == summary.shiftId) {
     return true;
   }
@@ -141,6 +160,7 @@ SaleTransaction saleFromHelperSale(HelperSaleRecord row) {
     cashierName: row.cashierName,
     helperName: row.helperName,
     shiftId: row.shiftId,
+    isTest: row.isTest,
   );
 }
 

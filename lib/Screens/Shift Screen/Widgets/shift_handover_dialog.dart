@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/data/shift_summary_export.dart';
+import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
 import '../../../features/station/domain/money_format.dart';
@@ -146,6 +148,13 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
         _busy = false;
         _pinError =
             'Handover Blocked: Bay #${result.blockedBayId ?? 0} is actively dispensing. Wait for nozzle stowage.';
+      });
+      return;
+    }
+    if (result.outcome == HandoverOutcome.pendingAccount) {
+      setState(() {
+        _busy = false;
+        _pinError = ShiftLifecycleGuard.pendingAccountBlockedMessage();
       });
       return;
     }
@@ -424,14 +433,22 @@ class _ShiftReconciliationOverlayState
       _busy = true;
     });
     try {
-      await ShiftSummaryExport.instance.printPdf(_preview(snapshot));
-    } catch (error) {
+      final File file = await ShiftSummaryExport.instance.printPdf(
+        _preview(snapshot),
+      );
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not generate PDF: $error')),
+        SnackBar(content: Text('PDF saved: ${file.path}')),
       );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not generate PDF: $error')));
     } finally {
       if (mounted) {
         setState(() {

@@ -1,9 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 
 import '../../../core/constants.dart';
+import '../../../core/pdf_file_export.dart';
 import '../../station/domain/money_format.dart';
 import '../domain/customer_models.dart';
 
@@ -12,13 +14,12 @@ class CustomerDirectoryPdf {
 
   static final CustomerDirectoryPdf instance = CustomerDirectoryPdf._();
 
-  Future<void> export(List<CustomerProfile> customers) async {
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) {
-        return _build(customers, format);
-      },
-      format: PdfPageFormat.a4,
-      name: 'customer-directory.pdf',
+  Future<File> export(List<CustomerProfile> customers) async {
+    final Uint8List bytes = await _build(customers, PdfPageFormat.a4);
+    return PdfFileExport.saveAndOpen(
+      bytes: bytes,
+      folder: 'Customers',
+      fileName: 'customer-directory.pdf',
     );
   }
 

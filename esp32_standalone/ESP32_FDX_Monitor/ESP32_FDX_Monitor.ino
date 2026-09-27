@@ -1,11 +1,13 @@
 /**
- * FuelPoint unit ESP32 — UART telemetry bridge to Flutter (WebSocket :81)
- *
- * Flash once per bay. Change UNIT_ID before each flash (1..4).
  *
  * Board: ESP32 Dev Module / 38-pin
  * USB Serial: 115200
- * UART2: GPIO 16 RX <- Board TX, GPIO 17 TX idle -> Board RX
+ * UART2: GPIO 16 RX, GPIO 17 TX (idle, optional)
+ * ESP-01 header on the dispenser: labels are the ESP-01's pins, not the pump MCU.
+ *   GPIO 16  ->  header RX  (pump TX is on this net — Type-33 comes here)
+ *   GPIO 17  ->  header TX  (optional; leave unconnected to test RX-only)
+ *   GND      ->  header GND
+ * Putting GPIO 16 on the pin labelled TX hears pump RX — UART STALL forever.
  * Relay IN: GPIO 4  LOCK = LOW, UNLOCK = HIGH (active-LOW module).
  * Power relay VCC from 3.3 V, not 5 V, or the green IN LED never turns off.
  * Buzzer+: GPIO 5   Buzzer-: GND  (chirp while waiting for Confirm; solid if live-shift comms lost)
@@ -17,7 +19,7 @@
  */
 
 #ifndef UNIT_ID
-#define UNIT_ID 1
+#define UNIT_ID 4
 #endif
 
 #include <Arduino.h>
@@ -27,6 +29,7 @@
 #include <WiFi.h>
 #include <ctype.h>
 #include <esp_task_wdt.h>
+#include <esp_wifi.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,14 +48,15 @@ static const bool RELAY_ACTIVE_LOW = true;
 static const uint32_t BUZZER_CYCLE_MS = 850;
 
 static const uint32_t HEARTBEAT_LOCK_MS = 3000;
-static const uint32_t UART_STALE_MS = 3000;
-static const uint32_t WIFI_RETRY_MS = 15000;
+static const uint32_t UART_STALE_MS = 5000;
+static const uint32_t WIFI_RETRY_MS = 8000;
 static const uint32_t TICK_MS = 1000;
 static const uint32_t LIVE_SNAP_MS = 1000;
 static const size_t RX_MAX = 4096;
 static const long ZERO_VOLUME_CENTS = 1;  // 0.01 L
 static const int WDT_TIMEOUT_S = 15;
-static const int QUEUE_CAP = 24;
+static const int TOKEN_LOG_CAP = 10;
+static const size_t UART_BYTES_PER_LOOP = 512;
 
 WebSocketsServer webSocket(81);
 Preferences prefs;
@@ -83,13 +87,17 @@ long rateCents = 0;
 long meterCents = 0;
 
 uint32_t lastValidFrameMs = 0;
+uint32_t lastUartRxMs = 0;
+uint32_t uartRxBytesWindow = 0;
 uint32_t lastAppHbMs = 0;
 uint32_t lastWifiOkMs = 0;
 uint32_t lastWifiTryMs = 0;
 uint32_t lastTickMs = 0;
 uint32_t lastLiveSnapMs = 0;
-uint32_t txSeq = 1;
+uint32_t nextSequence = 1;
+char appClockIso[40] = "";
 int wsClients = 0;
+bool wsListening = false;
 
 static void javaMid(const char *s, int start1, int len, char *out, size_t outSize) {
   const int start = start1 - 1;
@@ -185,7 +193,12 @@ static bool commsLive() {
 }
 
 static bool uartLinkLive() {
-  return lastValidFrameMs != 0 && (millis() - lastValidFrameMs) <= UART_STALE_MS;
+  const uint32_t now = millis();
+  if (lastValidFrameMs != 0 && (now - lastValidFrameMs) <= UART_STALE_MS) {
+    return true;
+  }
+  // Bytes on RX even if the payload is not a decoded Type-33 yet.
+  return lastUartRxMs != 0 && (now - lastUartRxMs) <= UART_STALE_MS;
 }
 
 static bool keypadShouldLock() {
@@ -272,17 +285,37 @@ static void sanitize(String &inner) {
   inner = clean;
 }
 
-static void makeTxId(char *out, size_t outSize) {
-  snprintf(out, outSize, "%s-%lu", macId, (unsigned long)txSeq);
-  txSeq += 1;
-  prefs.putUInt("txSeq", txSeq);
+static uint32_t tokenForSequence(uint32_t sequence) {
+  return (uint32_t)UNIT_ID * 100000UL + sequence;
 }
 
-static int queueCount() {
-  if (!LittleFS.exists("/queue.json")) {
+static bool tokenLogHas(uint32_t token) {
+  if (!LittleFS.exists("/tokenlog.json")) {
+    return false;
+  }
+  File f = LittleFS.open("/tokenlog.json", "r");
+  if (!f) {
+    return false;
+  }
+  char needle[40];
+  snprintf(needle, sizeof(needle), "\"token\":%lu", (unsigned long)token);
+  bool found = false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    if (line.indexOf(needle) >= 0) {
+      found = true;
+      break;
+    }
+  }
+  f.close();
+  return found;
+}
+
+static int tokenLogCount() {
+  if (!LittleFS.exists("/tokenlog.json")) {
     return 0;
   }
-  File f = LittleFS.open("/queue.json", "r");
+  File f = LittleFS.open("/tokenlog.json", "r");
   if (!f) {
     return 0;
   }
@@ -298,70 +331,84 @@ static int queueCount() {
   return n;
 }
 
-static bool queueHasTx(const char *txId) {
-  if (!LittleFS.exists("/queue.json")) {
-    return false;
+static void rewriteTokenLog(const String &kept) {
+  File out = LittleFS.open("/tokenlog.json", "w");
+  if (!out) {
+    return;
   }
-  File f = LittleFS.open("/queue.json", "r");
-  if (!f) {
-    return false;
-  }
-  const String needle = String("\"tx_id\":\"") + txId + "\"";
-  bool found = false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    if (line.indexOf(needle) >= 0) {
-      found = true;
-      break;
+  out.print(kept);
+  out.close();
+}
+
+static void appendTokenLogLine(const String &line) {
+  String kept;
+  int n = 0;
+  if (LittleFS.exists("/tokenlog.json")) {
+    File in = LittleFS.open("/tokenlog.json", "r");
+    if (in) {
+      while (in.available()) {
+        String row = in.readStringUntil('\n');
+        row.trim();
+        if (row.length() > 8) {
+          n++;
+          kept += row;
+          kept += '\n';
+        }
+      }
+      in.close();
     }
   }
-  f.close();
-  return found;
+  while (n >= TOKEN_LOG_CAP) {
+    const int nl = kept.indexOf('\n');
+    if (nl < 0) {
+      kept = "";
+      n = 0;
+      break;
+    }
+    kept = kept.substring(nl + 1);
+    n--;
+  }
+  kept += line;
+  kept += '\n';
+  rewriteTokenLog(kept);
 }
 
-static void appendQueueLine(const String &line) {
-  File f = LittleFS.open("/queue.json", "a");
-  if (!f) {
+static void enqueueTokenSale() {
+  const uint32_t token = tokenForSequence(nextSequence);
+  if (tokenLogHas(token)) {
+    snprintf(lastTxId, sizeof(lastTxId), "%lu", (unsigned long)token);
     return;
   }
-  f.println(line);
-  f.close();
-}
-
-static void enqueueSale(const char *kind, const char *txId) {
-  if (queueHasTx(txId)) {
-    return;
-  }
-  if (queueCount() >= QUEUE_CAP) {
-    return;
-  }
+  nextSequence += 1;
+  prefs.putUInt("nextSeq", nextSequence);
   char amt[24], lit[24], rateBuf[24], meter[24];
   formatHundredths(amt, sizeof(amt), amountCents);
-  formatHundredths(lit, sizeof(lit), volumeCents);
+  formatHundredths(lit, sizeof(lit), lastPumpingVolumeCents > 0
+                                         ? lastPumpingVolumeCents
+                                         : volumeCents);
   formatHundredths(rateBuf, sizeof(rateBuf), rateCents);
   formatHundredths(meter, sizeof(meter), meterCents);
+  const char *stamp = appClockIso[0] ? appClockIso : "";
   char line[512];
   snprintf(line, sizeof(line),
-           "{\"cmd\":\"QUEUE_REPLAY\",\"tx_id\":\"%s\",\"status\":\"%s\","
-           "\"kind\":\"%s\",\"unit\":%d,\"amount\":%s,\"liters\":%s,"
-           "\"rate\":%s,\"meter\":%s,\"amount_cents\":%ld,\"liter_cents\":%ld,"
-           "\"rate_cents\":%ld,\"meter_cents\":%ld,\"product\":\"%s\",\"created_at\":%lu}",
-           txId, kind, kind, UNIT_ID, amt, lit, rateBuf, meter,
-           amountCents, volumeCents, rateCents, meterCents, productLabel,
-           (unsigned long)millis());
-  appendQueueLine(String(line));
+           "{\"token\":%lu,\"unit\":%d,\"at\":\"%s\",\"amount\":%s,"
+           "\"liters\":%s,\"rate\":%s,\"meter\":%s,\"synced\":false}",
+           (unsigned long)token, UNIT_ID, stamp, amt, lit, rateBuf, meter);
+  appendTokenLogLine(String(line));
+  snprintf(lastTxId, sizeof(lastTxId), "%lu", (unsigned long)token);
 }
 
-static void ackTx(const char *txId) {
-  if (!LittleFS.exists("/queue.json")) {
+static void ackToken(uint32_t token) {
+  if (!LittleFS.exists("/tokenlog.json")) {
     return;
   }
-  File in = LittleFS.open("/queue.json", "r");
+  File in = LittleFS.open("/tokenlog.json", "r");
   if (!in) {
     return;
   }
   String kept;
-  const String needle = String("\"tx_id\":\"") + txId + "\"";
+  char needle[40];
+  snprintf(needle, sizeof(needle), "\"token\":%lu", (unsigned long)token);
   while (in.available()) {
     String line = in.readStringUntil('\n');
     line.trim();
@@ -369,18 +416,50 @@ static void ackTx(const char *txId) {
       continue;
     }
     if (line.indexOf(needle) >= 0) {
-      continue;
+      line.replace("\"synced\":false", "\"synced\":true");
     }
     kept += line;
     kept += '\n';
   }
   in.close();
-  File out = LittleFS.open("/queue.json", "w");
-  if (!out) {
-    return;
+  rewriteTokenLog(kept);
+}
+
+static String buildSyncLogJson() {
+  String body = "{\"cmd\":\"SYNC_LOG\",\"unit\":";
+  body += String(UNIT_ID);
+  body += ",\"rows\":[";
+  bool first = true;
+  if (LittleFS.exists("/tokenlog.json")) {
+    File f = LittleFS.open("/tokenlog.json", "r");
+    if (f) {
+      while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() <= 8) {
+          continue;
+        }
+        if (!first) {
+          body += ",";
+        }
+        first = false;
+        body += line;
+      }
+      f.close();
+    }
   }
-  out.print(kept);
-  out.close();
+  body += "]}";
+  return body;
+}
+
+static void sendSyncLog(uint8_t client) {
+  String json = buildSyncLogJson();
+  webSocket.sendTXT(client, json.c_str());
+}
+
+static void broadcastSyncLog() {
+  String json = buildSyncLogJson();
+  webSocket.broadcastTXT(json.c_str());
 }
 
 static void writeLiveSnapshot() {
@@ -416,16 +495,17 @@ static void recoverLiveSnapshot() {
   }
   String raw = f.readString();
   f.close();
-  LittleFS.remove("/live.json");
   if (raw.indexOf("\"pumping\":true") < 0) {
+    LittleFS.remove("/live.json");
     return;
   }
   haveLive = true;
-  char txId[48];
-  makeTxId(txId, sizeof(txId));
-  strncpy(lastTxId, txId, sizeof(lastTxId) - 1);
-  lastTxId[sizeof(lastTxId) - 1] = '\0';
-  enqueueSale("Incomplete/PowerLost", txId);
+  wasPumping = true;
+  const int litAt = raw.indexOf("\"liter_cents\":");
+  if (litAt >= 0) {
+    lastPumpingVolumeCents = strtol(raw.c_str() + litAt + 14, NULL, 10);
+    volumeCents = lastPumpingVolumeCents;
+  }
 }
 
 static String buildTelemetryJson(const char *cmd, const char *txId) {
@@ -444,7 +524,7 @@ static String buildTelemetryJson(const char *cmd, const char *txId) {
            "\"rate_cents\":%ld,\"meter_cents\":%ld,"
            "\"status\":\"%s\",\"product\":\"%s\"}}",
            UNIT_ID, cmd && cmd[0] ? cmd : "TELEMETRY", txId ? txId : "",
-           (unsigned long)(millis() / 1000), WiFi.RSSI(), queueCount(),
+           (unsigned long)(millis() / 1000), WiFi.RSSI(), tokenLogCount(),
            uartLinkLive() ? "true" : "false",
            keypadLocked ? "true" : "false", amt, lit, rateBuf, meter,
            amountCents, volumeCents, rateCents, meterCents,
@@ -456,25 +536,13 @@ static void broadcastJson(String json) {
   if (wsClients <= 0) {
     return;
   }
-  webSocket.broadcastTXT(json);
+  webSocket.broadcastTXT(json.c_str());
 }
 
-static void replayQueue(uint8_t client) {
-  if (!LittleFS.exists("/queue.json")) {
-    return;
-  }
-  File f = LittleFS.open("/queue.json", "r");
-  if (!f) {
-    return;
-  }
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() > 8) {
-      webSocket.sendTXT(client, line);
-    }
-  }
-  f.close();
+static void sendHello(uint8_t client) {
+  sendSyncLog(client);
+  String hello = buildTelemetryJson("TELEMETRY", lastTxId);
+  webSocket.sendTXT(client, hello.c_str());
 }
 
 static void onZeroHangup() {
@@ -500,13 +568,9 @@ static void onPumpingIdleEdge() {
   }
   saleAwaitingConfirm = true;
   setKeypadLocked(true);
-  char txId[48];
-  makeTxId(txId, sizeof(txId));
-  strncpy(lastTxId, txId, sizeof(lastTxId) - 1);
-  lastTxId[sizeof(lastTxId) - 1] = '\0';
-  enqueueSale("UNSYNCED", txId);
+  enqueueTokenSale();
   clearLiveSnapshot();
-  broadcastJson(buildTelemetryJson("SALE_COMPLETE", txId));
+  broadcastJson(buildTelemetryJson("SALE_COMPLETE", lastTxId));
 }
 
 static bool decodeType33(const String &payload) {
@@ -519,6 +583,9 @@ static bool decodeType33(const String &payload) {
   char status[4];
   javaMid(s, 4, 1, product, sizeof(product));
   javaMid(s, 1, 1, status, sizeof(status));
+  // Link is live: we already have a 33-char frame. Do not leave
+  // esp_to_board_link false just because a field is non-numeric.
+  lastValidFrameMs = millis();
   if (!javaHundredths(s, 5, 8, &amount) || !javaHundredths(s, 13, 8, &liters) ||
       !javaHundredths(s, 21, 5, &rate) || !javaHundredths(s, 26, 8, &meter)) {
     return false;
@@ -600,6 +667,9 @@ static bool decodeType36(const String &payload) {
 
 static void routePayload(String payload) {
   sanitize(payload);
+  // Any complete <...> frame means the FDX UART is talking. LCD decode
+  // can still fail (spaces stripped, Type-29 vs 30, non-digits).
+  lastValidFrameMs = millis();
   switch (payload.length()) {
     case 33:
       decodeType33(payload);
@@ -613,8 +683,15 @@ static void routePayload(String payload) {
     case 36:
       decodeType36(payload);
       break;
-    default:
+    default: {
+      static uint32_t lastLenLogMs = 0;
+      if (millis() - lastLenLogMs >= 1000) {
+        lastLenLogMs = millis();
+        Serial.printf("uart frame len=%u (need 33/37/30/36)\n",
+                      (unsigned)payload.length());
+      }
       break;
+    }
   }
 }
 
@@ -642,12 +719,17 @@ static void ingestChunk(const char *data, size_t len) {
 }
 
 static void readUart2() {
-  while (Serial2.available() > 0) {
+  size_t got = 0;
+  while (Serial2.available() > 0 && got < UART_BYTES_PER_LOOP) {
+    esp_task_wdt_reset();
     char tmp[256];
     const int n = Serial2.readBytes(tmp, sizeof(tmp));
     if (n <= 0) {
       break;
     }
+    lastUartRxMs = millis();
+    uartRxBytesWindow += (uint32_t)n;
+    got += (size_t)n;
     ingestChunk(tmp, (size_t)n);
   }
 }
@@ -656,22 +738,21 @@ static void handleCommand(const String &raw) {
   lastAppHbMs = millis();
   String t = raw;
   t.trim();
-  if (t.startsWith("<ACK,") && t.endsWith(">")) {
-    String id = t.substring(5, t.length() - 1);
-    id.replace("TX_ID_", "");
-    ackTx(id.c_str());
-    return;
-  }
   if (!t.startsWith("{")) {
     return;
   }
-  const int ackAt = t.indexOf("\"ack_tx_id\"");
-  if (ackAt >= 0) {
-    const int q1 = t.indexOf('"', t.indexOf(':', ackAt) + 1);
-    const int q2 = t.indexOf('"', q1 + 1);
-    if (q1 >= 0 && q2 > q1) {
-      ackTx(t.substring(q1 + 1, q2).c_str());
+  if (t.indexOf("ACK_TOKEN") >= 0 || t.indexOf("\"ack_token\"") >= 0) {
+    const int tokAt = t.indexOf("\"token\"");
+    if (tokAt >= 0) {
+      const int colon = t.indexOf(':', tokAt);
+      if (colon >= 0) {
+        ackToken((uint32_t)strtoul(t.c_str() + colon + 1, NULL, 10));
+      }
     }
+    return;
+  }
+  if (t.indexOf("GET_SYNC_LOG") >= 0) {
+    broadcastSyncLog();
     return;
   }
   if (t.indexOf("APP_HEARTBEAT") >= 0) {
@@ -685,6 +766,42 @@ static void handleCommand(const String &raw) {
     } else if (liveOff) {
       shiftLive = false;
     }
+    const int seqAt = t.indexOf("\"next_sequence\"");
+    if (seqAt >= 0) {
+      const int colon = t.indexOf(':', seqAt);
+      if (colon >= 0) {
+        const uint32_t seq = (uint32_t)strtoul(t.c_str() + colon + 1, NULL, 10);
+        // Never rewind: an offline hang-up already stamped and incremented.
+        if (seq >= 1 && seq > nextSequence) {
+          nextSequence = seq;
+          prefs.putUInt("nextSeq", nextSequence);
+        }
+      }
+    }
+    const int tokAt = t.indexOf("\"next_token\"");
+    if (tokAt >= 0) {
+      const int colon = t.indexOf(':', tokAt);
+      if (colon >= 0) {
+        const uint32_t token = (uint32_t)strtoul(t.c_str() + colon + 1, NULL, 10);
+        const uint32_t seq = token >= ((uint32_t)UNIT_ID * 100000UL)
+                                 ? token - ((uint32_t)UNIT_ID * 100000UL)
+                                 : 0;
+        if (seq >= 1 && seq > nextSequence) {
+          nextSequence = seq;
+          prefs.putUInt("nextSeq", nextSequence);
+        }
+      }
+    }
+    const int atKey = t.indexOf("\"at\"");
+    if (atKey >= 0) {
+      const int q1 = t.indexOf('"', t.indexOf(':', atKey) + 1);
+      const int q2 = q1 >= 0 ? t.indexOf('"', q1 + 1) : -1;
+      if (q1 >= 0 && q2 > q1) {
+        String iso = t.substring(q1 + 1, q2);
+        strncpy(appClockIso, iso.c_str(), sizeof(appClockIso) - 1);
+        appClockIso[sizeof(appClockIso) - 1] = '\0';
+      }
+    }
     applySessionLock();
     return;
   }
@@ -693,6 +810,13 @@ static void handleCommand(const String &raw) {
     saleAwaitingConfirm = false;
     operatorLock = false;
     shiftLive = true;
+    const int tokAt = t.indexOf("\"token\"");
+    if (tokAt >= 0) {
+      const int colon = t.indexOf(':', tokAt);
+      if (colon >= 0) {
+        ackToken((uint32_t)strtoul(t.c_str() + colon + 1, NULL, 10));
+      }
+    }
     setKeypadLocked(false);
     applySessionLock();
     broadcastJson(buildTelemetryJson("TELEMETRY", lastTxId));
@@ -718,9 +842,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       wsClients += 1;
       lastAppHbMs = millis();
       applySessionLock();
-      replayQueue(num);
-      String hello = buildTelemetryJson("TELEMETRY", lastTxId);
-      webSocket.sendTXT(num, hello);
+      sendHello(num);
       break;
     }
     case WStype_DISCONNECTED:
@@ -757,8 +879,29 @@ static void fillMacId() {
   macId[sizeof(macId) - 1] = '\0';
 }
 
+static void startWebSocket() {
+  if (wsListening) {
+    return;
+  }
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+  wsListening = true;
+  Serial.printf("[WS] Server started on Port 81  %s  Unit-%d_ESP32\n",
+                WiFi.localIP().toString().c_str(), UNIT_ID);
+}
+
+static void stopWebSocket() {
+  if (!wsListening) {
+    wsClients = 0;
+    return;
+  }
+  webSocket.close();
+  wsListening = false;
+  wsClients = 0;
+}
+
 static void startWifi() {
-  WiFi.persistent(false);
+  WiFi.persistent(true);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
@@ -770,22 +913,33 @@ static void startWifi() {
   IPAddress mask(255, 255, 255, 0);
   WiFi.config(ip, gw, mask);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+  esp_wifi_set_max_tx_power(68);
   lastWifiTryMs = millis();
 }
 
 static void ensureWifi() {
-  if (WiFi.status() == WL_CONNECTED) {
+  const wl_status_t st = WiFi.status();
+  if (st == WL_CONNECTED) {
     lastWifiOkMs = millis();
+    fillMacId();
+    startWebSocket();
     return;
   }
+  stopWebSocket();
   const uint32_t now = millis();
+  // Still associating — do not kick STA. If it hangs, begin() again below.
+  if (st == WL_IDLE_STATUS && (now - lastWifiTryMs) < WIFI_RETRY_MS) {
+    return;
+  }
   if (now - lastWifiTryMs < WIFI_RETRY_MS) {
     return;
   }
   lastWifiTryMs = now;
+  Serial.printf("[wifi] status=%d join %s\n", (int)st, WIFI_SSID);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
   WiFi.disconnect(false, false);
-  delay(50);
-  startWifi();
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
 void setup() {
@@ -805,16 +959,15 @@ void setup() {
   beginUart2();
   LittleFS.begin(true);
   prefs.begin("fp", false);
-  txSeq = prefs.getUInt("txSeq", 1);
-  if (txSeq < 1) {
-    txSeq = 1;
+  nextSequence = prefs.getUInt("nextSeq", 1);
+  if (nextSequence < 1) {
+    nextSequence = 1;
   }
   recoverLiveSnapshot();
 
   startWifi();
   fillMacId();
-  webSocket.begin();
-  webSocket.onEvent(webSocketEvent);
+  Serial.println("Waiting for Tenda IP before WebSocket :81");
 
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   {
@@ -833,9 +986,14 @@ void setup() {
 }
 
 void loop() {
+
+
+
   esp_task_wdt_reset();
   readUart2();
-  webSocket.loop();
+  if (wsListening) {
+    webSocket.loop();
+  }
   ensureWifi();
   applySessionLock();
   serviceBuzzer();
@@ -854,7 +1012,11 @@ void loop() {
       fillMacId();
     }
     broadcastJson(buildTelemetryJson("HEARTBEAT", lastTxId));
-    Serial.printf("relay %s gpio4=%s\n", lockReason(),
-                  digitalRead(RELAY_PIN) ? "HIGH" : "LOW");
+    const uint32_t rxThisSec = uartRxBytesWindow;
+    uartRxBytesWindow = 0;
+    Serial.printf("relay %s gpio4=%s uart=%s rx/s=%u\n", lockReason(),
+                  digitalRead(RELAY_PIN) ? "HIGH" : "LOW",
+                  uartLinkLive() ? "FDX" : "STALL",
+                  (unsigned)rxThisSec);
   }
 }

@@ -7,7 +7,9 @@ import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../core/widgets/segment_lcd.dart';
 import '../../../../features/shift/domain/shift_models.dart';
 import '../../../../features/shift/presentation/shift_providers.dart';
+import '../../../../features/access/domain/access_policy.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
+import '../../../../features/station/presentation/station_providers.dart';
 import '../../../../utils/fuel_formatter.dart';
 import 'confirm_payment_dialog.dart';
 import 'fuel_nozzle_graphic.dart';
@@ -20,6 +22,8 @@ class DispenserUnitData {
     required this.name,
     required this.fuelType,
     required this.online,
+    required this.espConnected,
+    required this.fdxBoardLinked,
     required this.runState,
     required this.rupees,
     required this.liters,
@@ -34,14 +38,17 @@ class DispenserUnitData {
 
   factory DispenserUnitData.fromBay(
     DispenserBay bay, {
-    required bool linkOnline,
+    required bool espConnected,
+    required bool fdxBoardLinked,
   }) {
     return DispenserUnitData(
       unitId: bay.unitId,
       unitNumber: bay.unitId.toString().padLeft(2, '0'),
       name: bay.name,
       fuelType: bay.fuelType,
-      online: linkOnline,
+      online: espConnected && fdxBoardLinked,
+      espConnected: espConnected,
+      fdxBoardLinked: fdxBoardLinked,
       runState: bay.status,
       rupees: bay.status == DispenserRunState.litersPreset
           ? ''
@@ -68,6 +75,8 @@ class DispenserUnitData {
   final String name;
   final String fuelType;
   final bool online;
+  final bool espConnected;
+  final bool fdxBoardLinked;
   final DispenserRunState runState;
   final String rupees;
   final String liters;
@@ -81,10 +90,11 @@ class DispenserUnitData {
 
   bool get isDispensing => runState == DispenserRunState.dispensing;
   bool get isOffline => !online;
+  bool get isEspDisconnected => !espConnected;
+  bool get isFdxDisconnected => espConnected && !fdxBoardLinked;
   bool get isCycleComplete => runState == DispenserRunState.cycleComplete;
   bool get canConfirmPayment =>
-      isCycleComplete &&
-      volumeLiters >= DispenserBay.zeroVolumeEpsilon;
+      isCycleComplete && volumeLiters >= DispenserBay.zeroVolumeEpsilon;
 }
 
 /// One dispenser card. Instantiate once per unit with different [data].
@@ -109,7 +119,7 @@ class DispenserUnitsWidget extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final ColorScheme colors = Theme.of(context).colorScheme;
-    final bool offline = data.isOffline;
+    final bool espDown = data.isEspDisconnected;
     final bool dispensing = data.isDispensing;
     final String? notice = abortNotice;
 
@@ -137,7 +147,7 @@ class DispenserUnitsWidget extends ConsumerWidget {
       runFg = tokens.good;
       runBg = tokens.good.withValues(alpha: 0.12);
       runBorder = tokens.good.withValues(alpha: 0.35);
-    } else if (offline && data.runState == DispenserRunState.offline) {
+    } else if (espDown) {
       runLabel = 'Offline';
       runFg = tokens.inkMuted;
       runBg = tokens.line.withValues(alpha: 0.55);
@@ -175,7 +185,7 @@ class DispenserUnitsWidget extends ConsumerWidget {
               : tokens.cardShadow,
         ),
         child: Opacity(
-          opacity: offline ? 0.9 : 1,
+          opacity: espDown ? 0.9 : 1,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -190,7 +200,7 @@ class DispenserUnitsWidget extends ConsumerWidget {
                   children: <Widget>[
                     const SizedBox(height: 10),
                     _LcdWithNozzle(
-                      data: data,
+                      unitId: data.unitId,
                       runLabel: runLabel,
                       runFg: runFg,
                       runBg: runBg,
@@ -213,9 +223,15 @@ class DispenserUnitsWidget extends ConsumerWidget {
                       ),
               ),
               const SizedBox(height: 8),
-              ConfirmPaymentSheet(
-                key: ValueKey<int>(data.unitId),
-                unitId: data.unitId,
+              IgnorePointer(
+                ignoring:
+                    shouldEnforceStationGuards &&
+                    espDown &&
+                    !data.isCycleComplete,
+                child: ConfirmPaymentSheet(
+                  key: ValueKey<int>(data.unitId),
+                  unitId: data.unitId,
+                ),
               ),
             ],
           ),
@@ -447,7 +463,7 @@ class _AbortBanner extends StatelessWidget {
   }
 }
 
-class _Header extends StatelessWidget {
+class _Header extends ConsumerWidget {
   const _Header({required this.data, required this.tokens, this.onSelect});
 
   final DispenserUnitData data;
@@ -455,13 +471,22 @@ class _Header extends StatelessWidget {
   final VoidCallback? onSelect;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final bool offline = data.isOffline;
+    final int nextToken = tokenIdFor(
+      unitId: data.unitId,
+      sequence: ref.watch(
+        stationControllerProvider.select(
+          (StationState station) => station.sequences[data.unitId] ?? 1,
+        ),
+      ),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Expanded(
               child: InkWell(
@@ -521,15 +546,35 @@ class _Header extends StatelessWidget {
                 ),
               ),
             ),
-            DsStatusPill(
-              label: offline ? 'Offline' : 'Online',
-              foreground: offline ? tokens.inkMuted : tokens.good,
-              background: offline
-                  ? tokens.line.withValues(alpha: 0.7)
-                  : tokens.good.withValues(alpha: 0.12),
-              border: offline
-                  ? tokens.line
-                  : tokens.good.withValues(alpha: 0.3),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: <Widget>[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    _BayLinkIcons(unitId: data.unitId),
+                    const SizedBox(width: 6),
+                    DsStatusPill(
+                      label: offline ? 'Offline' : 'Online',
+                      foreground: offline ? tokens.inkMuted : tokens.good,
+                      background: offline
+                          ? tokens.line.withValues(alpha: 0.7)
+                          : tokens.good.withValues(alpha: 0.12),
+                      border: offline
+                          ? tokens.line
+                          : tokens.good.withValues(alpha: 0.3),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                DsStatusPill(
+                  label: 'Token#${formatTokenNo(nextToken)}',
+                  foreground: tokens.good,
+                  background: tokens.good.withValues(alpha: 0.18),
+                  border: tokens.good.withValues(alpha: 0.35),
+                  dot: false,
+                ),
+              ],
             ),
           ],
         ),
@@ -540,23 +585,284 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _LcdWithNozzle extends StatelessWidget {
+class _BayLinkIcons extends ConsumerWidget {
+  const _BayLinkIcons({required this.unitId});
+
+  final int unitId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        _LinkIconButton(
+          tooltip: 'Rescan Wi-Fi',
+          icon: Icons.wifi_find_outlined,
+          tokens: tokens,
+          onPressed: () {
+            ref.read(stationControllerProvider.notifier).rescanBayWifi(unitId);
+          },
+        ),
+        const SizedBox(width: 2),
+        _LinkIconButton(
+          tooltip: 'Connect',
+          icon: Icons.link,
+          tokens: tokens,
+          onPressed: () {
+            ref.read(stationControllerProvider.notifier).connectUnit(unitId);
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _LinkIconButton extends StatelessWidget {
+  const _LinkIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.tokens,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final DispensrTokens tokens;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: tokens.canvas,
+        shape: CircleBorder(side: BorderSide(color: tokens.line)),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 26,
+            height: 26,
+            child: Icon(icon, size: 14, color: tokens.inkMuted),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TestModeSwitch extends ConsumerWidget {
+  const _TestModeSwitch({required this.unitId, required this.tokens});
+
+  final int unitId;
+  final DispensrTokens tokens;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DispenserBay bay = ref.watch(
+      stationControllerProvider.select(
+        (StationState station) => station.bay(unitId),
+      ),
+    );
+    final bool on = bay.isTestRun;
+    final bool locked = bay.isDispensing;
+
+    return Tooltip(
+      message: on
+          ? 'Test fill: meters saved, stock and KPIs unchanged'
+          : 'Arm a test fill (not a sale)',
+      child: InkWell(
+        onTap: locked && on
+            ? null
+            : () {
+                ref
+                    .read(stationControllerProvider.notifier)
+                    .setUnitTestMode(unitId, enabled: !on);
+              },
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+          decoration: BoxDecoration(
+            color: on ? tokens.warn.withValues(alpha: 0.16) : tokens.canvas,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: on ? tokens.warn.withValues(alpha: 0.45) : tokens.line,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                'Test',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 9,
+                  color: on ? tokens.warn : tokens.inkMuted,
+                ),
+              ),
+              const SizedBox(width: 2),
+              SizedBox(
+                width: 28,
+                height: 16,
+                child: FittedBox(
+                  child: Switch(
+                    value: on,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    activeThumbColor: tokens.warn,
+                    onChanged: locked && on
+                        ? null
+                        : (bool enabled) {
+                            ref
+                                .read(stationControllerProvider.notifier)
+                                .setUnitTestMode(unitId, enabled: enabled);
+                          },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LcdWithNozzle extends ConsumerStatefulWidget {
   const _LcdWithNozzle({
-    required this.data,
+    required this.unitId,
     required this.runLabel,
     required this.runFg,
     required this.runBg,
     required this.runBorder,
   });
 
-  final DispenserUnitData data;
+  final int unitId;
   final String runLabel;
   final Color runFg;
   final Color runBg;
   final Color runBorder;
 
   @override
+  ConsumerState<_LcdWithNozzle> createState() => _LcdWithNozzleState();
+}
+
+class _LcdWithNozzleState extends ConsumerState<_LcdWithNozzle>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _roll;
+  double _fromAmount = 0;
+  double _toAmount = 0;
+  double _fromLiters = 0;
+  double _toLiters = 0;
+  DateTime _lastSampleAt = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _roll = AnimationController(vsync: this);
+    final LiveBayLcd live = ref.read(liveBayLcdProvider(widget.unitId));
+    _fromAmount = _toAmount = live.amountPkr;
+    _fromLiters = _toLiters = live.volumeLiters;
+  }
+
+  @override
+  void dispose() {
+    _roll.dispose();
+    super.dispose();
+  }
+
+  double _shown(double from, double to) {
+    if (!_roll.isAnimating) {
+      return to;
+    }
+    return from + (to - from) * _roll.value;
+  }
+
+  void _retarget(LiveBayLcd next) {
+    if (next.status == DispenserRunState.rupeesPreset ||
+        next.status == DispenserRunState.litersPreset) {
+      _fromAmount = _toAmount = next.amountPkr;
+      _fromLiters = _toLiters = next.volumeLiters;
+      _roll.stop();
+      return;
+    }
+    final double nowAmount = _shown(_fromAmount, _toAmount);
+    final double nowLiters = _shown(_fromLiters, _toLiters);
+    if (nowAmount == next.amountPkr && nowLiters == next.volumeLiters) {
+      return;
+    }
+    final DateTime now = DateTime.now();
+    int ms = now.difference(_lastSampleAt).inMilliseconds;
+    if (ms < 80) {
+      ms = 80;
+    } else if (ms > 150) {
+      ms = 150;
+    }
+    _lastSampleAt = now;
+    _fromAmount = nowAmount;
+    _toAmount = next.amountPkr;
+    _fromLiters = nowLiters;
+    _toLiters = next.volumeLiters;
+    _roll
+      ..duration = Duration(milliseconds: ms)
+      ..forward(from: 0);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final LiveBayLcd live = ref.watch(liveBayLcdProvider(widget.unitId));
+    ref.listen<LiveBayLcd>(liveBayLcdProvider(widget.unitId), (
+      LiveBayLcd? previous,
+      LiveBayLcd next,
+    ) {
+      if (previous == null ||
+          previous.amountPkr != next.amountPkr ||
+          previous.volumeLiters != next.volumeLiters) {
+        _retarget(next);
+      }
+    });
+    final String rateText = FuelFormatter.lcdAverageRate(live.rate);
+    final String meterText = FuelFormatter.lcdVolume(live.meterCount);
+    final bool lcdOffline = live.offline;
+    final bool dispensing = live.status == DispenserRunState.dispensing;
+
+    return AnimatedBuilder(
+      animation: _roll,
+      builder: (BuildContext context, Widget? child) {
+        final double amountNow = _shown(_fromAmount, _toAmount);
+        final double litersNow = _shown(_fromLiters, _toLiters);
+        final String rupeesNow = live.status == DispenserRunState.litersPreset
+            ? ''
+            : live.status == DispenserRunState.rupeesPreset
+            ? '${live.amountPkr.truncate()}'
+            : FuelFormatter.lcdDispenserAmount(amountNow);
+        final String litersNowText =
+            live.status == DispenserRunState.rupeesPreset
+            ? ''
+            : live.status == DispenserRunState.litersPreset
+            ? '${live.volumeLiters.truncate()}'
+            : FuelFormatter.lcdVolume(litersNow);
+        return _lcdBody(
+          rupees: rupeesNow,
+          liters: litersNowText,
+          rate: rateText,
+          meter: meterText,
+          lcdOffline: lcdOffline,
+          dispensing: dispensing,
+        );
+      },
+    );
+  }
+
+  Widget _lcdBody({
+    required String rupees,
+    required String liters,
+    required String rate,
+    required String meter,
+    required bool lcdOffline,
+    required bool dispensing,
+  }) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
@@ -571,11 +877,11 @@ class _LcdWithNozzle extends StatelessWidget {
                     right: FuelNozzleGraphic.width - 10,
                   ),
                   child: SegmentLcd.dispenser(
-                    offline: data.isOffline && !data.isCycleComplete,
+                    offline: lcdOffline,
                     lines: <SegmentLcdLine>[
-                      SegmentLcdLine(label: 'AMOUNT', value: data.rupees),
-                      SegmentLcdLine(label: 'LITERS', value: data.liters),
-                      SegmentLcdLine(label: 'RATE', value: data.ratePerLitre),
+                      SegmentLcdLine(label: 'AMOUNT', value: rupees),
+                      SegmentLcdLine(label: 'LITERS', value: liters),
+                      SegmentLcdLine(label: 'RATE', value: rate),
                     ],
                   ),
                 ),
@@ -586,8 +892,8 @@ class _LcdWithNozzle extends StatelessWidget {
                 height: FuelNozzleGraphic.height,
                 width: FuelNozzleGraphic.width,
                 child: FuelNozzleGraphic(
-                  isDispensing: data.isDispensing,
-                  isOffline: data.isOffline,
+                  isDispensing: dispensing,
+                  isOffline: lcdOffline,
                 ),
               ),
             ],
@@ -599,20 +905,32 @@ class _LcdWithNozzle extends StatelessWidget {
           child: SizedBox(
             height: 42,
             child: SegmentLcd.meter(
-              offline: data.isOffline && !data.isCycleComplete,
+              offline: lcdOffline,
               lines: <SegmentLcdLine>[
-                SegmentLcdLine(label: 'METER', value: data.totalMeter),
+                SegmentLcdLine(label: 'METER', value: meter),
               ],
             ),
           ),
         ),
         const SizedBox(height: 8),
-        DsStatusPill(
-          label: runLabel,
-          foreground: runFg,
-          background: runBg,
-          border: runBorder,
-          dot: true,
+        Padding(
+          padding: const EdgeInsets.only(right: FuelNozzleGraphic.width - 10),
+          child: Row(
+            children: <Widget>[
+              DsStatusPill(
+                label: widget.runLabel,
+                foreground: widget.runFg,
+                background: widget.runBg,
+                border: widget.runBorder,
+                dot: true,
+              ),
+              const Spacer(),
+              _TestModeSwitch(
+                unitId: widget.unitId,
+                tokens: DispensrTokens.of(context),
+              ),
+            ],
+          ),
         ),
       ],
     );

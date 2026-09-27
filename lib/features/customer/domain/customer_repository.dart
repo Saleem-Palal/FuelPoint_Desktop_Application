@@ -32,4 +32,13 @@ abstract class UnifiedUdhaarRepository {
     String notes = '',
     DateTime? timestamp,
   });
+
+  Future<UnifiedUdhaarRow> insertOpeningBalance({
+    required String customerId,
+    required String customerName,
+    required double amountPkr,
+    required String shiftId,
+    String notes = '',
+    DateTime? timestamp,
+  });
 }

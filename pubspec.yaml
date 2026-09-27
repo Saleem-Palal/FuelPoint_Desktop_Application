@@ -1,7 +1,7 @@
 name: fuel_dispenser
 description: "FuelPoint station control by RetroSoft."
 publish_to: 'none'
-version: 1.0.0+7
+version: 1.0.0+13
 
 environment:
   sdk: ^3.11.3
@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_riverpod: ^2.6.1
+  characters: ^1.4.0
   intl: ^0.20.2
   ffi: ^2.1.3
   network_info_plus: ^8.2.1
@@ -42,7 +43,7 @@ msix_config:
   display_name: "FuelPoint Station OS"
   publisher_display_name: "RetroSoft"
   identity_name: "com.fuelpoint.stationos"
-  msix_version: "1.0.0.7"
+  msix_version: "1.0.0.13"
   logo_path: "assets/icons/app_logo.png"
   trim_logo: false
   capabilities: "internetClient, privateNetworkClientServer"

@@ -64,7 +64,9 @@ class SqliteShiftRepository {
   }
 
   Future<List<HelperSaleRecord>> listSales() async {
-    final List<Map<String, Object?>> rows = await _db.queryAllSales();
+    final List<Map<String, Object?>> rows = await _db.queryAllSales(
+      includeTest: true,
+    );
     return rows.map(_saleFromRow).toList();
   }
 
@@ -77,6 +79,7 @@ class SqliteShiftRepository {
       helperId: helperId,
       fromInclusive: fromInclusive,
       toInclusive: toInclusive,
+      includeTest: true,
     );
     return rows.map(_saleFromRow).toList();
   }
@@ -110,6 +113,17 @@ class SqliteShiftRepository {
     final String trimmed = name.trim();
     await _db.upsertHelper(helperId: id, helperName: trimmed);
     return HelperProfile(id: id, name: trimmed);
+  }
+
+  Future<void> persistHelperAssignments(List<HelperProfile> helpers) async {
+    await _db.persistHelperUnitAssignments(
+      helperIdToUnitsJson: <String, String>{
+        for (final HelperProfile helper in helpers)
+          helper.id: HelperUnitAssignmentSnapshot.encode(
+            helper.assignedUnitIds,
+          ),
+      },
+    );
   }
 
   Future<ManagerShiftRecord> insertOpenShift({
@@ -268,6 +282,9 @@ class SqliteShiftRepository {
     return HelperProfile(
       id: '${row['Helper_ID'] ?? ''}',
       name: (row['Helper_name'] as String?)?.trim() ?? '',
+      assignedUnitIds: HelperUnitAssignmentSnapshot.decode(
+        row['ASSIGNED_UNITS'] as String?,
+      ),
     );
   }
 
@@ -332,6 +349,20 @@ class SqliteShiftRepository {
       payment: paymentMethodFromStorage(row['PAYMENT_METHOD'] as String?),
       cashierName: managerName,
       managerId: managerId,
+      shiftId: _shiftIdFromRow(row['SHIFT_ID']),
+      cashAmount: _asDouble(row['CASH_AMOUNT']),
+      accountAmount: _asDouble(row['ACCOUNT_AMOUNT']),
+      pendingAccountAmount: _asDouble(row['PENDING_ACCOUNT']),
+      openingMeter: _asDouble(row['OPENING_READING']),
+      closingMeter: _asDouble(row['CLOSING_READING']),
+      customerName: (row['CUSTOMER_NAME'] as String?)?.trim() ?? '',
+      vehicleNo: (row['VEHICLE_NO'] as String?)?.trim() ?? '',
+      managerStaffId: '${row['MANAGER_ID'] ?? ''}'.trim(),
+      helperStaffId: '${row['HELPER_ID'] ?? ''}'.trim(),
+      actions: '${row['ACTIONS'] ?? ''}'.trim(),
+      espTxId: '${row['ESP_TX_ID'] ?? ''}'.trim(),
+      edited: _asInt(row['EDITED']) != 0,
+      isTest: _asInt(row['IS_TEST']) != 0,
     );
   }
 
@@ -353,17 +384,7 @@ class SqliteShiftRepository {
       )) {
         continue;
       }
-      return HelperSaleRecord(
-        tokenNo: sale.tokenNo,
-        timestamp: sale.timestamp,
-        helperId: sale.helperId,
-        helperName: sale.helperName,
-        unitId: sale.unitId,
-        fuelType: sale.fuelType,
-        volumeLiters: sale.volumeLiters,
-        rate: sale.rate,
-        amountPkr: sale.amountPkr,
-        payment: sale.payment,
+      return sale.copyWith(
         shiftId: shift.shiftId,
         cashierName: sale.cashierName.isEmpty
             ? shift.managerName
@@ -394,5 +415,18 @@ class SqliteShiftRepository {
       return value.round();
     }
     return 0;
+  }
+
+  static String _shiftIdFromRow(Object? raw) {
+    if (raw is int && raw > 0) {
+      return formatShiftId(raw);
+    }
+    if (raw is num) {
+      final int pk = raw.round();
+      if (pk > 0) {
+        return formatShiftId(pk);
+      }
+    }
+    return '';
   }
 }

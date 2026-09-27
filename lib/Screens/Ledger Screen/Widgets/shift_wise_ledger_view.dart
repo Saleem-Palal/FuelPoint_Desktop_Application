@@ -3,15 +3,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/money_format.dart';
 import '../../../features/station/domain/shift_ledger_models.dart';
+import '../../../features/station/domain/shift_transaction_audit.dart';
 import '../../../features/station/presentation/ledger_providers.dart';
 
 /// Identity row for the shared sales table when Shift-Wise is selected.
 class ShiftLedgerTableHeader extends StatelessWidget {
-  const ShiftLedgerTableHeader({super.key, required this.summary});
+  const ShiftLedgerTableHeader({
+    super.key,
+    required this.summary,
+    this.unitId,
+    this.saleLiters = 0,
+    this.sales = const <SaleTransaction>[],
+  });
 
   final ShiftLedgerSummary? summary;
+  final int? unitId;
+  final double saleLiters;
+  final List<SaleTransaction> sales;
 
   @override
   Widget build(BuildContext context) {
@@ -74,6 +85,13 @@ class ShiftLedgerTableHeader extends StatelessWidget {
                     ? '—'
                     : formatDateTime(summary.endTime!)),
         ),
+        if (unitId != null)
+          _ShiftVolumeLine(
+            summary: summary,
+            unitId: unitId!,
+            saleLiters: saleLiters,
+            sales: sales,
+          ),
       ],
     );
   }
@@ -177,10 +195,17 @@ class _PagerArrow extends StatelessWidget {
 }
 
 class _MetaLine extends StatelessWidget {
-  const _MetaLine({required this.label, required this.value});
+  const _MetaLine({
+    required this.label,
+    required this.value,
+    this.valueColor,
+    this.labelColor,
+  });
 
   final String label;
   final String value;
+  final Color? valueColor;
+  final Color? labelColor;
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +220,7 @@ class _MetaLine extends StatelessWidget {
             fontWeight: FontWeight.w700,
             fontSize: 10,
             letterSpacing: 0.6,
-            color: tokens.inkMuted,
+            color: labelColor ?? tokens.inkMuted,
           ),
         ),
         Text(
@@ -204,8 +229,104 @@ class _MetaLine extends StatelessWidget {
             fontFamily: 'Roboto',
             fontWeight: FontWeight.w500,
             fontSize: 12,
-            color: tokens.ink,
+            color: valueColor ?? tokens.ink,
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ShiftVolumeLine extends StatelessWidget {
+  const _ShiftVolumeLine({
+    required this.summary,
+    required this.unitId,
+    required this.saleLiters,
+    required this.sales,
+  });
+
+  final ShiftLedgerSummary summary;
+  final int unitId;
+  final double saleLiters;
+  final List<SaleTransaction> sales;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final double? opening = summary.openingMeters[unitId];
+    final double? closing = resolvedShiftClosingMeter(
+      summary: summary,
+      unitId: unitId,
+      sales: sales,
+    );
+    final bool live = summary.isLive;
+    final String closingLabel = closing == null
+        ? '—'
+        : formatMeterReading(closing);
+    final String openingLabel = opening == null
+        ? '—'
+        : formatMeterReading(opening);
+    final double? shiftVolume = shiftVolumeLitersFor(
+      summary: summary,
+      unitId: unitId,
+      closingMeter: closing,
+    );
+    double testLiters = 0;
+    for (final SaleTransaction row in sales) {
+      if (row.isTest) {
+        testLiters += row.volumeLiters;
+      }
+    }
+    final String remark = shiftVolumeRemark(
+      shiftVolume: shiftVolume,
+      saleLiters: saleLiters,
+      testLiters: testLiters,
+    );
+    final bool mismatch = remark == 'Mismatch';
+    final Color volumeColor = mismatch ? tokens.bad : tokens.ink;
+    final String volumeLabel = shiftVolume == null
+        ? '—'
+        : formatTableLiters(shiftVolume);
+
+    return Wrap(
+      spacing: 4,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: <Widget>[
+        _MetaLine(
+          label: 'Closing',
+          value: closingLabel,
+          labelColor: live ? tokens.good : null,
+          valueColor: live ? tokens.good : null,
+        ),
+        Text(
+          '−',
+          style: TextStyle(
+            fontFamily: 'Roboto',
+            fontWeight: FontWeight.w600,
+            fontSize: 12,
+            color: tokens.inkMuted,
+          ),
+        ),
+        _MetaLine(label: 'Opening', value: openingLabel),
+        Text(
+          '=',
+          style: TextStyle(
+            fontFamily: 'Roboto',
+            fontWeight: FontWeight.w600,
+            fontSize: 12,
+            color: tokens.inkMuted,
+          ),
+        ),
+        _MetaLine(
+          label: 'Shift Volume Dispensed',
+          value: volumeLabel,
+          valueColor: volumeColor,
+        ),
+        _MetaLine(
+          label: 'Remarks',
+          value: remark,
+          valueColor: mismatch ? tokens.bad : tokens.good,
         ),
       ],
     );

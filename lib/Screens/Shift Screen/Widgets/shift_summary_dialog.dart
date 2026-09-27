@@ -35,7 +35,13 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
       _busy = true;
     });
     try {
-      await ShiftSummaryExport.instance.printPdf(widget.summary);
+      final file = await ShiftSummaryExport.instance.printPdf(widget.summary);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('PDF saved: ${file.path}')));
     } catch (error) {
       if (!mounted) {
         return;
@@ -207,7 +213,7 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
               children: <Widget>[
                 Expanded(
                   child: DsPillButton(
-                    label: _busy ? 'Working…' : 'Download / Print PDF',
+                    label: _busy ? 'Working…' : 'Generate PDF',
                     icon: Icons.picture_as_pdf_outlined,
                     compact: true,
                     onPressed: _busy ? null : _print,

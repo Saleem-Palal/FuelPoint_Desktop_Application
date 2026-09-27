@@ -48,19 +48,22 @@ String type37Payload({
 }
 
 void main() {
-  test('type-33 maps amount, liters, rate, and meter without mixing fields', () {
-    final String payload = type33Payload();
-    expect(payload.length, 33);
+  test(
+    'type-33 maps amount, liters, rate, and meter without mixing fields',
+    () {
+      final String payload = type33Payload();
+      expect(payload.length, 33);
 
-    final Type33Frame? frame = decodeType33(payload);
-    expect(frame, isNotNull);
-    expect(frame!.totalAmount, closeTo(500.00, 0.001));
-    expect(frame.volumeLiters, closeTo(1.87, 0.001));
-    expect(frame.unitRate, closeTo(267.00, 0.001));
-    expect(frame.totalMeter, closeTo(560695.06, 0.001));
-    expect(frame.product, ProductType.petrol);
-    expect(frame.pumpStatus, PumpStatus.nozzleActive);
-  });
+      final Type33Frame? frame = decodeType33(payload);
+      expect(frame, isNotNull);
+      expect(frame!.totalAmount, closeTo(500.00, 0.001));
+      expect(frame.volumeLiters, closeTo(1.87, 0.001));
+      expect(frame.unitRate, closeTo(267.00, 0.001));
+      expect(frame.totalMeter, closeTo(560695.06, 0.001));
+      expect(frame.product, ProductType.petrol);
+      expect(frame.pumpStatus, PumpStatus.nozzleActive);
+    },
+  );
 
   test('type-33 rupees preset does not divide keypad amount by 100', () {
     final Type33Frame? frame = decodeType33(
@@ -71,15 +74,18 @@ void main() {
     expect(frame.totalAmount, closeTo(100, 0.001));
   });
 
-  test('type-33 liters preset reads keypad liters from amount field, not /100', () {
-    final Type33Frame? frame = decodeType33(
-      type33Payload(status: 'L', amount8: '00000123'),
-    );
-    expect(frame, isNotNull);
-    expect(frame!.pumpStatus, PumpStatus.litersPreset);
-    expect(frame.totalAmount, closeTo(0, 0.001));
-    expect(frame.volumeLiters, closeTo(123, 0.001));
-  });
+  test(
+    'type-33 liters preset reads keypad liters from amount field, not /100',
+    () {
+      final Type33Frame? frame = decodeType33(
+        type33Payload(status: 'L', amount8: '00000123'),
+      );
+      expect(frame, isNotNull);
+      expect(frame!.pumpStatus, PumpStatus.litersPreset);
+      expect(frame.totalAmount, closeTo(0, 0.001));
+      expect(frame.volumeLiters, closeTo(123, 0.001));
+    },
+  );
 
   test('type-33 does not format total meter as a clock', () {
     final IngestOutcome outcome = TelemetryIngestor().ingest(
@@ -134,21 +140,27 @@ void main() {
     expect(outcome.logLines.single, contains('Sale Closed'));
   });
 
-  test('type-33 keeps RTC time from type-37 and does not overwrite the clock', () {
-    final TelemetryIngestor ingestor = TelemetryIngestor();
-    IngestOutcome outcome = ingestor.ingest(
-      _bytes('<${type37Payload(flag: '7')}>'),
-      TelemetrySnapshot.empty,
-    );
-    final String? rtc = outcome.snapshot.timeLabel;
-    expect(rtc, isNotNull);
+  test(
+    'type-33 keeps RTC time from type-37 and does not overwrite the clock',
+    () {
+      final TelemetryIngestor ingestor = TelemetryIngestor();
+      IngestOutcome outcome = ingestor.ingest(
+        _bytes('<${type37Payload(flag: '7')}>'),
+        TelemetrySnapshot.empty,
+      );
+      final String? rtc = outcome.snapshot.timeLabel;
+      expect(rtc, isNotNull);
 
-    outcome = ingestor.ingest(_bytes('<${type33Payload()}>'), outcome.snapshot);
-    expect(outcome.snapshot.timeLabel, rtc);
-    expect(outcome.snapshot.totalMeter, closeTo(560695.06, 0.001));
-    expect(outcome.snapshot.volumeLiters, closeTo(1.87, 0.001));
-    expect(outcome.snapshot.unitRate, closeTo(267.00, 0.001));
-  });
+      outcome = ingestor.ingest(
+        _bytes('<${type33Payload()}>'),
+        outcome.snapshot,
+      );
+      expect(outcome.snapshot.timeLabel, rtc);
+      expect(outcome.snapshot.totalMeter, closeTo(560695.06, 0.001));
+      expect(outcome.snapshot.volumeLiters, closeTo(1.87, 0.001));
+      expect(outcome.snapshot.unitRate, closeTo(267.00, 0.001));
+    },
+  );
 
   test('parseHexBytes accepts spaced hex', () {
     final Uint8List? bytes = parseHexBytes('01 0A ff');

@@ -45,28 +45,31 @@ void main() {
     expect(packet.pendingTxCount, 1);
   });
 
-  test('queue replay is a pending sale and is not auto-acked by the parser', () {
-    final String raw = jsonEncode(<String, Object>{
-      'cmd': 'QUEUE_REPLAY',
-      'tx_id': 'ECC9FFFD1370-4',
-      'unit': 1,
-      'kind': 'Incomplete/PowerLost',
-      'telemetry': <String, Object>{
-        'amount': 500,
-        'liters': 1.87,
-        'rate': 267,
-        'meter': 560695.06,
-      },
-    });
+  test(
+    'queue replay is a pending sale and is not auto-acked by the parser',
+    () {
+      final String raw = jsonEncode(<String, Object>{
+        'cmd': 'QUEUE_REPLAY',
+        'tx_id': 'ECC9FFFD1370-4',
+        'unit': 1,
+        'kind': 'Incomplete/PowerLost',
+        'telemetry': <String, Object>{
+          'amount': 500,
+          'liters': 1.87,
+          'rate': 267,
+          'meter': 560695.06,
+        },
+      });
 
-    final PendingEspSale? sale = PendingEspSale.tryParse(raw);
-    expect(sale, isNotNull);
-    expect(sale!.txId, 'ECC9FFFD1370-4');
-    expect(sale.unitId, 1);
-    expect(sale.isIncomplete, isTrue);
-    expect(sale.volumeLiters, closeTo(1.87, 0.001));
-    expect(sale.meterCount, closeTo(560695.06, 0.001));
-  });
+      final PendingEspSale? sale = PendingEspSale.tryParse(raw);
+      expect(sale, isNotNull);
+      expect(sale!.txId, 'ECC9FFFD1370-4');
+      expect(sale.unitId, 1);
+      expect(sale.isIncomplete, isTrue);
+      expect(sale.volumeLiters, closeTo(1.87, 0.001));
+      expect(sale.meterCount, closeTo(560695.06, 0.001));
+    },
+  );
 
   test('live SALE_COMPLETE is telemetry, not a recovery queue row', () {
     final String raw = jsonEncode(<String, Object>{
@@ -88,39 +91,36 @@ void main() {
     expect(packet.status, DispenserRunState.idle);
   });
 
-  test('NO_SALE cmd is a null hang-up even when idle LCD has last-sale liters', () {
-    final String raw = jsonEncode(<String, Object>{
-      'cmd': 'NO_SALE',
-      'unit': 2,
-      'status_flags': <String, Object>{'keypad_locked': false},
-      'telemetry': <String, Object>{
-        'amount': 100,
-        'liters': 0.30,
-        'rate': 330.95,
-        'meter': 111.18,
-        'status': 'Idle',
-      },
-    });
-    final DispenserTelemetry? packet = parser.tryParse(raw);
-    expect(packet, isNotNull);
-    expect(packet!.isNoSaleCmd, isTrue);
-    expect(packet.volumeLiters, closeTo(0.30, 0.001));
-    expect(packet.keypadLocked, isFalse);
-  });
+  test(
+    'NO_SALE cmd is a null hang-up even when idle LCD has last-sale liters',
+    () {
+      final String raw = jsonEncode(<String, Object>{
+        'cmd': 'NO_SALE',
+        'unit': 2,
+        'status_flags': <String, Object>{'keypad_locked': false},
+        'telemetry': <String, Object>{
+          'amount': 100,
+          'liters': 0.30,
+          'rate': 330.95,
+          'meter': 111.18,
+          'status': 'Idle',
+        },
+      });
+      final DispenserTelemetry? packet = parser.tryParse(raw);
+      expect(packet, isNotNull);
+      expect(packet!.isNoSaleCmd, isTrue);
+      expect(packet.volumeLiters, closeTo(0.30, 0.001));
+      expect(packet.keypadLocked, isFalse);
+    },
+  );
 
   test('null hang-up uses pumping liters, not idle last-sale LCD', () {
-    expect(
-      isNullHangupCycle(lastPumpingLiters: 0, packetLiters: 0.30),
-      isTrue,
-    );
+    expect(isNullHangupCycle(lastPumpingLiters: 0, packetLiters: 0.30), isTrue);
     expect(
       isNullHangupCycle(lastPumpingLiters: 1.87, packetLiters: 1.87),
       isFalse,
     );
-    expect(
-      isNullHangupCycle(lastPumpingLiters: null, packetLiters: 0),
-      isTrue,
-    );
+    expect(isNullHangupCycle(lastPumpingLiters: null, packetLiters: 0), isTrue);
   });
 
   test('seed hosts land on Tenda reserved IPs and port 81', () {

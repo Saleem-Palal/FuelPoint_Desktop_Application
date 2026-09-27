@@ -16,6 +16,7 @@ import '../../features/access/presentation/master_pin_settings_card.dart';
 import '../../features/shift/presentation/shift_providers.dart';
 import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/money_format.dart';
+import '../../features/station/domain/receipt_footer_settings.dart';
 import '../../features/station/presentation/purchase_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
 import '../../providers/managers_provider.dart';
@@ -31,6 +32,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Timer? _metricsClock;
+  final ScrollController _pageScroll = ScrollController();
 
   @override
   void initState() {
@@ -46,6 +48,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   void dispose() {
     _metricsClock?.cancel();
+    _pageScroll.dispose();
     super.dispose();
   }
 
@@ -384,25 +387,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         : constraints.maxHeight * 0.42,
                     child: _AuditCard(settings: settings),
                   );
-                  return SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        const MasterPinSettingsCard(),
-                        const SizedBox(height: 10),
-                        _SaleFloorCard(
-                          settings: settings,
-                          enabled: !settings.busy,
+                  return ScrollConfiguration(
+                    behavior: ScrollConfiguration.of(
+                      context,
+                    ).copyWith(scrollbars: false),
+                    child: Scrollbar(
+                      controller: _pageScroll,
+                      child: SingleChildScrollView(
+                        controller: _pageScroll,
+                        primary: false,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            const MasterPinSettingsCard(),
+                            const SizedBox(height: 10),
+                            _SaleFloorCard(
+                              settings: settings,
+                              enabled: !settings.busy,
+                            ),
+                            const SizedBox(height: 10),
+                            _ReceiptFooterCard(
+                              settings: settings,
+                              enabled: !settings.busy,
+                            ),
+                            const SizedBox(height: 10),
+                            drive,
+                            const SizedBox(height: 10),
+                            sqlite,
+                            const SizedBox(height: 10),
+                            audit,
+                            const SizedBox(height: 10),
+                            const _ReleaseNotesCard(),
+                          ],
                         ),
-                        const SizedBox(height: 10),
-                        drive,
-                        const SizedBox(height: 10),
-                        sqlite,
-                        const SizedBox(height: 10),
-                        audit,
-                        const SizedBox(height: 10),
-                        const _ReleaseNotesCard(),
-                      ],
+                      ),
                     ),
                   );
                 },
@@ -536,7 +554,10 @@ class _ReleaseNotesCard extends StatelessWidget {
       icon: Icons.new_releases_outlined,
       child: const Padding(
         padding: EdgeInsets.fromLTRB(14, 12, 14, 14),
-        child: ReleaseNotesList(dense: true),
+        child: ReleaseNotesList(
+          dense: true,
+          visibleLineCount: ReleaseNotesList.settingsVisibleLines,
+        ),
       ),
     );
   }
@@ -671,6 +692,69 @@ class _SaleFloorCardState extends ConsumerState<_SaleFloorCard> {
                 ),
               ),
             ),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: settings.showReceiptPreview,
+              activeThumbColor: tokens.good,
+              onChanged: widget.enabled
+                  ? (bool value) {
+                      unawaited(
+                        ref
+                            .read(settingsProvider.notifier)
+                            .setShowReceiptPreview(value),
+                      );
+                    }
+                  : null,
+              title: Text(
+                'Show receipt preview',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+              subtitle: Text(
+                'Off by default. When off, Print on a unit sends the slip '
+                'straight to the printer.',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 11,
+                  color: tokens.inkMuted,
+                ),
+              ),
+            ),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: settings.showRecentSaleEdit,
+              activeThumbColor: tokens.good,
+              onChanged: widget.enabled
+                  ? (bool value) {
+                      unawaited(
+                        ref
+                            .read(settingsProvider.notifier)
+                            .setShowRecentSaleEdit(value),
+                      );
+                    }
+                  : null,
+              title: Text(
+                'Show edit on Recent Transactions',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+              subtitle: Text(
+                'Off by default. When on, the Sale screen table can edit a row.',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 11,
+                  color: tokens.inkMuted,
+                ),
+              ),
+            ),
             const SizedBox(height: 4),
             Text(
               'Low stock alert',
@@ -718,6 +802,271 @@ class _SaleFloorCardState extends ConsumerState<_SaleFloorCard> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ReceiptFooterCard extends ConsumerWidget {
+  const _ReceiptFooterCard({required this.settings, required this.enabled});
+
+  final SettingsState settings;
+  final bool enabled;
+
+  Future<void> _openEditor(BuildContext context, WidgetRef ref) async {
+    final ReceiptFooterSettings? next = await showDialog<ReceiptFooterSettings>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return _EditReceiptFooterDialog(initial: settings.receiptFooter);
+      },
+    );
+    if (next == null) {
+      return;
+    }
+    await ref.read(settingsProvider.notifier).setReceiptFooter(next);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final int lineCount = settings.receiptFooter.lines.length;
+    return _SectionCard(
+      title: 'Receipt footer',
+      subtitle: 'Urdu text under the dashed line on every slip.',
+      icon: Icons.receipt_long_outlined,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              lineCount == 0
+                  ? 'No footer lines yet.'
+                  : '$lineCount line${lineCount == 1 ? '' : 's'} · '
+                        'font ${settings.receiptFooter.fontSize.toStringAsFixed(0)} · '
+                        'spacing ${settings.receiptFooter.lineHeight.toStringAsFixed(2)}',
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 11,
+                color: tokens.inkMuted,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: DsPillButton(
+                label: 'Edit receipt',
+                icon: Icons.edit_outlined,
+                compact: true,
+                onPressed: enabled
+                    ? () {
+                        unawaited(_openEditor(context, ref));
+                      }
+                    : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EditReceiptFooterDialog extends StatefulWidget {
+  const _EditReceiptFooterDialog({required this.initial});
+
+  final ReceiptFooterSettings initial;
+
+  @override
+  State<_EditReceiptFooterDialog> createState() =>
+      _EditReceiptFooterDialogState();
+}
+
+class _EditReceiptFooterDialogState extends State<_EditReceiptFooterDialog> {
+  late final TextEditingController _text;
+  late double _fontSize;
+  late double _lineHeight;
+
+  @override
+  void initState() {
+    super.initState();
+    _fontSize = widget.initial.fontSize;
+    _lineHeight = widget.initial.lineHeight;
+    _text = TextEditingController(text: widget.initial.encodedText);
+    _text.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    _text
+      ..removeListener(_onTextChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    setState(() {});
+  }
+
+  ReceiptFooterSettings _draft() {
+    return ReceiptFooterSettings(
+      lines: ReceiptFooterSettings.sanitizeLines(_text.text.split('\n')),
+      fontSize: _fontSize,
+      lineHeight: _lineHeight,
+    );
+  }
+
+  void _reset() {
+    setState(() {
+      _fontSize = ReceiptFooterSettings.defaultFontSize;
+      _lineHeight = ReceiptFooterSettings.defaultLineHeight;
+      _text.text = ReceiptFooterSettings.defaults.encodedText;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final int lineCount = _text.text
+        .split('\n')
+        .where((String line) => line.trim().isNotEmpty)
+        .length;
+    return AlertDialog(
+      backgroundColor: tokens.card,
+      surfaceTintColor: tokens.card,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        side: BorderSide(color: tokens.line),
+      ),
+      title: Text(
+        'Edit receipt footer',
+        style: TextStyle(
+          fontFamily: 'Roboto',
+          fontWeight: FontWeight.w700,
+          fontSize: 16,
+          color: tokens.ink,
+        ),
+      ),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                'The slip grows downward with more lines. '
+                'Each line is capped at ${ReceiptFooterSettings.maxCharsPerLine} '
+                'characters so nothing spills sideways.',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 11,
+                  color: tokens.inkMuted,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _text,
+                minLines: 6,
+                maxLines: null,
+                keyboardType: TextInputType.multiline,
+                textDirection: TextDirection.rtl,
+                textAlign: TextAlign.right,
+                inputFormatters: const <TextInputFormatter>[
+                  ReceiptFooterInputFormatter(),
+                ],
+                style: TextStyle(
+                  fontFamily: 'NotoNastaliqUrdu',
+                  fontSize: _fontSize,
+                  height: _lineHeight,
+                  color: tokens.ink,
+                ),
+                decoration: InputDecoration(
+                  isDense: true,
+                  alignLabelWithHint: true,
+                  labelText: 'Footer text',
+                  helperText:
+                      '$lineCount line${lineCount == 1 ? '' : 's'} · '
+                      '${ReceiptFooterSettings.maxCharsPerLine} characters per line',
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Font size  ${_fontSize.toStringAsFixed(0)}',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+              Slider(
+                value: _fontSize.clamp(
+                  ReceiptFooterSettings.minFontSize,
+                  ReceiptFooterSettings.maxFontSize,
+                ),
+                min: ReceiptFooterSettings.minFontSize,
+                max: ReceiptFooterSettings.maxFontSize,
+                divisions:
+                    (ReceiptFooterSettings.maxFontSize -
+                            ReceiptFooterSettings.minFontSize)
+                        .round(),
+                label: _fontSize.toStringAsFixed(0),
+                onChanged: (double value) {
+                  setState(() {
+                    _fontSize = value;
+                  });
+                },
+              ),
+              Text(
+                'Line spacing  ${_lineHeight.toStringAsFixed(2)}',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+              Slider(
+                value: _lineHeight.clamp(
+                  ReceiptFooterSettings.minLineHeight,
+                  ReceiptFooterSettings.maxLineHeight,
+                ),
+                min: ReceiptFooterSettings.minLineHeight,
+                max: ReceiptFooterSettings.maxLineHeight,
+                divisions: 6,
+                label: _lineHeight.toStringAsFixed(2),
+                onChanged: (double value) {
+                  setState(() {
+                    _lineHeight = value;
+                  });
+                },
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: _reset,
+                  child: const Text('Reset to default footer'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        DsPillButton(
+          label: 'Cancel',
+          variant: DsPillVariant.outline,
+          compact: true,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        DsPillButton(
+          label: 'Save',
+          compact: true,
+          icon: Icons.check,
+          onPressed: () => Navigator.of(context).pop(_draft()),
+        ),
+      ],
     );
   }
 }
@@ -1507,21 +1856,50 @@ class _AuditCard extends ConsumerWidget {
   }
 }
 
-class _TwoAxisScroll extends StatelessWidget {
+class _TwoAxisScroll extends StatefulWidget {
   const _TwoAxisScroll({required this.minWidth, required this.child});
 
   final double minWidth;
   final Widget child;
 
   @override
+  State<_TwoAxisScroll> createState() => _TwoAxisScrollState();
+}
+
+class _TwoAxisScrollState extends State<_TwoAxisScroll> {
+  final ScrollController _vertical = ScrollController();
+  final ScrollController _horizontal = ScrollController();
+
+  @override
+  void dispose() {
+    _vertical.dispose();
+    _horizontal.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scrollbar(
-      child: SingleChildScrollView(
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child: Scrollbar(
+        controller: _vertical,
         child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minWidth: minWidth),
-            child: child,
+          controller: _vertical,
+          primary: false,
+          child: Scrollbar(
+            controller: _horizontal,
+            notificationPredicate: (ScrollNotification notification) {
+              return notification.depth == 0;
+            },
+            child: SingleChildScrollView(
+              controller: _horizontal,
+              primary: false,
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: widget.minWidth),
+                child: widget.child,
+              ),
+            ),
           ),
         ),
       ),

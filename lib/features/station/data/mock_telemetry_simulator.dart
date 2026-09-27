@@ -43,31 +43,45 @@ class MockTelemetrySimulator {
         : demoSaleLiters;
     int tick = 0;
 
-    void pulse(double liters, DispenserRunState status) {
+    void pulse(
+      double liters,
+      DispenserRunState status, {
+      String cmd = '',
+      String txId = '',
+      required double meter,
+    }) {
       emit(
         DispenserTelemetry(
           unitId: unitId,
           amountPkr: double.parse((liters * safeRate).toStringAsFixed(2)),
           volumeLiters: double.parse(liters.toStringAsFixed(2)),
           rate: safeRate,
-          meterCount: meterCount,
+          meterCount: meter,
           status: status,
           keypadLocked: keypadLocked,
+          cmd: cmd,
+          txId: txId,
         ),
       );
     }
 
-    pulse(0, DispenserRunState.dispensing);
+    pulse(0, DispenserRunState.dispensing, meter: meterCount);
     _timers[unitId] = Timer.periodic(_tick, (Timer timer) {
       tick += 1;
       final double liters = saleLiters * (tick / _saleTicks);
       if (tick >= _saleTicks) {
+        pulse(
+          saleLiters,
+          DispenserRunState.idle,
+          cmd: 'SALE_COMPLETE',
+          txId: 'DEMO-$unitId-${DateTime.now().millisecondsSinceEpoch}',
+          meter: meterCount + saleLiters,
+        );
         timer.cancel();
         _timers.remove(unitId);
-        pulse(saleLiters, DispenserRunState.idle);
         return;
       }
-      pulse(liters, DispenserRunState.dispensing);
+      pulse(liters, DispenserRunState.dispensing, meter: meterCount);
     });
   }
 

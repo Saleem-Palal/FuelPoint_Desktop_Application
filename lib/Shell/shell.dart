@@ -25,6 +25,7 @@ import '../core/theme/dispensr_theme.dart';
 import '../core/widgets/app_screen_header.dart';
 import '../core/widgets/release_notes_dialog.dart';
 import '../core/widgets/low_stock_toast.dart';
+import '../core/widgets/recover_sale_toast.dart';
 import '../features/access/domain/access_policy.dart';
 import '../features/access/presentation/access_controller.dart';
 import '../features/access/presentation/owner_access_gate.dart';
@@ -462,6 +463,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                         ),
                       const ShiftReconciliationOverlay(),
                       const LowStockToastHost(),
+                      const RecoverSaleToastHost(),
                     ],
                   ),
                 ),

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'fuel_precision.dart';
+
 enum DispenserRunState {
   idle,
   dispensing,
@@ -49,6 +51,103 @@ extension PaymentMethodX on PaymentMethod {
         return false;
     }
   }
+}
+
+/// Tender columns on `sales_transactions`. [amountPkr] stays the ticket total
+/// and is never added to Cash or Account KPIs.
+({PaymentMethod payment, double cashAmount, double accountAmount})
+resolveAccountSplit({
+  required PaymentMethod payment,
+  required double saleAmount,
+  required double cashNow,
+}) {
+  final int sale = roundRupees(saleAmount);
+  switch (payment) {
+    case PaymentMethod.cash:
+      return (
+        payment: PaymentMethod.cash,
+        cashAmount: sale.toDouble(),
+        accountAmount: 0,
+      );
+    case PaymentMethod.udhaar:
+      return (payment: PaymentMethod.udhaar, cashAmount: 0, accountAmount: 0);
+    case PaymentMethod.bankAccount:
+    case PaymentMethod.easyPaisa:
+      final int cash = roundRupees(cashNow).clamp(0, sale);
+      if (cash >= sale) {
+        return (
+          payment: PaymentMethod.cash,
+          cashAmount: sale.toDouble(),
+          accountAmount: 0,
+        );
+      }
+      return (
+        payment: payment,
+        cashAmount: cash.toDouble(),
+        accountAmount: (sale - cash).toDouble(),
+      );
+  }
+}
+
+/// Account remainder stays uncredited until bank Confirm / Update.
+({double cashAmount, double accountAmount, double pendingAccountAmount})
+accountPersistSplit({
+  required PaymentMethod payment,
+  required double cashAmount,
+  required double accountAmount,
+}) {
+  switch (payment) {
+    case PaymentMethod.bankAccount:
+    case PaymentMethod.easyPaisa:
+      return (
+        cashAmount: cashAmount,
+        accountAmount: 0,
+        pendingAccountAmount: accountAmount,
+      );
+    case PaymentMethod.cash:
+    case PaymentMethod.udhaar:
+      return (
+        cashAmount: cashAmount,
+        accountAmount: accountAmount,
+        pendingAccountAmount: 0,
+      );
+  }
+}
+
+String _tenderCustomerName(String raw) {
+  final String trimmed = raw.trim();
+  return trimmed.isEmpty ? 'Walk-in' : trimmed;
+}
+
+/// True when Confirm should rewrite the hang-up cash row (payment, split,
+/// customer, or vehicle changed).
+bool saleTenderNeedsUpdate({
+  required SaleTransaction saved,
+  required PaymentMethod payment,
+  required String customerName,
+  required String vehicleNo,
+  required double cashAmount,
+  required double accountAmount,
+  double pendingAccountAmount = 0,
+}) {
+  if (saved.payment != payment) {
+    return true;
+  }
+  if (roundRupees(saved.cashAmount) != roundRupees(cashAmount)) {
+    return true;
+  }
+  if (roundRupees(saved.accountAmount) != roundRupees(accountAmount)) {
+    return true;
+  }
+  if (roundRupees(saved.pendingAccountAmount) !=
+      roundRupees(pendingAccountAmount)) {
+    return true;
+  }
+  if (saved.vehicleNo.trim() != vehicleNo.trim()) {
+    return true;
+  }
+  return _tenderCustomerName(saved.customerName) !=
+      _tenderCustomerName(customerName);
 }
 
 DispenserRunState dispenserStatusFromWire(String? raw) {
@@ -103,6 +202,10 @@ class DispenserBay {
     this.lastPayment = PaymentMethod.cash,
     this.lastPacketAt,
     this.lastEspTxId = '',
+    this.pendingSavedToken = 0,
+    this.cycleOpeningMeter,
+    this.testMode = false,
+    this.testCycle = false,
   });
 
   final int unitId;
@@ -125,6 +228,16 @@ class DispenserBay {
   final PaymentMethod lastPayment;
   final DateTime? lastPacketAt;
   final String lastEspTxId;
+  final int pendingSavedToken;
+
+  /// ESP Total Meter when this fill started. Not computed from liters.
+  final double? cycleOpeningMeter;
+
+  /// Operator armed a test fill. Volume returns to tank; not a sale.
+  final bool testMode;
+
+  /// This hang-up is a test fill (latched from [testMode] while pumping).
+  final bool testCycle;
 
   static const double zeroVolumeEpsilon = 0.005;
 
@@ -134,6 +247,7 @@ class DispenserBay {
   bool get isCycleComplete => status == DispenserRunState.cycleComplete;
   bool get isZeroVolume => volumeLiters.abs() < zeroVolumeEpsilon;
   bool get canConfirmPayment => isCycleComplete && !isZeroVolume;
+  bool get isTestRun => testMode || testCycle;
 
   String get productLabel => fuelType.toUpperCase();
 
@@ -153,7 +267,12 @@ class DispenserBay {
     PaymentMethod? lastPayment,
     DateTime? lastPacketAt,
     String? lastEspTxId,
+    int? pendingSavedToken,
+    double? cycleOpeningMeter,
+    bool? testMode,
+    bool? testCycle,
     bool clearLastPacket = false,
+    bool clearCycleOpeningMeter = false,
   }) {
     return DispenserBay(
       unitId: unitId,
@@ -176,6 +295,12 @@ class DispenserBay {
           ? null
           : (lastPacketAt ?? this.lastPacketAt),
       lastEspTxId: lastEspTxId ?? this.lastEspTxId,
+      pendingSavedToken: pendingSavedToken ?? this.pendingSavedToken,
+      cycleOpeningMeter: clearCycleOpeningMeter
+          ? null
+          : (cycleOpeningMeter ?? this.cycleOpeningMeter),
+      testMode: testMode ?? this.testMode,
+      testCycle: testCycle ?? this.testCycle,
     );
   }
 }
@@ -297,10 +422,7 @@ class PendingEspSale {
           tel['amount_cents'],
         ),
         volumeLiters: _espHundredths(tel['liters'], tel['liter_cents']),
-        rate: _espHundredths(
-          tel['rate'] ?? tel['rate_pkr'],
-          tel['rate_cents'],
-        ),
+        rate: _espHundredths(tel['rate'] ?? tel['rate_pkr'], tel['rate_cents']),
         meterCount: _espHundredths(
           tel['meter'] ?? tel['total_meter'],
           tel['meter_cents'],
@@ -373,6 +495,11 @@ class SaleTransaction {
     this.settledAmount = 0,
     this.settledAt,
     this.espTxId = '',
+    this.cashAmount = 0,
+    this.accountAmount = 0,
+    this.pendingAccountAmount = 0,
+    this.edited = false,
+    this.isTest = false,
   });
 
   final int? id;
@@ -398,9 +525,31 @@ class SaleTransaction {
   final double settledAmount;
   final DateTime? settledAt;
   final String espTxId;
+  final double cashAmount;
+  final double accountAmount;
+  final double pendingAccountAmount;
+  final bool edited;
+  final bool isTest;
+
+  bool get isAccountPending {
+    return !isTest && pendingAccountAmount > 0;
+  }
+
+  double get receiptAccountAmount {
+    return pendingAccountAmount > 0 ? pendingAccountAmount : accountAmount;
+  }
 
   bool get isUnsettledUdhaar {
     return payment == PaymentMethod.udhaar && !udhaarSettled;
+  }
+
+  /// ESP liters vs Closing − Opening. 13th-place noise is not a mismatch.
+  bool get litersMatchMeterDelta {
+    return saleLitersMatchMeter(
+      liters: volumeLiters,
+      openingMeter: openingMeter,
+      closingMeter: closingMeter,
+    );
   }
 
   SaleTransaction copyWith({
@@ -427,6 +576,11 @@ class SaleTransaction {
     double? settledAmount,
     DateTime? settledAt,
     String? espTxId,
+    double? cashAmount,
+    double? accountAmount,
+    double? pendingAccountAmount,
+    bool? edited,
+    bool? isTest,
   }) {
     return SaleTransaction(
       id: id ?? this.id,
@@ -452,6 +606,12 @@ class SaleTransaction {
       settledAmount: settledAmount ?? this.settledAmount,
       settledAt: settledAt ?? this.settledAt,
       espTxId: espTxId ?? this.espTxId,
+      cashAmount: cashAmount ?? this.cashAmount,
+      accountAmount: accountAmount ?? this.accountAmount,
+      pendingAccountAmount:
+          pendingAccountAmount ?? this.pendingAccountAmount,
+      edited: edited ?? this.edited,
+      isTest: isTest ?? this.isTest,
     );
   }
 }
@@ -514,6 +674,19 @@ const int kHardwareDispenserUnitCount = 4;
 /// Optional extra bay. Hidden on the Sale screen unless enabled in Settings.
 const int kOptionalDispenserUnitId = 5;
 
+/// Manual Direct Sale Card. Not a dispenser bay; `UNIT_NO` stays INTEGER.
+const int kDirectSaleUnitId = 6;
+
+/// First Direct token (`TKN-DR-600000`). Same band as `tokenIdFor(6, 0)`.
+const int kDirectSaleTokenBase = 600000;
+
+bool isDirectSaleUnit(int unitId) => unitId == kDirectSaleUnitId;
+
+bool isDirectSaleToken(int tokenNo) {
+  return tokenNo >= kDirectSaleTokenBase &&
+      tokenNo < kDirectSaleTokenBase + 100000;
+}
+
 List<int> get dispenserUnitIds =>
     List<int>.generate(kDispenserUnitCount, (int i) => i + 1);
 
@@ -546,10 +719,7 @@ class UnitEndpoint {
   }
 
   static UnitEndpoint seedFor(int unitId) {
-    return UnitEndpoint(
-      host: '192.168.0.${100 + (10 * unitId)}',
-      port: 81,
-    );
+    return UnitEndpoint(host: '192.168.0.${100 + (10 * unitId)}', port: 81);
   }
 }
 
@@ -577,18 +747,9 @@ class StationState {
 
   String? abortNoticeFor(int unitId) => abortNotices[unitId];
 
-  /// WebSocket is open and the last JSON frame is younger than 3 s.
+  /// WebSocket to this unit's ESP is open. Packet silence is not a drop.
   bool isUnitLinkOnline(int unitId, {DateTime? now}) {
-    final UnitEndpoint ep = endpoint(unitId);
-    if (!ep.connected) {
-      return false;
-    }
-    final DateTime? at = bay(unitId).lastPacketAt;
-    if (at == null) {
-      return true;
-    }
-    return (now ?? DateTime.now()).difference(at) <
-        const Duration(seconds: 3);
+    return endpoint(unitId).connected;
   }
 
   UnitEndpoint endpoint(int unitId) {
@@ -618,7 +779,7 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 150,
-          meterCount: 13454719.863,
+          meterCount: 0,
           keypadLocked: false,
           lastRupees: '',
           lastLiters: '',
@@ -634,7 +795,7 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 200,
-          meterCount: 13450108.004,
+          meterCount: 0,
           keypadLocked: false,
           lastRupees: '',
           lastLiters: '',
@@ -650,7 +811,7 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 150,
-          meterCount: 13449880.55,
+          meterCount: 0,
           keypadLocked: false,
           lastRupees: '',
           lastLiters: '',
@@ -666,7 +827,7 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 200,
-          meterCount: 13451200.21,
+          meterCount: 0,
           keypadLocked: false,
           lastRupees: '',
           lastLiters: '',
@@ -683,7 +844,7 @@ class StationState {
           amountPkr: 0,
           volumeLiters: 0,
           rate: 200,
-          meterCount: 13452342.143,
+          meterCount: 0,
           keypadLocked: false,
           lastRupees: '',
           lastLiters: '',
@@ -698,7 +859,7 @@ class StationState {
       bays: <int, DispenserBay>{
         for (final int unitId in dispenserUnitIds) unitId: seedBay(unitId),
       },
-      sequences: <int, int>{1: 25, 2: 14, 3: 8, 4: 2, 5: 1},
+      sequences: <int, int>{1: 25, 2: 14, 3: 8, 4: 2, 5: 1, kDirectSaleUnitId: 0},
       recentTransactions: const <SaleTransaction>[],
       endpoints: <int, UnitEndpoint>{
         for (final int unitId in dispenserUnitIds)
@@ -740,6 +901,9 @@ String formatTokenNo(int tokenNo) {
 }
 
 String formatLedgerToken(int tokenNo) {
+  if (isDirectSaleToken(tokenNo)) {
+    return 'TKN-DR-${formatTokenNo(tokenNo)}';
+  }
   return 'TKN-${formatTokenNo(tokenNo)}';
 }
 
@@ -765,7 +929,18 @@ PaymentMethod paymentMethodFromStorage(String? raw) {
 }
 
 String formatUnitLabel(int unitId) {
+  if (isDirectSaleUnit(unitId)) {
+    return 'Direct';
+  }
   return 'Unit ${unitId.toString().padLeft(2, '0')}';
+}
+
+/// Sale-table UNIT cell: pumps stay `01`…`05`; Direct is `Direct`.
+String formatSaleUnitColumn(int unitId) {
+  if (isDirectSaleUnit(unitId)) {
+    return 'Direct';
+  }
+  return unitId.toString().padLeft(2, '0');
 }
 
 String displayCustomerName(String name) {

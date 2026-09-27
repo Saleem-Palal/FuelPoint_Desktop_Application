@@ -87,6 +87,28 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
       cashierId: cashierId,
     );
   }
+
+  Future<UnifiedUdhaarRow> postPreviousUdhaar({
+    required CustomerProfile customer,
+    required double amountPkr,
+    String notes = '',
+  }) async {
+    final UnifiedUdhaarRepository ledger = ref.read(
+      unifiedUdhaarRepositoryProvider,
+    );
+    final String shiftId =
+        ref.read(shiftWorkspaceProvider).activeShift?.shiftId ??
+        kUnknownShiftId;
+    final UnifiedUdhaarRow row = await ledger.insertOpeningBalance(
+      customerId: customer.id,
+      customerName: customer.name,
+      amountPkr: amountPkr,
+      shiftId: shiftId,
+      notes: notes,
+    );
+    await reloadCustomerPersistence(ref);
+    return row;
+  }
 }
 
 final customerWorkspaceProvider =

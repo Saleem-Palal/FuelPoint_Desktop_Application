@@ -45,7 +45,7 @@ class SalesTransactionRepository {
           'RATE': txn.rate,
           'OPENING_READING': txn.openingMeter,
           'CLOSING_READING': txn.closingMeter,
-          'PAYMENT_METHOD': txn.payment.label,
+          'PAYMENT_METHOD': txn.isTest ? 'Test' : txn.payment.label,
           'CUSTOMER_NAME': txn.customerName.trim().isEmpty
               ? null
               : txn.customerName.trim(),
@@ -59,6 +59,11 @@ class SalesTransactionRepository {
           'HELPER_ID': resolvedHelperId.isEmpty ? null : resolvedHelperId,
           'ACTIONS': null,
           'ESP_TX_ID': txn.espTxId.trim().isEmpty ? null : txn.espTxId.trim(),
+          'CASH_AMOUNT': txn.cashAmount,
+          'ACCOUNT_AMOUNT': txn.accountAmount,
+          'PENDING_ACCOUNT': txn.pendingAccountAmount,
+          'EDITED': txn.edited ? 1 : 0,
+          'IS_TEST': txn.isTest ? 1 : 0,
         },
         managerId: managerId,
         managerName: managerName,
@@ -66,7 +71,7 @@ class SalesTransactionRepository {
         helperId: resolvedHelperId.isEmpty ? null : resolvedHelperId,
         helperName: helperName,
         volumeLiters: txn.volumeLiters,
-        creditCustomerId: creditCustomerId,
+        creditCustomerId: txn.isTest ? null : creditCustomerId,
         creditCustomerName: txn.customerName,
         creditShiftId: creditShiftId,
         creditDescription: txn.fuelType,
@@ -78,15 +83,50 @@ class SalesTransactionRepository {
     }
   }
 
-  Future<List<SaleTransaction>> recent({int limit = 20}) async {
+  Future<SaleTransaction?> convertCommittedSaleToTest({
+    required int tokenNo,
+    required double volumeLiters,
+  }) async {
+    await _db.convertCommittedSaleToTest(
+      token: formatLedgerToken(tokenNo),
+      volumeLiters: volumeLiters,
+    );
+    return byToken(tokenNo);
+  }
+
+  Future<void> insertTestMeterLog({
+    required int unitId,
+    required DateTime at,
+    required double openingMeter,
+    required double closingMeter,
+    required double volumeLiters,
+    String? shiftId,
+  }) async {
+    await _db.insertTestMeterLog(
+      unitId: unitId,
+      at: at,
+      openingMeter: openingMeter,
+      closingMeter: closingMeter,
+      volumeLiters: volumeLiters,
+      shiftId: _shiftIdValue(shiftId),
+    );
+  }
+
+  Future<List<SaleTransaction>> recent({
+    int limit = 20,
+    bool includeTest = false,
+  }) async {
     final List<Map<String, Object?>> rows = await _db.queryRecentSales(
       limit: limit,
+      includeTest: includeTest,
     );
     return rows.map(fromRow).toList();
   }
 
-  Future<List<SaleTransaction>> all() async {
-    final List<Map<String, Object?>> rows = await _db.queryAllSales();
+  Future<List<SaleTransaction>> all({bool includeTest = false}) async {
+    final List<Map<String, Object?>> rows = await _db.queryAllSales(
+      includeTest: includeTest,
+    );
     return rows.map(fromRow).toList();
   }
 
@@ -98,6 +138,33 @@ class SalesTransactionRepository {
       return null;
     }
     return fromRow(row);
+  }
+
+  Future<SaleTransaction?> byEspTxId(String espTxId) async {
+    final Map<String, Object?>? row = await _db.querySaleByEspTxId(espTxId);
+    if (row == null) {
+      return null;
+    }
+    return fromRow(row);
+  }
+
+  Future<List<SaleTransaction>> pendingAccount() async {
+    final List<Map<String, Object?>> rows = await _db
+        .queryPendingAccountSales();
+    return rows.map(fromRow).toList();
+  }
+
+  Future<SaleTransaction?> confirmPendingAccount({
+    required int tokenNo,
+    required double receivedAmount,
+    double? cashAmount,
+  }) async {
+    await _db.confirmPendingAccount(
+      token: formatLedgerToken(tokenNo),
+      receivedAmount: receivedAmount,
+      cashAmount: cashAmount,
+    );
+    return byToken(tokenNo);
   }
 
   Future<SaleTransaction?> settleUdhaar({
@@ -146,13 +213,20 @@ class SalesTransactionRepository {
       return _saleMatchesSearch(row, search);
     }).toList();
 
+    final List<SaleTransaction> commercial = <SaleTransaction>[
+      for (final SaleTransaction row in matched)
+        if (!row.isTest && !isDirectSaleUnit(row.unitId)) row,
+    ];
+
     double totalAmount = 0;
     double totalVolume = 0;
     double udhaarAmount = 0;
     int udhaarCount = 0;
-    for (final SaleTransaction row in matched) {
+    double accountAmount = 0;
+    for (final SaleTransaction row in commercial) {
       totalAmount += row.amountPkr;
       totalVolume += row.volumeLiters;
+      accountAmount += row.accountAmount;
       if (row.payment == PaymentMethod.udhaar) {
         udhaarAmount += row.amountPkr;
         udhaarCount += 1;
@@ -161,22 +235,29 @@ class SalesTransactionRepository {
 
     return SalesLedgerSnapshot(
       rows: matched,
-      totalCount: matched.length,
+      meterRows: <SaleTransaction>[
+        for (final SaleTransaction row in matched)
+          if (!isDirectSaleUnit(row.unitId)) row,
+      ],
+      totalCount: commercial.length,
       totalAmountPkr: totalAmount,
       totalVolumeLiters: totalVolume,
       udhaarAmountPkr: udhaarAmount,
       udhaarCount: udhaarCount,
+      totalAccountAmountPkr: accountAmount,
     );
   }
 
   Future<Map<int, int>> sequencesFromHistory() async {
     final Map<int, int> nextSequence = <int, int>{
       for (final int unitId in dispenserUnitIds) unitId: 1,
+      kDirectSaleUnitId: 0,
     };
-    final List<SaleTransaction> rows = await all();
+    final List<SaleTransaction> rows = await all(includeTest: true);
     for (final SaleTransaction txn in rows) {
       final int issued = sequenceFromToken(txn.tokenNo, txn.unitId);
-      final int current = nextSequence[txn.unitId] ?? 1;
+      final int fallback = isDirectSaleUnit(txn.unitId) ? 0 : 1;
+      final int current = nextSequence[txn.unitId] ?? fallback;
       if (issued + 1 > current) {
         nextSequence[txn.unitId] = issued + 1;
       }
@@ -189,6 +270,10 @@ class SalesTransactionRepository {
     required String customerName,
     required String vehicleNo,
     required PaymentMethod payment,
+    double cashAmount = 0,
+    double accountAmount = 0,
+    double pendingAccountAmount = 0,
+    bool edited = true,
   }) async {
     final String resolvedCustomer = customerName.trim();
     final String resolvedVehicle = vehicleNo.trim();
@@ -197,6 +282,43 @@ class SalesTransactionRepository {
       customerName: resolvedCustomer.isEmpty ? null : resolvedCustomer,
       vehicleNo: resolvedVehicle.isEmpty ? null : resolvedVehicle,
       paymentMethod: payment.label,
+      cashAmount: cashAmount,
+      accountAmount: accountAmount,
+      pendingAccountAmount: pendingAccountAmount,
+      edited: edited,
+    );
+  }
+
+  Future<void> applyConfirmTender({
+    required SaleTransaction txn,
+    required PaymentMethod payment,
+    required String customerName,
+    required String vehicleNo,
+    required double cashAmount,
+    required double accountAmount,
+    double pendingAccountAmount = 0,
+    String? creditCustomerId,
+    String? creditShiftId,
+  }) async {
+    final String resolvedCustomer = customerName.trim().isEmpty
+        ? (payment == PaymentMethod.udhaar ? '' : 'Walk-in')
+        : customerName.trim();
+    final String resolvedVehicle = vehicleNo.trim();
+    await _db.applyConfirmTender(
+      token: formatLedgerToken(txn.tokenNo),
+      paymentMethod: payment.label,
+      customerName: resolvedCustomer.isEmpty ? null : resolvedCustomer,
+      vehicleNo: resolvedVehicle.isEmpty ? null : resolvedVehicle,
+      cashAmount: cashAmount,
+      accountAmount: accountAmount,
+      pendingAccountAmount: pendingAccountAmount,
+      saleAmount: txn.amountPkr,
+      volumeLiters: txn.volumeLiters,
+      rate: txn.rate,
+      creditCustomerId: creditCustomerId,
+      creditCustomerName: resolvedCustomer,
+      creditShiftId: creditShiftId,
+      creditDescription: txn.fuelType,
     );
   }
 
@@ -266,6 +388,11 @@ class SalesTransactionRepository {
       settledAmount: settled.amount,
       settledAt: settled.at,
       espTxId: '${row['ESP_TX_ID'] ?? ''}',
+      cashAmount: _asDouble(row['CASH_AMOUNT']),
+      accountAmount: _asDouble(row['ACCOUNT_AMOUNT']),
+      pendingAccountAmount: _asDouble(row['PENDING_ACCOUNT']),
+      edited: _asInt(row['EDITED']) != 0,
+      isTest: _asInt(row['IS_TEST']) != 0,
     );
   }
 

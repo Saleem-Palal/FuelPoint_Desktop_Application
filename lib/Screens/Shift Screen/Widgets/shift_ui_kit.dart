@@ -182,11 +182,15 @@ class ShiftSalesTable extends StatelessWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final double liters = rows.fold<double>(
       0,
-      (double sum, HelperSaleRecord row) => sum + row.volumeLiters,
+      (double sum, HelperSaleRecord row) =>
+          row.isTest ? sum : sum + row.volumeLiters,
     );
+    final int commercialCount = rows.where((HelperSaleRecord row) {
+      return !row.isTest;
+    }).length;
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double floor = compact ? 420 : (showPayment ? 1240 : 1100);
+        final double floor = compact ? 420 : (showPayment ? 1480 : 1100);
         final double minWidth = constraints.maxWidth < floor
             ? floor
             : constraints.maxWidth;
@@ -231,6 +235,10 @@ class ShiftSalesTable extends StatelessWidget {
                     ),
                     if (showPayment)
                       const DataColumn(label: Text('PAYMENT METHOD')),
+                    if (showPayment)
+                      const DataColumn(label: Text('CASH'), numeric: true),
+                    if (showPayment)
+                      const DataColumn(label: Text('ACCOUNT'), numeric: true),
                     const DataColumn(label: Text('HELPER NAME')),
                   ],
             rows: <DataRow>[
@@ -239,12 +247,29 @@ class ShiftSalesTable extends StatelessWidget {
                   cells: compact
                       ? <DataCell>[
                           DataCell(
-                            Text(
-                              formatLedgerToken(row.tokenNo),
-                              style: TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: tokens.coralPressed,
-                              ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                Text(
+                                  formatLedgerToken(row.tokenNo),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: tokens.coralPressed,
+                                  ),
+                                ),
+                                if (row.isTest) ...<Widget>[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Test',
+                                    style: TextStyle(
+                                      fontFamily: 'Roboto',
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 10,
+                                      color: tokens.warn,
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
                           DataCell(
@@ -258,12 +283,29 @@ class ShiftSalesTable extends StatelessWidget {
                         ]
                       : <DataCell>[
                           DataCell(
-                            Text(
-                              formatLedgerToken(row.tokenNo),
-                              style: TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: tokens.coralPressed,
-                              ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                Text(
+                                  formatLedgerToken(row.tokenNo),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: tokens.coralPressed,
+                                  ),
+                                ),
+                                if (row.isTest) ...<Widget>[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Test',
+                                    style: TextStyle(
+                                      fontFamily: 'Roboto',
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 10,
+                                      color: tokens.warn,
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
                           DataCell(
@@ -274,17 +316,28 @@ class ShiftSalesTable extends StatelessWidget {
                           ),
                           DataCell(Text(formatUnitLabel(row.unitId))),
                           DataCell(Text(row.fuelType.toUpperCase())),
-                          DataCell(Text(formatLiters(row.volumeLiters))),
-                          DataCell(Text(formatRate(row.rate))),
+                          DataCell(Text(formatTableLiters(row.volumeLiters))),
+                          DataCell(Text(formatTableRate(row.rate))),
                           DataCell(
                             Text(
-                              formatPkr(row.amountPkr),
+                              formatTablePkr(row.amountPkr),
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
                           ),
-                          if (showPayment) DataCell(Text(row.payment.label)),
+                          if (showPayment)
+                            DataCell(
+                              Text(row.isTest ? 'Test' : row.payment.label),
+                            ),
+                          if (showPayment)
+                            DataCell(
+                              Text(formatTableTenderPkr(row.cashAmount)),
+                            ),
+                          if (showPayment)
+                            DataCell(
+                              Text(formatTableTenderPkr(row.accountAmount)),
+                            ),
                           DataCell(
                             Text(
                               row.helperName.trim().isEmpty
@@ -315,7 +368,7 @@ class ShiftSalesTable extends StatelessWidget {
               child: Row(
                 children: <Widget>[
                   Text(
-                    '${rows.length} transaction${rows.length == 1 ? '' : 's'}',
+                    '${commercialCount} transaction${commercialCount == 1 ? '' : 's'}',
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w700,
@@ -325,7 +378,7 @@ class ShiftSalesTable extends StatelessWidget {
                   ),
                   const Spacer(),
                   Text(
-                    'Total volume  ${formatLiters(liters)}',
+                    'Total volume  ${formatTableLiters(liters)}',
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w700,

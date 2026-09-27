@@ -96,6 +96,45 @@ class ShiftMeterSnapshot {
   }
 }
 
+/// Persisted helper-to-bay duty. JSON array of unit ids, e.g. `[1,3]`.
+class HelperUnitAssignmentSnapshot {
+  HelperUnitAssignmentSnapshot._();
+
+  static String encode(List<int> unitIds) {
+    if (unitIds.isEmpty) {
+      return '[]';
+    }
+    final List<int> ordered = unitIds.toSet().toList()..sort();
+    return jsonEncode(ordered);
+  }
+
+  static List<int> decode(String? raw) {
+    final String text = raw?.trim() ?? '';
+    if (text.isEmpty || text == '[]') {
+      return const <int>[];
+    }
+    try {
+      final Object? decoded = jsonDecode(text);
+      if (decoded is! List) {
+        return const <int>[];
+      }
+      final Set<int> unique = <int>{};
+      final List<int> ordered = <int>[];
+      for (final Object? item in decoded) {
+        final int? unitId = item is int ? item : int.tryParse('$item');
+        if (unitId == null || !unique.add(unitId)) {
+          continue;
+        }
+        ordered.add(unitId);
+      }
+      ordered.sort();
+      return List<int>.unmodifiable(ordered);
+    } catch (_) {
+      return const <int>[];
+    }
+  }
+}
+
 /// Runtime session row in `app_session_state`.
 class AppSessionSnapshot {
   const AppSessionSnapshot({
@@ -130,5 +169,10 @@ class ShiftLifecycleGuard {
   static String endBlockedMessage(int bayId) {
     return 'End Shift Blocked: Bay #$bayId is actively dispensing. '
         'Wait for nozzle stowage.';
+  }
+
+  static String pendingAccountBlockedMessage() {
+    return 'End Shift Blocked: Unconfirmed account transfers are pending. '
+        'Confirm or clear them on the Sale screen first.';
   }
 }

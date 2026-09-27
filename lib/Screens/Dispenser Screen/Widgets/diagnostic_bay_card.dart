@@ -89,14 +89,13 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
     final DispenserBay bay = widget.bay;
     final UnitEndpoint endpoint = widget.endpoint;
     final BayLinkHealth health = BayLinkHealth.evaluate(
-      bay: bay,
       endpoint: endpoint,
       snapshot: widget.snapshot,
       now: widget.clock,
     );
     final MonitorBayStatus status = monitorStatusFor(
       bay,
-      linkOnline: endpoint.connected && !health.muxHeartbeatLost,
+      linkOnline: endpoint.connected && widget.snapshot.espToBoardLink != false,
     );
     final Color statusColor = switch (status) {
       MonitorBayStatus.online => tokens.good,
@@ -175,7 +174,11 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
             ],
           ),
           const SizedBox(height: 8),
-          _FaultRow(health: health),
+          _FaultRow(
+            health: health,
+            keypadLocked: bay.keypadLocked,
+            onKeypadPressed: () => station.toggleMonitorKeypad(bay.unitId),
+          ),
           const SizedBox(height: 10),
           _TelemetryGrid(
             fields: <_Field>[
@@ -184,7 +187,10 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
               _Field('status', status.label),
               _Field('rssi', '${health.rssiDbm}'),
               _Field('liters', FuelFormatter.lcdVolume(bay.volumeLiters)),
-              _Field('amount_pkr', FuelFormatter.lcdDispenserAmount(bay.amountPkr)),
+              _Field(
+                'amount_pkr',
+                FuelFormatter.lcdDispenserAmount(bay.amountPkr),
+              ),
               _Field('rate_pkr', FuelFormatter.lcdRate(bay.rate)),
               _Field('total_meter', FuelFormatter.lcdVolume(bay.meterCount)),
               _Field('keypad_locked', bay.keypadLocked ? 'true' : 'false'),
@@ -194,10 +200,7 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
                     ? 'true'
                     : (health.serialStall ? 'false' : '—'),
               ),
-              _Field(
-                'pending_tx',
-                '${widget.snapshot.pendingTxCount ?? 0}',
-              ),
+              _Field('pending_tx', '${widget.snapshot.pendingTxCount ?? 0}'),
             ],
           ),
           const SizedBox(height: 10),
@@ -498,48 +501,188 @@ class _Lamp extends StatelessWidget {
 }
 
 class _FaultRow extends StatelessWidget {
-  const _FaultRow({required this.health});
+  const _FaultRow({
+    required this.health,
+    required this.keypadLocked,
+    required this.onKeypadPressed,
+  });
 
   final BayLinkHealth health;
+  final bool keypadLocked;
+  final VoidCallback onKeypadPressed;
+
+  static const double _slotHeight = 26;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
+    final _SlotTone status = _statusTone(health, tokens);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        if (health.fdxWifiDrop)
-          DsStatusPill(
-            label: 'FDX Wi-Fi DROP',
-            foreground: tokens.bad,
-            background: tokens.bad.withValues(alpha: 0.12),
-            border: tokens.bad.withValues(alpha: 0.4),
+        if (health.fdxWifiDrop || health.serialStall)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: <Widget>[
+                if (health.fdxWifiDrop)
+                  DsStatusPill(
+                    label: 'FDX Wi-Fi DROP',
+                    foreground: tokens.bad,
+                    background: tokens.bad.withValues(alpha: 0.12),
+                    border: tokens.bad.withValues(alpha: 0.4),
+                  ),
+                if (health.serialStall)
+                  DsStatusPill(
+                    label: 'UART STALL',
+                    foreground: tokens.warn,
+                    background: tokens.warn.withValues(alpha: 0.12),
+                    border: tokens.warn.withValues(alpha: 0.4),
+                  ),
+              ],
+            ),
           ),
-        if (health.serialStall)
-          DsStatusPill(
-            label: 'UART STALL',
-            foreground: tokens.warn,
-            background: tokens.warn.withValues(alpha: 0.12),
-            border: tokens.warn.withValues(alpha: 0.4),
-          ),
-        if (health.muxAlert)
-          DsStatusPill(
-            label: health.muxHeartbeatLost
-                ? 'ESP32 / MUX >3000ms'
-                : 'ESP32 SOCKET DOWN',
-            foreground: tokens.bad,
-            background: tokens.bad.withValues(alpha: 0.12),
-            border: tokens.bad.withValues(alpha: 0.4),
-          ),
-        if (!health.fdxWifiDrop && !health.serialStall && !health.muxAlert)
-          DsStatusPill(
-            label: 'BRIDGE OK',
-            foreground: tokens.good,
-            background: tokens.good.withValues(alpha: 0.12),
-            border: tokens.good.withValues(alpha: 0.35),
-          ),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: _EqualSlot(
+                height: _slotHeight,
+                label: status.label,
+                foreground: status.foreground,
+                background: status.background,
+                border: status.border,
+                dot: true,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _EqualSlot(
+                height: _slotHeight,
+                label: keypadLocked ? 'Unlock Keypad' : 'Lock Keypad',
+                foreground: tokens.card,
+                background: keypadLocked ? tokens.good : tokens.ink,
+                border: keypadLocked ? tokens.good : tokens.ink,
+                icon: keypadLocked ? Icons.lock_open : Icons.lock_outline,
+                onPressed: onKeypadPressed,
+              ),
+            ),
+          ],
+        ),
       ],
+    );
+  }
+
+  _SlotTone _statusTone(BayLinkHealth health, DispensrTokens tokens) {
+    if (health.muxAlert) {
+      return _SlotTone(
+        label: 'ESP32 SOCKET DOWN',
+        foreground: tokens.bad,
+        background: tokens.bad.withValues(alpha: 0.12),
+        border: tokens.bad.withValues(alpha: 0.4),
+      );
+    }
+    return _SlotTone(
+      label: 'BRIDGE OK',
+      foreground: tokens.good,
+      background: tokens.good.withValues(alpha: 0.12),
+      border: tokens.good.withValues(alpha: 0.35),
+    );
+  }
+}
+
+class _SlotTone {
+  const _SlotTone({
+    required this.label,
+    required this.foreground,
+    required this.background,
+    required this.border,
+  });
+
+  final String label;
+  final Color foreground;
+  final Color background;
+  final Color border;
+}
+
+class _EqualSlot extends StatelessWidget {
+  const _EqualSlot({
+    required this.height,
+    required this.label,
+    required this.foreground,
+    required this.background,
+    required this.border,
+    this.dot = false,
+    this.icon,
+    this.onPressed,
+  });
+
+  final double height;
+  final String label;
+  final Color foreground;
+  final Color background;
+  final Color border;
+  final bool dot;
+  final IconData? icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget content = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            if (dot) ...<Widget>[
+              Container(
+                width: 5,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: foreground,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 5),
+            ],
+            if (icon != null) ...<Widget>[
+              Icon(icon, size: 12, color: foreground),
+              const SizedBox(width: 5),
+            ],
+            Text(
+              label.toUpperCase(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w600,
+                fontSize: 10,
+                letterSpacing: 0.4,
+                color: foreground,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return SizedBox(
+      height: height,
+      width: double.infinity,
+      child: Material(
+        color: background,
+        shape: StadiumBorder(side: BorderSide(color: border)),
+        child: onPressed == null
+            ? Center(child: content)
+            : InkWell(
+                onTap: onPressed,
+                customBorder: const StadiumBorder(),
+                child: Center(child: content),
+              ),
+      ),
     );
   }
 }

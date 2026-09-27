@@ -92,9 +92,13 @@ class _EditPurchaseDialogState extends ConsumerState<EditPurchaseDialog> {
   @override
   void initState() {
     super.initState();
-    _liters = TextEditingController(text: FuelFormatter.fieldWhole(widget.quantity));
+    _liters = TextEditingController(
+      text: FuelFormatter.fieldWhole(widget.quantity),
+    );
     _rate = TextEditingController(text: FuelFormatter.fieldRate(widget.rate));
-    _amount = TextEditingController(text: FuelFormatter.fieldAmount(widget.amount));
+    _amount = TextEditingController(
+      text: FuelFormatter.fieldAmount(widget.amount),
+    );
     _tafseel = TextEditingController(text: widget.tafseel);
     _liters.addListener(_onLitersOrRateChanged);
     _rate.addListener(_onLitersOrRateChanged);
@@ -253,9 +257,7 @@ class _EditPurchaseDialogState extends ConsumerState<EditPurchaseDialog> {
                 ),
                 inputFormatters: <TextInputFormatter>[_litersFormatter],
                 style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Quantity (Ltr)',
-                ),
+                decoration: const InputDecoration(labelText: 'Quantity (Ltr)'),
               ),
               const SizedBox(height: 10),
               TextField(
@@ -266,9 +268,7 @@ class _EditPurchaseDialogState extends ConsumerState<EditPurchaseDialog> {
                 ),
                 inputFormatters: <TextInputFormatter>[_rateFormatter],
                 style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Rate (Rs / Ltr)',
-                ),
+                decoration: const InputDecoration(labelText: 'Rate (Rs / Ltr)'),
               ),
               const SizedBox(height: 10),
               TextField(

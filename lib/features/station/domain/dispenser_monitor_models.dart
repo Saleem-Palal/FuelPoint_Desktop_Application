@@ -137,50 +137,26 @@ class BayLinkHealth {
   bool get muxAlert => !muxSocketUp || muxHeartbeatLost;
 
   static const Duration _lamp = Duration(milliseconds: 450);
-  static const Duration _heartbeat = Duration(milliseconds: 3000);
-  static const Duration _serialStall = Duration(milliseconds: 1500);
 
   static BayLinkHealth evaluate({
-    required DispenserBay bay,
     required UnitEndpoint endpoint,
     required BayDiagnosticSnapshot snapshot,
     required DateTime now,
   }) {
     final int rssi = snapshot.rssiDbm ?? -95;
-    final DateTime? lastActivity = snapshot.lastRxAt ?? bay.lastPacketAt;
-    final Duration? silence = lastActivity == null
-        ? null
-        : now.difference(lastActivity);
-    final DateTime? opened = snapshot.socketOpenedAt;
-    final Duration sinceOpen = opened == null
-        ? Duration.zero
-        : now.difference(opened);
-
     final bool muxSocketUp = endpoint.connected;
-    final bool muxHeartbeatLost =
-        muxSocketUp &&
-        (silence == null ? sinceOpen >= _heartbeat : silence >= _heartbeat);
+    const bool muxHeartbeatLost = false;
 
-    final bool serialStall = snapshot.espToBoardLink == false
-        ? muxSocketUp && !muxHeartbeatLost
-        : muxSocketUp &&
-            !muxHeartbeatLost &&
-            (silence == null
-                ? sinceOpen >= _serialStall
-                : silence >= _serialStall);
+    final bool serialStall = muxSocketUp && snapshot.espToBoardLink == false;
+    final bool serialLive = muxSocketUp && snapshot.espToBoardLink == true;
 
     final bool fdxWifiDrop = muxSocketUp && rssi <= -88;
-    final bool fdxWifiUp = muxSocketUp && !muxHeartbeatLost && rssi > -88;
+    final bool fdxWifiUp = muxSocketUp && rssi > -88;
 
     final bool txHot =
         snapshot.lastTxAt != null && now.difference(snapshot.lastTxAt!) < _lamp;
     final bool rxHot =
         snapshot.lastRxAt != null && now.difference(snapshot.lastRxAt!) < _lamp;
-    final bool serialLive = snapshot.espToBoardLink == true
-        ? muxSocketUp && !muxHeartbeatLost
-        : muxSocketUp &&
-            !serialStall &&
-            (rxHot || txHot || (silence != null && silence < _serialStall));
 
     return BayLinkHealth(
       rssiDbm: rssi,
@@ -267,10 +243,7 @@ class DispenserMonitorState {
 
 enum MonitorBayStatus { online, dispensing, keypadLocked, offline }
 
-MonitorBayStatus monitorStatusFor(
-  DispenserBay bay, {
-  bool linkOnline = true,
-}) {
+MonitorBayStatus monitorStatusFor(DispenserBay bay, {bool linkOnline = true}) {
   if (!linkOnline || bay.isOffline) {
     return MonitorBayStatus.offline;
   }

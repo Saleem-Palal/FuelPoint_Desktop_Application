@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../theme/dispensr_theme.dart';
+import '../../features/station/domain/money_format.dart';
 
 /// Dark status bar used at the top of every workspace screen.
 class AppScreenHeader extends StatefulWidget {
@@ -72,8 +73,7 @@ class _AppScreenHeaderState extends State<AppScreenHeader> {
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final String date = '${_now.day} ${_months[_now.month - 1]} ${_now.year}';
-    final String time =
-        '${_now.hour.toString().padLeft(2, '0')}:${_now.minute.toString().padLeft(2, '0')}:${_now.second.toString().padLeft(2, '0')}';
+    final String time = formatClockWithSeconds(_now);
     final String? invoiceLabel = widget.invoiceLabel;
     final Widget? trailingAction = widget.trailingAction;
 
