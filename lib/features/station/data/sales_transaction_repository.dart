@@ -11,10 +11,10 @@ class SalesTransactionRepository {
   SalesTransactionRepository({DatabaseHelper? db})
     : _db = db ?? DatabaseHelper.instance;
 
-  static const String fallbackManagerId = 'mgr-walkin';
+  static const String fallbackOperatorId = 'mgr-walkin';
 
-  static String? requireLiveManagerId(ManagerShiftRecord? shift) {
-    final String? id = shift?.managerId.trim();
+  static String? requireLiveOperatorId(OperatorShiftRecord? shift) {
+    final String? id = shift?.operatorId.trim();
     if (id == null || id.isEmpty || !shift!.isOpen) {
       return null;
     }
@@ -25,9 +25,9 @@ class SalesTransactionRepository {
 
   Future<void> insertCommittedSale({
     required SaleTransaction txn,
-    required String managerId,
-    required String managerName,
-    required String managerPin,
+    required String operatorId,
+    required String operatorName,
+    required String operatorPin,
     String? helperId,
     String? helperName,
     String? creditCustomerId,
@@ -53,9 +53,9 @@ class SalesTransactionRepository {
               ? null
               : txn.vehicleNo.trim(),
           'HELPER': resolvedHelperId.isEmpty ? null : resolvedHelperId,
-          'Manager': managerId,
+          'Manager': operatorId,
           'SHIFT_ID': _shiftIdValue(creditShiftId),
-          'MANAGER_ID': managerId,
+          'MANAGER_ID': operatorId,
           'HELPER_ID': resolvedHelperId.isEmpty ? null : resolvedHelperId,
           'ACTIONS': null,
           'ESP_TX_ID': txn.espTxId.trim().isEmpty ? null : txn.espTxId.trim(),
@@ -64,10 +64,12 @@ class SalesTransactionRepository {
           'PENDING_ACCOUNT': txn.pendingAccountAmount,
           'EDITED': txn.edited ? 1 : 0,
           'IS_TEST': txn.isTest ? 1 : 0,
+          'DRUM_QTY': txn.drumQty,
+          'SALE_TYPE': txn.saleType,
         },
-        managerId: managerId,
-        managerName: managerName,
-        managerPin: managerPin,
+        operatorId: operatorId,
+        operatorName: operatorName,
+        operatorPin: operatorPin,
         helperId: resolvedHelperId.isEmpty ? null : resolvedHelperId,
         helperName: helperName,
         volumeLiters: txn.volumeLiters,
@@ -158,11 +160,13 @@ class SalesTransactionRepository {
     required int tokenNo,
     required double receivedAmount,
     double? cashAmount,
+    PaymentMethod? payment,
   }) async {
     await _db.confirmPendingAccount(
       token: formatLedgerToken(tokenNo),
       receivedAmount: receivedAmount,
       cashAmount: cashAmount,
+      paymentMethod: payment?.label,
     );
     return byToken(tokenNo);
   }
@@ -274,6 +278,8 @@ class SalesTransactionRepository {
     double accountAmount = 0,
     double pendingAccountAmount = 0,
     bool edited = true,
+    int? drumQty,
+    String? saleType,
   }) async {
     final String resolvedCustomer = customerName.trim();
     final String resolvedVehicle = vehicleNo.trim();
@@ -286,6 +292,8 @@ class SalesTransactionRepository {
       accountAmount: accountAmount,
       pendingAccountAmount: pendingAccountAmount,
       edited: edited,
+      drumQty: drumQty,
+      saleType: saleType,
     );
   }
 
@@ -297,6 +305,8 @@ class SalesTransactionRepository {
     required double cashAmount,
     required double accountAmount,
     double pendingAccountAmount = 0,
+    int drumQty = 0,
+    String saleType = '',
     String? creditCustomerId,
     String? creditShiftId,
   }) async {
@@ -312,6 +322,8 @@ class SalesTransactionRepository {
       cashAmount: cashAmount,
       accountAmount: accountAmount,
       pendingAccountAmount: pendingAccountAmount,
+      drumQty: drumQty,
+      saleType: saleType,
       saleAmount: txn.amountPkr,
       volumeLiters: txn.volumeLiters,
       rate: txn.rate,
@@ -326,42 +338,42 @@ class SalesTransactionRepository {
     return parseShiftPk(raw ?? '');
   }
 
-  static String managerIdFor(ManagerShiftRecord? shift) {
-    final String? id = shift?.managerId.trim();
+  static String operatorIdFor(OperatorShiftRecord? shift) {
+    final String? id = shift?.operatorId.trim();
     if (id == null || id.isEmpty) {
-      return fallbackManagerId;
+      return fallbackOperatorId;
     }
     return id;
   }
 
-  static String managerNameFor({
-    required ManagerShiftRecord? shift,
+  static String operatorNameFor({
+    required OperatorShiftRecord? shift,
     required String fallbackName,
   }) {
-    final String fromShift = shift?.managerName.trim() ?? '';
+    final String fromShift = shift?.operatorName.trim() ?? '';
     if (fromShift.isNotEmpty) {
       return fromShift;
     }
     final String trimmed = fallbackName.trim();
-    return trimmed.isEmpty ? 'Cashier' : trimmed;
+    return trimmed.isEmpty ? 'Operator' : trimmed;
   }
 
-  static String managerPinFor({
-    required List<ManagerProfile> managers,
-    required String managerId,
+  static String operatorPinFor({
+    required List<OperatorProfile> operators,
+    required String operatorId,
   }) {
-    for (final ManagerProfile profile in managers) {
-      if (profile.id == managerId) {
+    for (final OperatorProfile profile in operators) {
+      if (profile.id == operatorId) {
         return profile.pin;
       }
     }
-    return kDefaultManagerPin;
+    return kDefaultOperatorPin;
   }
 
   static SaleTransaction fromRow(Map<String, Object?> row) {
     final double closing = _asDouble(row['CLOSING_READING']);
     final String helperName = (row['helper_name'] as String?)?.trim() ?? '';
-    final String managerName = (row['manager_name'] as String?)?.trim() ?? '';
+    final String operatorName = (row['manager_name'] as String?)?.trim() ?? '';
     final _SettledActions settled = _SettledActions.parse(
       row['ACTIONS'] as String?,
     );
@@ -380,7 +392,7 @@ class SalesTransactionRepository {
       customerName: (row['CUSTOMER_NAME'] as String?)?.trim() ?? 'Walk-in',
       vehicleNo: (row['VEHICLE_NO'] as String?)?.trim() ?? '',
       payment: paymentMethodFromStorage(row['PAYMENT_METHOD'] as String?),
-      cashierName: managerName.isEmpty ? 'Cashier' : managerName,
+      cashierName: operatorName.isEmpty ? 'Operator' : operatorName,
       helperName: helperName,
       shiftId: shiftIdFromRow(row['SHIFT_ID']),
       notes: settled.notes,
@@ -393,6 +405,8 @@ class SalesTransactionRepository {
       pendingAccountAmount: _asDouble(row['PENDING_ACCOUNT']),
       edited: _asInt(row['EDITED']) != 0,
       isTest: _asInt(row['IS_TEST']) != 0,
+      drumQty: _asInt(row['DRUM_QTY']),
+      saleType: (row['SALE_TYPE'] as String?)?.trim() ?? '',
     );
   }
 

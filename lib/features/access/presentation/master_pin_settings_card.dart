@@ -6,8 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/security/pin_hasher.dart';
 import '../../../core/theme/dispensr_theme.dart';
+import '../data/fingerprint_helper_client.dart';
 import '../domain/access_policy.dart';
 import 'access_controller.dart';
+import 'owner_fingerprint_enrollment_dialog.dart';
 
 /// Settings form to rotate the Owner Master PIN stored in `app_settings`.
 class MasterPinSettingsCard extends ConsumerStatefulWidget {
@@ -183,43 +185,54 @@ class _MasterPinSettingsCardState extends ConsumerState<MasterPinSettingsCard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                _PinField(
-                  controller: _current,
-                  label: 'Current Master PIN',
-                  hint: '4–6 digits',
-                  obscure: _obscureCurrent,
-                  enabled: enabled,
-                  onToggle: () {
-                    setState(() {
-                      _obscureCurrent = !_obscureCurrent;
-                    });
-                  },
-                ),
-                const SizedBox(height: 10),
-                _PinField(
-                  controller: _next,
-                  label: 'New Master PIN',
-                  hint: '4–6 digits',
-                  obscure: _obscureNext,
-                  enabled: enabled,
-                  onToggle: () {
-                    setState(() {
-                      _obscureNext = !_obscureNext;
-                    });
-                  },
-                ),
-                const SizedBox(height: 10),
-                _PinField(
-                  controller: _confirm,
-                  label: 'Confirm New Master PIN',
-                  hint: 'Re-enter new PIN',
-                  obscure: _obscureConfirm,
-                  enabled: enabled,
-                  onToggle: () {
-                    setState(() {
-                      _obscureConfirm = !_obscureConfirm;
-                    });
-                  },
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Expanded(
+                      child: _PinField(
+                        controller: _current,
+                        label: 'Current Master PIN',
+                        hint: '4–6 digits',
+                        obscure: _obscureCurrent,
+                        enabled: enabled,
+                        onToggle: () {
+                          setState(() {
+                            _obscureCurrent = !_obscureCurrent;
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _PinField(
+                        controller: _next,
+                        label: 'New Master PIN',
+                        hint: '4–6 digits',
+                        obscure: _obscureNext,
+                        enabled: enabled,
+                        onToggle: () {
+                          setState(() {
+                            _obscureNext = !_obscureNext;
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _PinField(
+                        controller: _confirm,
+                        label: 'Confirm New Master PIN',
+                        hint: 'Re-enter new PIN',
+                        obscure: _obscureConfirm,
+                        enabled: enabled,
+                        onToggle: () {
+                          setState(() {
+                            _obscureConfirm = !_obscureConfirm;
+                          });
+                        },
+                      ),
+                    ),
+                  ],
                 ),
                 if (_fieldError != null) ...<Widget>[
                   const SizedBox(height: 10),
@@ -233,18 +246,45 @@ class _MasterPinSettingsCardState extends ConsumerState<MasterPinSettingsCard> {
                   ),
                 ],
                 const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: DsPillButton(
-                    label: _submitting ? 'Saving…' : 'Update Master PIN',
-                    icon: Icons.lock_reset,
-                    onPressed: enabled
-                        ? () {
-                            unawaited(_submit());
-                          }
-                        : null,
-                    compact: true,
-                  ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: <Widget>[
+                    DsPillButton(
+                      label: _submitting ? 'Saving…' : 'Update Master PIN',
+                      icon: Icons.lock_reset,
+                      onPressed: enabled
+                          ? () {
+                              unawaited(_submit());
+                            }
+                          : null,
+                      compact: true,
+                    ),
+                    if (FingerprintHelperSession.isSupported)
+                      DsPillButton(
+                        label: access.fingerprintEnrolled
+                            ? 'Re-enroll fingerprint'
+                            : 'Enroll fingerprint',
+                        icon: Icons.fingerprint,
+                        compact: true,
+                        variant: DsPillVariant.outline,
+                        onPressed: enabled
+                            ? () {
+                                unawaited(
+                                  showOwnerFingerprintEnrollmentDialog(context),
+                                );
+                              }
+                            : null,
+                      ),
+                    if (FingerprintHelperSession.isSupported &&
+                        access.fingerprintEnrolled)
+                      DsStatusPill(
+                        label: 'Fingerprint enrolled',
+                        foreground: tokens.good,
+                        background: tokens.good.withValues(alpha: 0.12),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<int>(

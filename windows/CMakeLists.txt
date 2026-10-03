@@ -106,3 +106,19 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# U.are.U helper (built separately from tools/fingerprint_helper).
+set(FP_HELPER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/fingerprint_helper/bin/Release/net48")
+if(EXISTS "${FP_HELPER_DIR}/fingerprint_helper.exe")
+  install(FILES
+    "${FP_HELPER_DIR}/fingerprint_helper.exe"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+  foreach(FP_DLL DPUruNet.dll dpfpdd.dll dpfj.dll)
+    if(EXISTS "${FP_HELPER_DIR}/${FP_DLL}")
+      install(FILES "${FP_HELPER_DIR}/${FP_DLL}"
+        DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+        COMPONENT Runtime)
+    endif()
+  endforeach()
+endif()

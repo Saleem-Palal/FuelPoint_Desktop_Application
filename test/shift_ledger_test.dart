@@ -33,7 +33,7 @@ SaleTransaction _sale({
 
 ShiftLedgerSummary _summary({
   required String shiftId,
-  required ManagerShiftStatus status,
+  required OperatorShiftStatus status,
   int totalTransactions = 1,
   double totalShiftPkr = 100,
   double totalShiftLiters = 1,
@@ -42,9 +42,9 @@ ShiftLedgerSummary _summary({
 }) {
   return ShiftLedgerSummary(
     shiftId: shiftId,
-    managerId: 'mgr-1',
-    managerName: 'Saleem',
-    role: ManagerRole.manager,
+    operatorId: 'mgr-1',
+    operatorName: 'Saleem',
+    role: OperatorRole.operator,
     startTime: startTime ?? DateTime(2026, 9, 8, 8),
     endTime: endTime,
     status: status,
@@ -59,7 +59,7 @@ void main() {
     test('replaces LIVE shift totals from committed sales', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 1,
         totalShiftPkr: 100,
         totalShiftLiters: 1,
@@ -75,10 +75,10 @@ void main() {
       expect(next.totalShiftLiters, 15);
     });
 
-    test('leaves test fills out of live shift totals', () {
+    test('live shift liters include test fills and money does not', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 1,
         totalShiftPkr: 100,
         totalShiftLiters: 1,
@@ -96,13 +96,13 @@ void main() {
 
       expect(next.totalTransactions, 1);
       expect(next.totalShiftPkr, 2800);
-      expect(next.totalShiftLiters, 10);
+      expect(next.totalShiftLiters, 15);
     });
 
     test('keeps SQLite totals when memory cache has not caught up', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 4,
         totalShiftPkr: 800,
         totalShiftLiters: 8,
@@ -119,7 +119,7 @@ void main() {
     test('does not rewrite closed shift aggregates', () {
       final ShiftLedgerSummary closed = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.closed,
+        status: OperatorShiftStatus.closed,
         totalTransactions: 3,
         totalShiftPkr: 500,
         totalShiftLiters: 2,
@@ -136,7 +136,7 @@ void main() {
     test('includes untagged committed sales inside the live shift window', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 0,
         totalShiftPkr: 0,
         totalShiftLiters: 0,
@@ -153,7 +153,7 @@ void main() {
     test('leaves Direct sales out of live shift totals', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 0,
         totalShiftPkr: 0,
         totalShiftLiters: 0,
@@ -177,7 +177,7 @@ void main() {
     test('leaves Direct sales out of live shift totals', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 0,
         totalShiftPkr: 0,
         totalShiftLiters: 0,
@@ -201,7 +201,7 @@ void main() {
     test('merges in-memory workspace sales before SQLite refresh', () {
       final ShiftLedgerSummary live = _summary(
         shiftId: 'SHF-12',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         totalTransactions: 0,
         totalShiftPkr: 0,
         totalShiftLiters: 0,
@@ -236,30 +236,30 @@ void main() {
     expect(parseShiftPk(''), isNull);
   });
 
-  test('manager badge uses name and role', () {
+  test('operator badge uses name and role', () {
     final ShiftLedgerSummary row = _summary(
       shiftId: 'SHF-1',
-      status: ManagerShiftStatus.open,
+      status: OperatorShiftStatus.open,
     );
-    expect(row.managerBadgeLabel, 'Saleem (MANAGER)');
+    expect(row.operatorBadgeLabel, 'Saleem (OPERATOR)');
   });
 
   group('shift pager', () {
     final List<ShiftLedgerSummary> shifts = <ShiftLedgerSummary>[
       _summary(
         shiftId: 'SHF-3',
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         startTime: DateTime(2026, 9, 10, 8),
       ),
       _summary(
         shiftId: 'SHF-2',
-        status: ManagerShiftStatus.closed,
+        status: OperatorShiftStatus.closed,
         startTime: DateTime(2026, 9, 8, 8),
         endTime: DateTime(2026, 9, 8, 20),
       ),
       _summary(
         shiftId: 'SHF-1',
-        status: ManagerShiftStatus.closed,
+        status: OperatorShiftStatus.closed,
         startTime: DateTime(2026, 9, 1, 8),
         endTime: DateTime(2026, 9, 1, 20),
       ),
@@ -294,7 +294,7 @@ void main() {
     test('shift plus unit filter drives KPIs and rows', () {
       final ShiftLedgerSummary shift = _summary(
         shiftId: 'SHF-1',
-        status: ManagerShiftStatus.closed,
+        status: OperatorShiftStatus.closed,
         endTime: DateTime(2026, 9, 8, 20),
       );
       final List<SaleTransaction> source = liveSalesForShift(
@@ -352,7 +352,7 @@ void main() {
     test('keeps test fills on the meter slice and out of KPI totals', () {
       final ShiftLedgerSummary shift = _summary(
         shiftId: 'SHF-1',
-        status: ManagerShiftStatus.closed,
+        status: OperatorShiftStatus.closed,
         endTime: DateTime(2026, 9, 8, 20),
       );
       final List<SaleTransaction> source = liveSalesForShift(
@@ -382,6 +382,7 @@ void main() {
       expect(slice.totalAmountPkr, 2800);
       expect(slice.totalVolumeLiters, 10);
       expect(slice.physicalVolumeLiters, 14);
+      expect(slice.testVolumeLiters, 4);
       expect(
         slice.rows.map((SaleTransaction row) => row.tokenNo).toList(),
         <int>[100001, 100002],
@@ -395,27 +396,26 @@ void main() {
   });
 
   test('querySnapshot keeps Direct rows visible but out of KPI totals', () {
-    final SalesLedgerSnapshot slice = SalesTransactionRepository.querySnapshot(
-      <SaleTransaction>[
-        _sale(shiftId: 'SHF-1', liters: 10, pkr: 2800, tokenNo: 100001),
-        _sale(
-          shiftId: '',
-          liters: 50,
-          pkr: 14000,
-          tokenNo: 600000,
-          unitId: kDirectSaleUnitId,
-        ),
-      ],
-    );
+    final SalesLedgerSnapshot slice =
+        SalesTransactionRepository.querySnapshot(<SaleTransaction>[
+          _sale(shiftId: 'SHF-1', liters: 10, pkr: 2800, tokenNo: 100001),
+          _sale(
+            shiftId: '',
+            liters: 50,
+            pkr: 14000,
+            tokenNo: 600000,
+            unitId: kDirectSaleUnitId,
+          ),
+        ]);
 
     expect(slice.totalCount, 1);
     expect(slice.totalAmountPkr, 2800);
     expect(slice.totalVolumeLiters, 10);
     expect(slice.physicalVolumeLiters, 10);
-    expect(
-      slice.rows.map((SaleTransaction row) => row.tokenNo).toList(),
-      <int>[100001, 600000],
-    );
+    expect(slice.rows.map((SaleTransaction row) => row.tokenNo).toList(), <int>[
+      100001,
+      600000,
+    ]);
     expect(
       slice.meterRows.map((SaleTransaction row) => row.tokenNo).toList(),
       <int>[100001],

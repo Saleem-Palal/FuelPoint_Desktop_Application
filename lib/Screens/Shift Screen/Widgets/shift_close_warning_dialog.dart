@@ -3,23 +3,28 @@ import 'package:flutter/services.dart';
 
 import '../../../core/security/pin_hasher.dart';
 import '../../../core/theme/dispensr_theme.dart';
+import '../../../features/access/data/fingerprint_helper_client.dart';
+import '../../../features/access/domain/operator_credential.dart';
+import '../../../features/access/presentation/operator_fingerprint_watch.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import 'shift_ui_kit.dart';
 
 enum ShiftCloseWarningAction { stay, proceedEndShift }
 
-Future<String?> showManagerPinDialog(
+Future<OperatorCredential?> showOperatorPinDialog(
   BuildContext context, {
-  required String managerName,
+  required String operatorId,
+  required String operatorName,
   required String title,
   required String message,
 }) {
-  return showDialog<String>(
+  return showDialog<OperatorCredential>(
     context: context,
     barrierDismissible: false,
     builder: (BuildContext context) {
-      return _ManagerPinDialog(
-        managerName: managerName,
+      return _OperatorPinDialog(
+        operatorId: operatorId,
+        operatorName: operatorName,
         title: title,
         message: message,
       );
@@ -29,20 +34,20 @@ Future<String?> showManagerPinDialog(
 
 Future<ShiftCloseWarningAction?> showShiftCloseWarningDialog(
   BuildContext context, {
-  required String managerName,
+  required String operatorName,
 }) {
   return showDialog<ShiftCloseWarningAction>(
     context: context,
     barrierDismissible: false,
     builder: (BuildContext context) {
-      return _ShiftCloseWarningDialog(managerName: managerName);
+      return _ShiftCloseWarningDialog(operatorName: operatorName);
     },
   );
 }
 
 Future<UnverifiedShiftAction?> showUnverifiedShiftDialog(
   BuildContext context, {
-  required ManagerShiftRecord shift,
+  required OperatorShiftRecord shift,
   DateTime? uncleanExitAt,
 }) {
   return showDialog<UnverifiedShiftAction>(
@@ -56,24 +61,27 @@ Future<UnverifiedShiftAction?> showUnverifiedShiftDialog(
 
 enum UnverifiedShiftAction { resume, reconcile }
 
-class _ManagerPinDialog extends StatefulWidget {
-  const _ManagerPinDialog({
-    required this.managerName,
+class _OperatorPinDialog extends StatefulWidget {
+  const _OperatorPinDialog({
+    required this.operatorId,
+    required this.operatorName,
     required this.title,
     required this.message,
   });
 
-  final String managerName;
+  final String operatorId;
+  final String operatorName;
   final String title;
   final String message;
 
   @override
-  State<_ManagerPinDialog> createState() => _ManagerPinDialogState();
+  State<_OperatorPinDialog> createState() => _OperatorPinDialogState();
 }
 
-class _ManagerPinDialogState extends State<_ManagerPinDialog> {
+class _OperatorPinDialogState extends State<_OperatorPinDialog> {
   final TextEditingController _pin = TextEditingController();
   String? _error;
+  bool _showPin = !FingerprintHelperSession.isSupported;
 
   @override
   void dispose() {
@@ -86,11 +94,11 @@ class _ManagerPinDialogState extends State<_ManagerPinDialog> {
     if (!PinHasher.isValidPlainPin(pin)) {
       setState(() {
         _error =
-            'Enter the ${PinHasher.minPinLength}–${PinHasher.maxPinLength} digit manager PIN.';
+            'Enter the ${PinHasher.minPinLength}–${PinHasher.maxPinLength} digit operator PIN.';
       });
       return;
     }
-    Navigator.of(context).pop(pin);
+    Navigator.of(context).pop(OperatorCredential.pin(pin));
   }
 
   @override
@@ -119,7 +127,9 @@ class _ManagerPinDialogState extends State<_ManagerPinDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Text(
-              widget.message,
+              _showPin
+                  ? widget.message
+                  : 'Place ${widget.operatorName}\'s finger on the reader.',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w500,
@@ -128,36 +138,59 @@ class _ManagerPinDialogState extends State<_ManagerPinDialog> {
               ),
             ),
             const SizedBox(height: 14),
-            TextField(
-              controller: _pin,
-              obscureText: true,
-              autofocus: true,
-              maxLength: PinHasher.maxPinLength,
-              keyboardType: TextInputType.number,
-              inputFormatters: <TextInputFormatter>[
-                FilteringTextInputFormatter.digitsOnly,
-              ],
-              onSubmitted: (_) => _submit(),
-              onChanged: (_) {
-                if (_error != null) {
-                  setState(() {
-                    _error = null;
-                  });
+            OperatorFingerprintWatch(
+              operatorId: widget.operatorId,
+              showScanMark: true,
+              onMatched: () {
+                if (!mounted) {
+                  return;
                 }
+                Navigator.of(
+                  context,
+                ).pop(const OperatorCredential.fingerprint());
               },
-              style: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w700,
-                fontSize: 18,
-                letterSpacing: 6,
-                color: tokens.ink,
-              ),
-              decoration: InputDecoration(
-                labelText: '${widget.managerName} PIN',
-                counterText: '',
-                errorText: _error,
-              ),
+              onShowPin: (bool show) {
+                if (!mounted || _showPin == show) {
+                  return;
+                }
+                setState(() {
+                  _showPin = show;
+                });
+              },
             ),
+            if (_showPin) ...<Widget>[
+              const SizedBox(height: 14),
+              TextField(
+                controller: _pin,
+                obscureText: true,
+                autofocus: true,
+                maxLength: PinHasher.maxPinLength,
+                keyboardType: TextInputType.number,
+                inputFormatters: <TextInputFormatter>[
+                  FilteringTextInputFormatter.digitsOnly,
+                ],
+                onSubmitted: (_) => _submit(),
+                onChanged: (_) {
+                  if (_error != null) {
+                    setState(() {
+                      _error = null;
+                    });
+                  }
+                },
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  letterSpacing: 6,
+                  color: tokens.ink,
+                ),
+                decoration: InputDecoration(
+                  labelText: '${widget.operatorName} PIN',
+                  counterText: '',
+                  errorText: _error,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -168,16 +201,17 @@ class _ManagerPinDialogState extends State<_ManagerPinDialog> {
           compact: true,
           onPressed: () => Navigator.of(context).pop(),
         ),
-        DsPillButton(label: 'Verify PIN', compact: true, onPressed: _submit),
+        if (_showPin)
+          DsPillButton(label: 'Verify PIN', compact: true, onPressed: _submit),
       ],
     );
   }
 }
 
 class _ShiftCloseWarningDialog extends StatelessWidget {
-  const _ShiftCloseWarningDialog({required this.managerName});
+  const _ShiftCloseWarningDialog({required this.operatorName});
 
-  final String managerName;
+  final String operatorName;
 
   @override
   Widget build(BuildContext context) {
@@ -209,7 +243,7 @@ class _ShiftCloseWarningDialog extends StatelessWidget {
       content: SizedBox(
         width: 520,
         child: Text(
-          'Live Shift Under Manager $managerName Active. '
+          'Live Shift Under Operator $operatorName Active. '
           'Closing app will suspend telemetry.',
           style: TextStyle(
             fontFamily: 'Roboto',
@@ -254,7 +288,7 @@ class _ShiftCloseWarningDialog extends StatelessWidget {
 class _UnverifiedShiftDialog extends StatelessWidget {
   const _UnverifiedShiftDialog({required this.shift, this.uncleanExitAt});
 
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
   final DateTime? uncleanExitAt;
 
   @override
@@ -279,10 +313,10 @@ class _UnverifiedShiftDialog extends StatelessWidget {
       content: SizedBox(
         width: 480,
         child: Text(
-          '${shift.shiftId} is still LIVE under ${shift.managerName} after an '
+          '${shift.shiftId} is still LIVE under ${shift.operatorName} after an '
           'unclean exit'
           '${uncleanExitAt == null ? '' : ' at ${_formatStamp(uncleanExitAt!)}'}'
-          '. Enter that manager PIN to resume telemetry and re-enable keypads, '
+          '. Enter that operator PIN to resume telemetry and re-enable keypads, '
           'or force-end and reconcile using last hardware meters.',
           style: TextStyle(
             fontFamily: 'Roboto',

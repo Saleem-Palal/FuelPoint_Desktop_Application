@@ -167,10 +167,10 @@ class _EditPurchaseDialogState extends ConsumerState<EditPurchaseDialog> {
     setState(() {
       _saving = true;
     });
-    final ({String id, String name, String pin}) manager =
-        PurchaseRepository.managerCreds(
+    final ({String id, String name, String pin}) operator =
+        PurchaseRepository.operatorCreds(
           activeShift: ref.read(shiftWorkspaceProvider).activeShift,
-          managers: ref.read(shiftWorkspaceProvider).managers,
+          operators: ref.read(shiftWorkspaceProvider).operators,
         );
     try {
       await ref
@@ -181,7 +181,7 @@ class _EditPurchaseDialogState extends ConsumerState<EditPurchaseDialog> {
             purchaseRate: _unitRate,
             totalAmountPkr: _total,
             tafseel: _tafseel.text,
-            managerId: manager.id,
+            operatorId: operator.id,
           );
       if (!mounted) {
         return;

@@ -15,6 +15,7 @@ class AccessState {
     required this.isOwnerElevated,
     required this.busy,
     required this.autoLockMinutes,
+    this.fingerprintEnrolled = false,
     this.errorMessage,
   });
 
@@ -24,11 +25,15 @@ class AccessState {
 
   /// Idle minutes before owner access auto-locks. `0` disables the timer.
   final int autoLockMinutes;
+
+  /// True when a DPAPI-wrapped owner FMD is stored. Not the live session.
+  final bool fingerprintEnrolled;
   final String? errorMessage;
 
   AccessState copyWith({
     bool? isOwnerElevated,
     bool? busy,
+    bool? fingerprintEnrolled,
     int? autoLockMinutes,
     String? errorMessage,
     bool clearError = false,
@@ -36,6 +41,7 @@ class AccessState {
     return AccessState(
       isOwnerElevated: isOwnerElevated ?? this.isOwnerElevated,
       busy: busy ?? this.busy,
+      fingerprintEnrolled: fingerprintEnrolled ?? this.fingerprintEnrolled,
       autoLockMinutes: autoLockMinutes ?? this.autoLockMinutes,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
@@ -58,7 +64,7 @@ class AccessState {
   }
 }
 
-/// Owner Master PIN verification and elevation. Manager session stays active.
+/// Owner Master PIN verification and elevation. Operator session stays active.
 class AccessController extends Notifier<AccessState> {
   final DatabaseHelper _db = DatabaseHelper.instance;
   Timer? _autoLockTimer;
@@ -69,7 +75,10 @@ class AccessController extends Notifier<AccessState> {
       _autoLockTimer?.cancel();
       _autoLockTimer = null;
     });
-    Future<void>(() => _loadAutoLockMinutes());
+    Future<void>(() async {
+      await _loadAutoLockMinutes();
+      await refreshFingerprintEnrollment();
+    });
     if (!shouldEnforceOwnerAccessLock) {
       Future<void>(() => _syncAuthElevation(true));
       return AccessState.unlocked();
@@ -161,6 +170,92 @@ class AccessController extends Notifier<AccessState> {
       debugPrint('AccessController.setAutoLockMinutes failed: $error\n$stack');
       state = state.copyWith(
         errorMessage: 'Could not save auto-lock timer. $error',
+      );
+      return false;
+    }
+  }
+
+  Future<void> refreshFingerprintEnrollment() async {
+    try {
+      final bool enrolled = await _db.hasOwnerFingerprint();
+      state = state.copyWith(fingerprintEnrolled: enrolled);
+    } catch (error, stack) {
+      debugPrint(
+        'AccessController.refreshFingerprintEnrollment failed: $error\n$stack',
+      );
+    }
+  }
+
+  /// Checks the Master PIN without changing elevation (enroll / remove).
+  Future<bool> confirmOwnerMasterPin(String rawPin) async {
+    final String pin = rawPin.trim();
+    if (!PinHasher.isValidPlainPin(pin)) {
+      state = state.copyWith(
+        errorMessage:
+            'Master PIN must be ${PinHasher.minPinLength}–${PinHasher.maxPinLength} digits.',
+      );
+      return false;
+    }
+    try {
+      final String stored = await _db.readOwnerMasterPinHash();
+      final bool ok = PinHasher.matches(entered: pin, stored: stored);
+      if (!ok) {
+        state = state.copyWith(
+          errorMessage: 'Incorrect Master PIN. Try again.',
+        );
+        return false;
+      }
+      state = state.copyWith(clearError: true);
+      return true;
+    } catch (error, stack) {
+      debugPrint(
+        'AccessController.confirmOwnerMasterPin failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        errorMessage: 'Could not verify Master PIN. $error',
+      );
+      return false;
+    }
+  }
+
+  /// Same elevation as a correct Master PIN after a fingerprint match.
+  Future<bool> elevateOwnerFromFingerprint() async {
+    state = state.copyWith(busy: true, clearError: true);
+    try {
+      final bool enrolled = await _db.hasOwnerFingerprint();
+      if (!enrolled) {
+        state = state.copyWith(
+          busy: false,
+          fingerprintEnrolled: false,
+          errorMessage: 'No owner fingerprint is enrolled.',
+        );
+        return false;
+      }
+      state = state.copyWith(
+        busy: false,
+        isOwnerElevated: true,
+        fingerprintEnrolled: true,
+        clearError: true,
+      );
+      _syncAuthElevation(true);
+      _armAutoLock();
+      unawaited(
+        _db.insertAuditLog(
+          actionType: AuditActionType.ownerElevate,
+          details:
+              'Owner fingerprint accepted; administrative screens unlocked.',
+          elevatedByOwner: true,
+        ),
+      );
+      debugPrint('Access: owner elevated via fingerprint');
+      return true;
+    } catch (error, stack) {
+      debugPrint(
+        'AccessController.elevateOwnerFromFingerprint failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        busy: false,
+        errorMessage: 'Could not unlock with fingerprint. $error',
       );
       return false;
     }

@@ -9,25 +9,27 @@ import '../../../features/station/domain/dispenser_monitor_models.dart';
 import '../../../features/station/presentation/station_providers.dart';
 import '../../../utils/fuel_formatter.dart';
 
-class DiagnosticBayCard extends ConsumerStatefulWidget {
-  const DiagnosticBayCard({
+class DiagnosticUnitCard extends ConsumerStatefulWidget {
+  const DiagnosticUnitCard({
     super.key,
-    required this.bay,
+    required this.unit,
     required this.endpoint,
     required this.snapshot,
     required this.clock,
+    this.showManualKeypadUnlock = false,
   });
 
-  final DispenserBay bay;
+  final DispenserUnit unit;
   final UnitEndpoint endpoint;
-  final BayDiagnosticSnapshot snapshot;
+  final UnitDiagnosticSnapshot snapshot;
   final DateTime clock;
+  final bool showManualKeypadUnlock;
 
   @override
-  ConsumerState<DiagnosticBayCard> createState() => _DiagnosticBayCardState();
+  ConsumerState<DiagnosticUnitCard> createState() => _DiagnosticUnitCardState();
 }
 
-class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
+class _DiagnosticUnitCardState extends ConsumerState<DiagnosticUnitCard> {
   late final TextEditingController _host;
   late final TextEditingController _port;
   static final DateFormat _stamp = DateFormat('HH:mm:ss');
@@ -40,7 +42,7 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
   }
 
   @override
-  void didUpdateWidget(covariant DiagnosticBayCard oldWidget) {
+  void didUpdateWidget(covariant DiagnosticUnitCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.endpoint.host != widget.endpoint.host &&
         _host.text != widget.endpoint.host) {
@@ -76,7 +78,7 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
     }
     ref
         .read(stationControllerProvider.notifier)
-        .saveEndpoint(unitId: widget.bay.unitId, host: _host.text, port: port);
+        .saveEndpoint(unitId: widget.unit.unitId, host: _host.text, port: port);
     return true;
   }
 
@@ -86,24 +88,24 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
     final StationController station = ref.read(
       stationControllerProvider.notifier,
     );
-    final DispenserBay bay = widget.bay;
+    final DispenserUnit unit = widget.unit;
     final UnitEndpoint endpoint = widget.endpoint;
-    final BayLinkHealth health = BayLinkHealth.evaluate(
+    final UnitLinkHealth health = UnitLinkHealth.evaluate(
       endpoint: endpoint,
       snapshot: widget.snapshot,
       now: widget.clock,
     );
-    final MonitorBayStatus status = monitorStatusFor(
-      bay,
+    final MonitorUnitStatus status = monitorStatusFor(
+      unit,
       linkOnline: endpoint.connected && widget.snapshot.espToBoardLink != false,
     );
     final Color statusColor = switch (status) {
-      MonitorBayStatus.online => tokens.good,
-      MonitorBayStatus.dispensing => tokens.coral,
-      MonitorBayStatus.keypadLocked => tokens.warn,
-      MonitorBayStatus.offline => tokens.inkMuted,
+      MonitorUnitStatus.online => tokens.good,
+      MonitorUnitStatus.dispensing => tokens.coral,
+      MonitorUnitStatus.keypadLocked => tokens.warn,
+      MonitorUnitStatus.offline => tokens.inkMuted,
     };
-    final DateTime stamp = bay.lastPacketAt ?? widget.clock;
+    final DateTime stamp = unit.lastPacketAt ?? widget.clock;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
@@ -123,7 +125,7 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
           Row(
             children: <Widget>[
               Text(
-                'Unit ${bay.unitId}',
+                'Unit ${unit.unitId}',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w700,
@@ -152,17 +154,17 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
           _SocketFields(
             host: _host,
             port: _port,
-            hintHost: UnitEndpoint.seedFor(bay.unitId).host,
-            hintPort: '${UnitEndpoint.seedFor(bay.unitId).port}',
+            hintHost: UnitEndpoint.seedFor(unit.unitId).host,
+            hintPort: '${UnitEndpoint.seedFor(unit.unitId).port}',
             connected: endpoint.connected,
             onConnect: () {
               if (_commitEndpoint()) {
-                station.connectUnit(bay.unitId);
+                station.connectUnit(unit.unitId);
               }
             },
             onDisconnect: () {
               _commitEndpoint();
-              station.disconnectUnit(bay.unitId);
+              station.disconnectUnit(unit.unitId);
             },
           ),
           const SizedBox(height: 8),
@@ -176,24 +178,25 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
           const SizedBox(height: 8),
           _FaultRow(
             health: health,
-            keypadLocked: bay.keypadLocked,
-            onKeypadPressed: () => station.toggleMonitorKeypad(bay.unitId),
+            keypadLocked: unit.keypadLocked,
+            showManualKeypadUnlock: widget.showManualKeypadUnlock,
+            onKeypadPressed: () => station.toggleMonitorKeypad(unit.unitId),
           ),
           const SizedBox(height: 10),
           _TelemetryGrid(
             fields: <_Field>[
-              _Field('unit_id', '${bay.unitId}'),
+              _Field('unit_id', '${unit.unitId}'),
               _Field('timestamp', _stamp.format(stamp)),
               _Field('status', status.label),
               _Field('rssi', '${health.rssiDbm}'),
-              _Field('liters', FuelFormatter.lcdVolume(bay.volumeLiters)),
+              _Field('liters', FuelFormatter.lcdVolume(unit.volumeLiters)),
               _Field(
                 'amount_pkr',
-                FuelFormatter.lcdDispenserAmount(bay.amountPkr),
+                FuelFormatter.lcdDispenserAmount(unit.amountPkr),
               ),
-              _Field('rate_pkr', FuelFormatter.lcdRate(bay.rate)),
-              _Field('total_meter', FuelFormatter.lcdVolume(bay.meterCount)),
-              _Field('keypad_locked', bay.keypadLocked ? 'true' : 'false'),
+              _Field('rate_pkr', FuelFormatter.lcdRate(unit.rate)),
+              _Field('total_meter', FuelFormatter.lcdVolume(unit.meterCount)),
+              _Field('keypad_locked', unit.keypadLocked ? 'true' : 'false'),
               _Field(
                 'esp_to_board_link',
                 health.serialLive
@@ -216,11 +219,11 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
           ),
           const SizedBox(height: 6),
           DsPillButton(
-            label: 'Re-scan Bay Wi-Fi',
+            label: 'Re-scan Unit Wi-Fi',
             icon: Icons.wifi_find_outlined,
             variant: DsPillVariant.outline,
             compact: true,
-            onPressed: () => station.rescanBayWifi(bay.unitId),
+            onPressed: () => station.rescanUnitWifi(unit.unitId),
           ),
           const SizedBox(height: 6),
           DsPillButton(
@@ -228,15 +231,15 @@ class _DiagnosticBayCardState extends ConsumerState<DiagnosticBayCard> {
             icon: Icons.cleaning_services_outlined,
             variant: DsPillVariant.outline,
             compact: true,
-            onPressed: () => station.flushUartBuffer(bay.unitId),
+            onPressed: () => station.flushUartBuffer(unit.unitId),
           ),
           const SizedBox(height: 6),
           DsPillButton(
-            label: 'Reset Bay Socket',
+            label: 'Reset Unit Socket',
             icon: Icons.restart_alt,
             variant: DsPillVariant.muted,
             compact: true,
-            onPressed: () => station.resetBaySocket(bay.unitId),
+            onPressed: () => station.resetUnitSocket(unit.unitId),
           ),
         ],
       ),
@@ -328,7 +331,7 @@ class _SocketFields extends StatelessWidget {
 class _FdxLinkPane extends StatelessWidget {
   const _FdxLinkPane({required this.health});
 
-  final BayLinkHealth health;
+  final UnitLinkHealth health;
 
   @override
   Widget build(BuildContext context) {
@@ -372,7 +375,7 @@ class _FdxLinkPane extends StatelessWidget {
 class _SerialLinkPane extends StatelessWidget {
   const _SerialLinkPane({required this.health});
 
-  final BayLinkHealth health;
+  final UnitLinkHealth health;
 
   @override
   Widget build(BuildContext context) {
@@ -504,11 +507,13 @@ class _FaultRow extends StatelessWidget {
   const _FaultRow({
     required this.health,
     required this.keypadLocked,
+    required this.showManualKeypadUnlock,
     required this.onKeypadPressed,
   });
 
-  final BayLinkHealth health;
+  final UnitLinkHealth health;
   final bool keypadLocked;
+  final bool showManualKeypadUnlock;
   final VoidCallback onKeypadPressed;
 
   static const double _slotHeight = 26;
@@ -556,25 +561,27 @@ class _FaultRow extends StatelessWidget {
                 dot: true,
               ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _EqualSlot(
-                height: _slotHeight,
-                label: keypadLocked ? 'Unlock Keypad' : 'Lock Keypad',
-                foreground: tokens.card,
-                background: keypadLocked ? tokens.good : tokens.ink,
-                border: keypadLocked ? tokens.good : tokens.ink,
-                icon: keypadLocked ? Icons.lock_open : Icons.lock_outline,
-                onPressed: onKeypadPressed,
+            if (showManualKeypadUnlock) ...<Widget>[
+              const SizedBox(width: 8),
+              Expanded(
+                child: _EqualSlot(
+                  height: _slotHeight,
+                  label: keypadLocked ? 'Unlock Keypad' : 'Lock Keypad',
+                  foreground: tokens.card,
+                  background: keypadLocked ? tokens.good : tokens.ink,
+                  border: keypadLocked ? tokens.good : tokens.ink,
+                  icon: keypadLocked ? Icons.lock_open : Icons.lock_outline,
+                  onPressed: onKeypadPressed,
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ],
     );
   }
 
-  _SlotTone _statusTone(BayLinkHealth health, DispensrTokens tokens) {
+  _SlotTone _statusTone(UnitLinkHealth health, DispensrTokens tokens) {
     if (health.muxAlert) {
       return _SlotTone(
         label: 'ESP32 SOCKET DOWN',

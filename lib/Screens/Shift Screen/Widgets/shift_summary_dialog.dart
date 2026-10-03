@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/data/shift_summary_export.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/station/domain/money_format.dart';
+import '../../../providers/settings_provider.dart';
+import 'shift_ui_kit.dart';
 
 Future<void> showShiftSummaryDialog(
   BuildContext context, {
@@ -18,24 +21,29 @@ Future<void> showShiftSummaryDialog(
   );
 }
 
-class ShiftSummaryDialog extends StatefulWidget {
+class ShiftSummaryDialog extends ConsumerStatefulWidget {
   const ShiftSummaryDialog({super.key, required this.summary});
 
   final ShiftSummary summary;
 
   @override
-  State<ShiftSummaryDialog> createState() => _ShiftSummaryDialogState();
+  ConsumerState<ShiftSummaryDialog> createState() => _ShiftSummaryDialogState();
 }
 
-class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
+class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
   bool _busy = false;
+
+  bool get _showUnit5 => ref.read(settingsProvider).showUnit5;
 
   Future<void> _print() async {
     setState(() {
       _busy = true;
     });
     try {
-      final file = await ShiftSummaryExport.instance.printPdf(widget.summary);
+      final file = await ShiftSummaryExport.instance.printPdf(
+        widget.summary,
+        showUnit5: _showUnit5,
+      );
       if (!mounted) {
         return;
       }
@@ -65,6 +73,7 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
     try {
       final bool opened = await ShiftSummaryExport.instance.shareWhatsApp(
         widget.summary,
+        showUnit5: _showUnit5,
       );
       if (!mounted) {
         return;
@@ -93,7 +102,7 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final ManagerShiftRecord shift = widget.summary.shift;
+    final OperatorShiftRecord shift = widget.summary.shift;
     final ShiftWindowMetrics metrics = widget.summary.metrics;
     final Color discColor = shift.discrepancy < 0
         ? tokens.bad
@@ -148,8 +157,8 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            _SummaryRow(label: 'Manager', value: shift.managerName),
-            _SummaryRow(label: 'Role', value: managerRoleLabel(shift.role)),
+            _SummaryRow(label: 'Operator', value: shift.operatorName),
+            _SummaryRow(label: 'Role', value: operatorRoleLabel(shift.role)),
             _SummaryRow(label: 'Start', value: formatDateTime(shift.startTime)),
             _SummaryRow(
               label: 'End',
@@ -166,7 +175,7 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
               value: shiftTokenRangeLabel(metrics),
             ),
             _SummaryRow(
-              label: 'Volume sold',
+              label: 'Volume dispensed',
               value: formatLiters(metrics.totalLiters),
             ),
             const SizedBox(height: 8),
@@ -186,7 +195,11 @@ class _ShiftSummaryDialogState extends State<ShiftSummaryDialog> {
             ),
             _SummaryRow(
               label: 'Udhaar recovery',
-              value: formatPkr(metrics.udhaarRecoveryTotal),
+              value: formatPkr(metrics.udhaarRecoveryCombined),
+            ),
+            _SummaryRow(
+              label: 'Cash / Account',
+              value: formatUdhaarRecoverySplit(metrics),
             ),
             _SummaryRow(
               label: 'Expected cash',

@@ -86,7 +86,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _snack(error ?? 'Could not finish station setup.');
       return;
     }
-    Navigator.of(context).pushNamedAndRemoveUntil('/managers', (_) => false);
+    Navigator.of(context).pushNamedAndRemoveUntil('/operators', (_) => false);
   }
 
   void _snack(String message) {
@@ -179,7 +179,7 @@ class _BrandPane extends StatelessWidget {
       <({IconData icon, String title, String body})>[
         (
           icon: Icons.settings_input_component_outlined,
-          title: '5-Bay ESP32 Relay Integration & Keypad Control',
+          title: '5-Unit ESP32 Relay Integration & Keypad Control',
           body: 'Hardware handshake for live nozzle, pump, and keypad I/O.',
         ),
         (
@@ -189,8 +189,8 @@ class _BrandPane extends StatelessWidget {
         ),
         (
           icon: Icons.groups_outlined,
-          title: 'Multi-Manager Shift & Cash Reconciliation',
-          body: 'PIN-gated managers, OPEN shifts, and expected-vs-actual cash.',
+          title: 'Multi-Operator Shift & Cash Reconciliation',
+          body: 'PIN-gated operators, OPEN shifts, and expected-vs-actual cash.',
         ),
       ];
 

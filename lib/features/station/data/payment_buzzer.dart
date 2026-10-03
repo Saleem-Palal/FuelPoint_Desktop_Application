@@ -101,7 +101,7 @@ class PaymentBuzzer {
       return existing;
     }
     final File file = File(
-      '${Directory.systemTemp.path}${Platform.pathSeparator}dispensr_bay_buzzer_v012.wav',
+      '${Directory.systemTemp.path}${Platform.pathSeparator}dispensr_unit_buzzer_v012.wav',
     );
     await file.writeAsBytes(_buildBuzzerWav(), flush: true);
     _wavPath = file.path;

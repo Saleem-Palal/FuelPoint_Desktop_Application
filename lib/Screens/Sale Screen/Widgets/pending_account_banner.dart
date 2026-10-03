@@ -38,7 +38,40 @@ class PendingAccountBanner extends ConsumerWidget {
         );
       },
       loading: () => const SizedBox.shrink(),
-      error: (Object error, StackTrace stack) => const SizedBox.shrink(),
+      error: (Object error, StackTrace stack) => const _PendingLoadError(),
+    );
+  }
+}
+
+class _PendingLoadError extends StatelessWidget {
+  const _PendingLoadError();
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: tokens.bad.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(tokens.radius20),
+            border: Border.all(color: tokens.bad.withValues(alpha: 0.55)),
+          ),
+          child: Text(
+            'Could not load pending account transfers.',
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              color: tokens.ink,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -60,9 +93,7 @@ class _PendingAccountCard extends ConsumerWidget {
     }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          'Account confirmed for ${formatTokenNo(txn.tokenNo)}',
-        ),
+        content: Text('Account confirmed for ${formatTokenNo(txn.tokenNo)}'),
       ),
     );
   }
@@ -98,6 +129,31 @@ class _PendingAccountCard extends ConsumerWidget {
                     tokens: tokens,
                   ),
                   _Fact(
+                    label: 'DateTime',
+                    value: formatDateTime(txn.timestamp),
+                    tokens: tokens,
+                  ),
+                  _Fact(
+                    label: 'Vehicle No',
+                    value: displayVehicleNo(txn.vehicleNo),
+                    tokens: tokens,
+                  ),
+                  _Fact(
+                    label: 'Liters',
+                    value: formatLiters(txn.volumeLiters),
+                    tokens: tokens,
+                  ),
+                  _Fact(
+                    label: 'Rate',
+                    value: formatAverageRate(txn.rate),
+                    tokens: tokens,
+                  ),
+                  _Fact(
+                    label: 'Amount',
+                    value: formatPkr(txn.amountPkr),
+                    tokens: tokens,
+                  ),
+                  _Fact(
                     label: 'Cash Paid',
                     value: formatPkr(txn.cashAmount),
                     tokens: tokens,
@@ -118,7 +174,10 @@ class _PendingAccountCard extends ConsumerWidget {
               style: FilledButton.styleFrom(
                 backgroundColor: tokens.coral,
                 foregroundColor: tokens.card,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
               ),
               child: const Text(
                 'Confirm / Update',
@@ -137,11 +196,7 @@ class _PendingAccountCard extends ConsumerWidget {
 }
 
 class _Fact extends StatelessWidget {
-  const _Fact({
-    required this.label,
-    required this.value,
-    required this.tokens,
-  });
+  const _Fact({required this.label, required this.value, required this.tokens});
 
   final String label;
   final String value;
@@ -186,8 +241,7 @@ class _PendingAccountDialog extends ConsumerStatefulWidget {
       _PendingAccountDialogState();
 }
 
-class _PendingAccountDialogState
-    extends ConsumerState<_PendingAccountDialog> {
+class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
   late final TextEditingController _cash;
   late final TextEditingController _account;
   bool _syncing = false;
@@ -231,7 +285,9 @@ class _PendingAccountDialogState
       return;
     }
     _syncing = true;
-    _setField(_account, _sale - _parsed(_cash));
+    final int cash = _parsed(_cash);
+    _setField(_cash, cash);
+    _setField(_account, _sale - cash);
     _syncing = false;
     setState(() {});
   }
@@ -241,16 +297,26 @@ class _PendingAccountDialogState
       return;
     }
     _syncing = true;
-    _setField(_cash, _sale - _parsed(_account));
+    final int account = _parsed(_account);
+    _setField(_account, account);
+    _setField(_cash, _sale - account);
     _syncing = false;
     setState(() {});
   }
 
   SaleTransaction _previewTxn() {
-    return widget.txn.copyWith(
+    final ({PaymentMethod payment, double cashAmount, double accountAmount})
+    confirmed = resolvePendingAccountConfirm(
+      payment: widget.txn.payment,
+      saleAmount: widget.txn.amountPkr,
       cashAmount: _parsed(_cash).toDouble(),
-      accountAmount: _parsed(_account).toDouble(),
-      pendingAccountAmount: 0,
+    );
+    final bool waiting = confirmed.accountAmount > 0;
+    return widget.txn.copyWith(
+      payment: confirmed.payment,
+      cashAmount: confirmed.cashAmount,
+      accountAmount: waiting ? 0 : confirmed.accountAmount,
+      pendingAccountAmount: waiting ? confirmed.accountAmount : 0,
     );
   }
 
@@ -262,10 +328,7 @@ class _PendingAccountDialogState
       _busy = true;
     });
     try {
-      await spoolSaleReceipt(
-        context: context,
-        txn: _previewTxn(),
-      );
+      await spoolSaleReceipt(context: context, txn: _previewTxn());
       if (!mounted) {
         return;
       }
@@ -307,7 +370,6 @@ class _PendingAccountDialogState
           .read(stationControllerProvider.notifier)
           .confirmPendingAccountTransfer(
             tokenNo: widget.txn.tokenNo,
-            receivedAmount: _parsed(_account).toDouble(),
             cashAmount: _parsed(_cash).toDouble(),
           );
       if (!mounted) {
@@ -380,9 +442,7 @@ class _PendingAccountDialogState
                       FilteringTextInputFormatter.digitsOnly,
                     ],
                     onChanged: _onCashChanged,
-                    decoration: const InputDecoration(
-                      labelText: 'Cash',
-                    ),
+                    decoration: const InputDecoration(labelText: 'Cash'),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -395,9 +455,7 @@ class _PendingAccountDialogState
                       FilteringTextInputFormatter.digitsOnly,
                     ],
                     onChanged: _onAccountChanged,
-                    decoration: const InputDecoration(
-                      labelText: 'Account',
-                    ),
+                    decoration: const InputDecoration(labelText: 'Account'),
                   ),
                 ),
               ],

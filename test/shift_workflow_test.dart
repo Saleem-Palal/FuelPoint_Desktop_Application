@@ -8,14 +8,14 @@ void main() {
   group('ShiftStatusStorage', () {
     test('persists LIVE for an open cashier window', () {
       expect(
-        ShiftStatusStorage.toStorage(ManagerShiftStatus.open),
+        ShiftStatusStorage.toStorage(OperatorShiftStatus.open),
         ShiftStatusStorage.live,
       );
     });
 
     test('reads LIVE and legacy OPEN as the same live status', () {
-      expect(ShiftStatusStorage.fromStorage('LIVE'), ManagerShiftStatus.open);
-      expect(ShiftStatusStorage.fromStorage('OPEN'), ManagerShiftStatus.open);
+      expect(ShiftStatusStorage.fromStorage('LIVE'), OperatorShiftStatus.open);
+      expect(ShiftStatusStorage.fromStorage('OPEN'), OperatorShiftStatus.open);
       expect(ShiftStatusStorage.isLiveStatus('LIVE'), isTrue);
       expect(ShiftStatusStorage.isLiveStatus('OPEN'), isTrue);
     });
@@ -23,26 +23,26 @@ void main() {
     test('maps pending and closed statuses', () {
       expect(
         ShiftStatusStorage.fromStorage('PENDING_RECONCILIATION'),
-        ManagerShiftStatus.pendingReconciliation,
+        OperatorShiftStatus.pendingReconciliation,
       );
       expect(
         ShiftStatusStorage.fromStorage('CLOSED'),
-        ManagerShiftStatus.closed,
+        OperatorShiftStatus.closed,
       );
     });
   });
 
   group('ShiftLifecycleGuard', () {
-    test('blocks handover on the first dispensing bay', () {
-      expect(ShiftLifecycleGuard.firstDispensingBay(<int>[3, 1]), 1);
+    test('blocks handover on the first dispensing unit', () {
+      expect(ShiftLifecycleGuard.firstDispensingUnit(<int>[3, 1]), 1);
       expect(
         ShiftLifecycleGuard.handoverBlockedMessage(3),
-        contains('Bay #3 is actively dispensing'),
+        contains('Unit #3 is actively dispensing'),
       );
     });
 
-    test('allows handover when no bay is pumping', () {
-      expect(ShiftLifecycleGuard.firstDispensingBay(const <int>[]), isNull);
+    test('allows handover when no unit is pumping', () {
+      expect(ShiftLifecycleGuard.firstDispensingUnit(const <int>[]), isNull);
     });
   });
 
@@ -57,7 +57,7 @@ void main() {
   });
 
   group('HelperUnitAssignmentSnapshot', () {
-    test('round-trips assigned bays so duty survives app resume', () {
+    test('round-trips assigned units so duty survives app resume', () {
       const List<int> units = <int>[3, 1, 1, 2];
       final String encoded = HelperUnitAssignmentSnapshot.encode(units);
       expect(encoded, '[1,2,3]');
@@ -75,54 +75,54 @@ void main() {
   group('atomic handover result', () {
     test('keeps outgoing pending tally and incoming LIVE', () {
       expect(
-        ShiftStatusStorage.toStorage(ManagerShiftStatus.pendingReconciliation),
+        ShiftStatusStorage.toStorage(OperatorShiftStatus.pendingReconciliation),
         'PENDING_RECONCILIATION',
       );
-      expect(ShiftStatusStorage.toStorage(ManagerShiftStatus.open), 'LIVE');
+      expect(ShiftStatusStorage.toStorage(OperatorShiftStatus.open), 'LIVE');
       final DateTime start = DateTime(2026, 9, 9, 8);
       final DateTime handoff = DateTime(2026, 9, 9, 16);
       final ShiftHandoverResult result = ShiftHandoverResult(
         outcome: HandoverOutcome.handedOff,
         pending: ReconciliationSnapshot(
-          shift: ManagerShiftRecord(
+          shift: OperatorShiftRecord(
             shiftId: 'SHF-1',
-            managerId: 'mgr-out',
-            managerName: 'Outgoing',
-            role: ManagerRole.manager,
+            operatorId: 'mgr-out',
+            operatorName: 'Outgoing',
+            role: OperatorRole.operator,
             startTime: start,
             endTime: handoff,
             expectedCash: 5000,
-            status: ManagerShiftStatus.pendingReconciliation,
+            status: OperatorShiftStatus.pendingReconciliation,
           ),
           metrics: ShiftWindowMetrics.empty,
         ),
-        opened: ManagerShiftRecord(
+        opened: OperatorShiftRecord(
           shiftId: 'SHF-2',
-          managerId: 'mgr-in',
-          managerName: 'Incoming',
-          role: ManagerRole.manager,
+          operatorId: 'mgr-in',
+          operatorName: 'Incoming',
+          role: OperatorRole.operator,
           startTime: handoff,
           expectedCash: 0,
-          status: ManagerShiftStatus.open,
+          status: OperatorShiftStatus.open,
         ),
       );
       expect(result.isSuccess, isTrue);
       expect(result.pending, isNotNull);
       expect(
         result.pending!.shift.status,
-        ManagerShiftStatus.pendingReconciliation,
+        OperatorShiftStatus.pendingReconciliation,
       );
-      expect(result.opened?.status, ManagerShiftStatus.open);
+      expect(result.opened?.status, OperatorShiftStatus.open);
       expect(result.closed, isNull);
     });
 
-    test('baysDispensing is not a successful handoff', () {
+    test('unitsDispensing is not a successful handoff', () {
       const ShiftHandoverResult result = ShiftHandoverResult(
-        outcome: HandoverOutcome.baysDispensing,
-        blockedBayId: 3,
+        outcome: HandoverOutcome.unitsDispensing,
+        blockedUnitId: 3,
       );
       expect(result.isSuccess, isFalse);
-      expect(result.blockedBayId, 3);
+      expect(result.blockedUnitId, 3);
     });
   });
 
@@ -197,7 +197,7 @@ void main() {
       expect(metrics.expectedCashInHand, 0);
     });
 
-    test('test fills stay listed but do not add to cash, liters, or count', () {
+    test('test fills stay listed, add liters, and skip cash and count', () {
       final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
         sale(payment: PaymentMethod.cash, amountPkr: 1000, cashAmount: 1000),
         sale(
@@ -208,7 +208,7 @@ void main() {
       expect(metrics.sales.length, 2);
       expect(metrics.commercialSaleCount, 1);
       expect(metrics.fuelCashSales, 1000);
-      expect(metrics.totalLiters, 10);
+      expect(metrics.totalLiters, 15);
       expect(metrics.expectedCashInHand, 1000);
     });
   });

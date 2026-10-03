@@ -26,7 +26,7 @@ class DatabaseHelper {
   static const String dbName = 'fuel_point_system.db';
   static const int dbVersion = 3;
 
-  static const String tableManagers = 'managers';
+  static const String tableOperators = 'managers';
   static const String tableHelpers = 'helpers';
   static const String tableCustomers = 'customers';
   static const String tableDieselStock = 'diesel_stock';
@@ -60,14 +60,20 @@ class DatabaseHelper {
   static const String defaultOwnerMasterPin = '1234';
   static const String settingOwnerAutoLockMinutes = 'owner_auto_lock_minutes';
   static const int defaultOwnerAutoLockMinutes = 5;
+  static const String settingOwnerFingerprintFmd = 'owner_fingerprint_fmd';
+  static const String settingOwnerFingerprintFormat =
+      'owner_fingerprint_format';
+  static const String settingOwnerFingerprintEnrolledAt =
+      'owner_fingerprint_enrolled_at';
   static const String settingShowUnit5 = 'show_unit_5';
+  static const String settingShowManualKeypadUnlock =
+      'show_manual_keypad_unlock';
   static const String settingShowReceiptPreview = 'show_receipt_preview';
   static const String settingShowRecentSaleEdit = 'show_recent_sale_edit';
   static const String settingLowStockThresholdLiters =
       'low_stock_threshold_liters';
   static const String settingReceiptFooterText = 'receipt_footer_text';
-  static const String settingReceiptFooterFontSize =
-      'receipt_footer_font_size';
+  static const String settingReceiptFooterFontSize = 'receipt_footer_font_size';
   static const String settingReceiptFooterLineHeight =
       'receipt_footer_line_height';
 
@@ -234,10 +240,12 @@ class DatabaseHelper {
     final Batch batch = db.batch();
 
     batch.execute('''
-CREATE TABLE IF NOT EXISTS $tableManagers (
+CREATE TABLE IF NOT EXISTS $tableOperators (
   manager_ID TEXT PRIMARY KEY,
   Manager_name TEXT NOT NULL,
-  pin TEXT NOT NULL
+  pin TEXT NOT NULL,
+  fingerprint_fmd TEXT,
+  fingerprint_enrolled_at TEXT
 );
 ''');
 
@@ -279,7 +287,7 @@ CREATE TABLE IF NOT EXISTS $tableShifts (
   NOTES TEXT NOT NULL DEFAULT '',
   OPENING_METERS TEXT NOT NULL DEFAULT '{}',
   CLOSING_METERS TEXT NOT NULL DEFAULT '{}',
-  FOREIGN KEY (MANAGER) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (MANAGER) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (Helper) REFERENCES $tableHelpers (Helper_ID)
 );
 ''');
@@ -309,10 +317,12 @@ CREATE TABLE IF NOT EXISTS $tableSalesTransactions (
   ESP_TX_ID TEXT,
   EDITED INTEGER NOT NULL DEFAULT 0,
   IS_TEST INTEGER NOT NULL DEFAULT 0,
+  DRUM_QTY INTEGER NOT NULL DEFAULT 0,
+  SALE_TYPE TEXT NOT NULL DEFAULT '',
   FOREIGN KEY (HELPER) REFERENCES $tableHelpers (Helper_ID),
-  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (Manager) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (SHIFT_ID) REFERENCES $tableShifts (SHIFT_ID),
-  FOREIGN KEY (MANAGER_ID) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (MANAGER_ID) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (HELPER_ID) REFERENCES $tableHelpers (Helper_ID)
 );
 ''');
@@ -338,7 +348,7 @@ CREATE TABLE IF NOT EXISTS $tablePurchases (
   AMOUNT REAL NOT NULL,
   TAFSEEL TEXT,
   Manager TEXT NOT NULL,
-  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID)
+  FOREIGN KEY (Manager) REFERENCES $tableOperators (manager_ID)
 );
 ''');
 
@@ -501,6 +511,16 @@ WHERE HELPER_ID IS NULL OR TRIM(HELPER_ID) = ''
           'ALTER TABLE $tableSalesTransactions ADD COLUMN PENDING_ACCOUNT REAL NOT NULL DEFAULT 0',
         );
       }
+      if (!names.contains('DRUM_QTY')) {
+        await db.execute(
+          'ALTER TABLE $tableSalesTransactions ADD COLUMN DRUM_QTY INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+      if (!names.contains('SALE_TYPE')) {
+        await db.execute(
+          "ALTER TABLE $tableSalesTransactions ADD COLUMN SALE_TYPE TEXT NOT NULL DEFAULT ''",
+        );
+      }
       await _backfillSalesTenderColumns(db);
     } catch (error, stack) {
       debugPrint(
@@ -640,6 +660,23 @@ CREATE TABLE IF NOT EXISTS $tableAppSessionState (
           "TEXT NOT NULL DEFAULT '[]'",
         );
       }
+
+      final List<Map<String, Object?>> operatorCols = await db.rawQuery(
+        'PRAGMA table_info($tableOperators)',
+      );
+      final Set<String> operatorNames = <String>{
+        for (final Map<String, Object?> col in operatorCols) '${col['name']}',
+      };
+      if (!operatorNames.contains('fingerprint_fmd')) {
+        await db.execute(
+          'ALTER TABLE $tableOperators ADD COLUMN fingerprint_fmd TEXT',
+        );
+      }
+      if (!operatorNames.contains('fingerprint_enrolled_at')) {
+        await db.execute(
+          'ALTER TABLE $tableOperators ADD COLUMN fingerprint_enrolled_at TEXT',
+        );
+      }
     } catch (error, stack) {
       debugPrint(
         'DatabaseHelper._ensureShiftWorkflowSchema failed: $error\n$stack',
@@ -750,7 +787,7 @@ CREATE TABLE ${tablePurchases}__precision (
   AMOUNT REAL NOT NULL,
   TAFSEEL TEXT,
   Manager TEXT NOT NULL,
-  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID)
+  FOREIGN KEY (Manager) REFERENCES $tableOperators (manager_ID)
 )
 ''',
           transform: (Map<String, Object?> row) {
@@ -791,9 +828,9 @@ CREATE TABLE ${tableSalesTransactions}__precision (
   HELPER_ID TEXT,
   ACTIONS TEXT,
   FOREIGN KEY (HELPER) REFERENCES $tableHelpers (Helper_ID),
-  FOREIGN KEY (Manager) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (Manager) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (SHIFT_ID) REFERENCES $tableShifts (SHIFT_ID),
-  FOREIGN KEY (MANAGER_ID) REFERENCES $tableManagers (manager_ID),
+  FOREIGN KEY (MANAGER_ID) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (HELPER_ID) REFERENCES $tableHelpers (Helper_ID)
 )
 ''',
@@ -978,7 +1015,7 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
   }
 
   /// Old in-memory seed (Sajjad / Babar / Tariq / Rashid) was written into
-  /// `helpers` when those IDs were assigned on a bay and a sale was committed.
+  /// `helpers` when those IDs were assigned on a unit and a sale was committed.
   /// Strip only that exact ID+name pair so a later real helper can reuse `hlp-1`.
   Future<void> _purgeLegacyDemoHelpers(Database db) async {
     const List<({String id, String name})> demo = <({String id, String name})>[
@@ -1021,9 +1058,9 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
   /// Inserts a committed sale, upserts FK parents, and decrements stock.
   Future<void> commitSaleTransaction({
     required Map<String, Object?> sale,
-    required String managerId,
-    required String managerName,
-    required String managerPin,
+    required String operatorId,
+    required String operatorName,
+    required String operatorPin,
     String? helperId,
     String? helperName,
     required double volumeLiters,
@@ -1036,10 +1073,10 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
     try {
       final Database db = await database;
       await db.transaction((Transaction txn) async {
-        await txn.insert(tableManagers, <String, Object?>{
-          'manager_ID': managerId,
-          'Manager_name': managerName,
-          'pin': PinHasher.hashIfPlain(managerPin),
+        await txn.insert(tableOperators, <String, Object?>{
+          'manager_ID': operatorId,
+          'Manager_name': operatorName,
+          'pin': PinHasher.hashIfPlain(operatorPin),
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
         final String? resolvedHelperId = helperId?.trim();
         if (resolvedHelperId != null && resolvedHelperId.isNotEmpty) {
@@ -1107,10 +1144,7 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
             vehicle: creditVehicle ?? sale['VEHICLE_NO'] as String?,
           );
         }
-        final bool isTest = _asInt(saleRow['IS_TEST'] ?? sale['IS_TEST']) != 0;
-        if (!isTest) {
-          await _applyStockDelta(txn, parseFuel(-volumeLiters));
-        }
+        await _applyStockDelta(txn, parseFuel(-volumeLiters));
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.commitSaleTransaction failed: $error\n$stack');
@@ -1144,10 +1178,12 @@ SELECT
   s.ESP_TX_ID,
   s.EDITED,
   s.IS_TEST,
+  s.DRUM_QTY,
+  s.SALE_TYPE,
   m.Manager_name AS manager_name,
   h.Helper_name AS helper_name
 FROM $tableSalesTransactions s
-LEFT JOIN $tableManagers m ON m.manager_ID = COALESCE(s.MANAGER_ID, s.Manager)
+LEFT JOIN $tableOperators m ON m.manager_ID = COALESCE(s.MANAGER_ID, s.Manager)
 LEFT JOIN $tableHelpers h ON h.Helper_ID = COALESCE(s.HELPER_ID, s.HELPER)
 ''';
 
@@ -1377,6 +1413,8 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     double? accountAmount,
     double? pendingAccountAmount,
     bool? edited,
+    int? drumQty,
+    String? saleType,
   }) async {
     try {
       final Database db = await database;
@@ -1397,6 +1435,12 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
       if (edited != null) {
         values['EDITED'] = edited ? 1 : 0;
       }
+      if (drumQty != null) {
+        values['DRUM_QTY'] = drumQty;
+      }
+      if (saleType != null) {
+        values['SALE_TYPE'] = saleType;
+      }
       await db.update(
         tableSalesTransactions,
         values,
@@ -1411,6 +1455,8 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     }
   }
 
+  /// Marks a committed sale as a test. Stock already left the tank, so
+  /// [volumeLiters] is not added back.
   Future<void> convertCommittedSaleToTest({
     required String token,
     required double volumeLiters,
@@ -1420,7 +1466,7 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
       await db.transaction((Transaction txn) async {
         final List<Map<String, Object?>> rows = await txn.query(
           tableSalesTransactions,
-          columns: const <String>['IS_TEST'],
+          columns: const <String>['TOKEN'],
           where: 'TOKEN = ?',
           whereArgs: <Object>[token],
           limit: 1,
@@ -1428,7 +1474,6 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
         if (rows.isEmpty) {
           throw StateError('No sale found for token $token');
         }
-        final bool wasTest = _asInt(rows.first['IS_TEST']) != 0;
         await txn.update(
           tableSalesTransactions,
           <String, Object?>{
@@ -1442,9 +1487,6 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
           where: 'TOKEN = ?',
           whereArgs: <Object>[token],
         );
-        if (!wasTest) {
-          await _applyStockDelta(txn, parseFuel(volumeLiters));
-        }
       });
     } catch (error, stack) {
       debugPrint(
@@ -1462,6 +1504,8 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     required double cashAmount,
     required double accountAmount,
     double pendingAccountAmount = 0,
+    int drumQty = 0,
+    String saleType = '',
     required double saleAmount,
     required double volumeLiters,
     required double rate,
@@ -1482,6 +1526,8 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
             'CASH_AMOUNT': roundRupees(cashAmount),
             'ACCOUNT_AMOUNT': roundRupees(accountAmount),
             'PENDING_ACCOUNT': roundRupees(pendingAccountAmount),
+            'DRUM_QTY': drumQty,
+            'SALE_TYPE': saleType,
           },
           where: 'TOKEN = ?',
           whereArgs: <Object>[token],
@@ -1532,6 +1578,7 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     required String token,
     required double receivedAmount,
     double? cashAmount,
+    String? paymentMethod,
   }) async {
     try {
       final Database db = await database;
@@ -1541,6 +1588,10 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
       };
       if (cashAmount != null) {
         values['CASH_AMOUNT'] = roundRupees(cashAmount);
+      }
+      final String? method = paymentMethod?.trim();
+      if (method != null && method.isNotEmpty) {
+        values['PAYMENT_METHOD'] = method;
       }
       final int changed = await db.update(
         tableSalesTransactions,
@@ -1671,7 +1722,7 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     }
   }
 
-  /// Inserts a purchase, upserts the manager FK, and updates `diesel_stock`.
+  /// Inserts a purchase, upserts the operator FK, and updates `diesel_stock`.
   ///
   /// WAC uses stored whole-rupee amounts:
   /// `(Stock_amount + this AMOUNT) / (stock_quantity + this QUANTITY)`.
@@ -1681,9 +1732,9 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     required double quantity,
     required double rate,
     required double amount,
-    required String managerId,
-    required String managerName,
-    required String managerPin,
+    required String operatorId,
+    required String operatorName,
+    required String operatorPin,
     String tafseel = '',
   }) async {
     try {
@@ -1692,10 +1743,10 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
       final int rupees = roundRupees(amount);
       final Database db = await database;
       await db.transaction((Transaction txn) async {
-        await txn.insert(tableManagers, <String, Object?>{
-          'manager_ID': managerId,
-          'Manager_name': managerName,
-          'pin': PinHasher.hashIfPlain(managerPin),
+        await txn.insert(tableOperators, <String, Object?>{
+          'manager_ID': operatorId,
+          'Manager_name': operatorName,
+          'pin': PinHasher.hashIfPlain(operatorPin),
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
         await txn.insert(tablePurchases, <String, Object?>{
           'INV_NO': invNo,
@@ -1704,7 +1755,7 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
           'RATE': fuelToText(unitRate),
           'AMOUNT': rupees,
           'TAFSEEL': tafseel.trim().isEmpty ? null : tafseel.trim(),
-          'Manager': managerId,
+          'Manager': operatorId,
         });
         await _applyPurchaseToStock(
           txn,
@@ -1793,7 +1844,7 @@ SELECT
   p.Manager,
   m.Manager_name AS manager_name
 FROM $tablePurchases p
-LEFT JOIN $tableManagers m ON m.manager_ID = p.Manager
+LEFT JOIN $tableOperators m ON m.manager_ID = p.Manager
 ORDER BY datetime(p.DATETIME) DESC, p.INV_NO DESC
 ''');
       if (limit == null) {
@@ -1828,44 +1879,60 @@ ORDER BY datetime(p.DATETIME) DESC, p.INV_NO DESC
     }
   }
 
-  Future<List<Map<String, Object?>>> queryManagers() async {
+  Future<List<Map<String, Object?>>> queryOperators() async {
     try {
       final Database db = await database;
       return db.query(
-        tableManagers,
+        tableOperators,
         orderBy: 'Manager_name COLLATE NOCASE ASC',
       );
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.queryManagers failed: $error\n$stack');
+      debugPrint('DatabaseHelper.queryOperators failed: $error\n$stack');
       rethrow;
     }
   }
 
-  Future<void> upsertManager({
-    required String managerId,
-    required String managerName,
+  Future<void> upsertOperator({
+    required String operatorId,
+    required String operatorName,
     required String pin,
   }) async {
     try {
-      final String id = managerId.trim();
-      final String name = managerName.trim();
+      final String id = operatorId.trim();
+      final String name = operatorName.trim();
       if (id.isEmpty || name.isEmpty) {
-        throw ArgumentError('Manager ID and name are required');
+        throw ArgumentError('Operator ID and name are required');
       }
       final Database db = await database;
-      await db.insert(tableManagers, <String, Object?>{
+      final Map<String, Object?>? existing = await queryOperatorById(id);
+      final Map<String, Object?> row = <String, Object?>{
         'manager_ID': id,
         'Manager_name': name,
         'pin': PinHasher.hashIfPlain(pin),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      };
+      final String keptFmd =
+          (existing?['fingerprint_fmd'] as String?)?.trim() ?? '';
+      if (keptFmd.isNotEmpty) {
+        row['fingerprint_fmd'] = keptFmd;
+        final String keptAt =
+            (existing?['fingerprint_enrolled_at'] as String?)?.trim() ?? '';
+        if (keptAt.isNotEmpty) {
+          row['fingerprint_enrolled_at'] = keptAt;
+        }
+      }
+      await db.insert(
+        tableOperators,
+        row,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.upsertManager failed: $error\n$stack');
+      debugPrint('DatabaseHelper.upsertOperator failed: $error\n$stack');
       rethrow;
     }
   }
 
-  /// Managers joined with the latest `OPEN` shift, if any.
-  Future<List<Map<String, Object?>>> queryManagersWithOpenShifts() async {
+  /// Operators joined with the latest `OPEN` shift, if any.
+  Future<List<Map<String, Object?>>> queryOperatorsWithOpenShifts() async {
     try {
       final Database db = await database;
       return db.rawQuery('''
@@ -1873,6 +1940,11 @@ SELECT
   m.manager_ID,
   m.Manager_name,
   m.pin,
+  CASE
+    WHEN m.fingerprint_fmd IS NOT NULL AND length(trim(m.fingerprint_fmd)) > 0
+    THEN 1
+    ELSE 0
+  END AS fingerprint_enrolled,
   (
     SELECT s.SHIFT_ID
     FROM $tableShifts s
@@ -1881,47 +1953,47 @@ SELECT
     ORDER BY s.SHIFT_ID DESC
     LIMIT 1
   ) AS open_shift_id
-FROM $tableManagers m
+FROM $tableOperators m
 ORDER BY m.Manager_name COLLATE NOCASE ASC
 ''');
     } catch (error, stack) {
       debugPrint(
-        'DatabaseHelper.queryManagersWithOpenShifts failed: $error\n$stack',
+        'DatabaseHelper.queryOperatorsWithOpenShifts failed: $error\n$stack',
       );
       rethrow;
     }
   }
 
-  Future<Map<String, Object?>?> queryManagerById(String managerId) async {
+  Future<Map<String, Object?>?> queryOperatorById(String operatorId) async {
     try {
       final Database db = await database;
       final List<Map<String, Object?>> rows = await db.query(
-        tableManagers,
+        tableOperators,
         where: 'manager_ID = ?',
-        whereArgs: <Object>[managerId.trim()],
+        whereArgs: <Object>[operatorId.trim()],
         limit: 1,
       );
       return rows.isEmpty ? null : rows.first;
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.queryManagerById failed: $error\n$stack');
+      debugPrint('DatabaseHelper.queryOperatorById failed: $error\n$stack');
       rethrow;
     }
   }
 
-  /// Verifies [pin] against `managers.pin` (hashed or leftover plaintext).
-  Future<bool> verifyManagerPin({
-    required String managerId,
+  /// Verifies [pin] against `operators.pin` (hashed or leftover plaintext).
+  Future<bool> verifyOperatorPin({
+    required String operatorId,
     required String pin,
   }) async {
     try {
-      final Map<String, Object?>? row = await queryManagerById(managerId);
+      final Map<String, Object?>? row = await queryOperatorById(operatorId);
       if (row == null) {
         return false;
       }
       final String stored = (row['pin'] as String?)?.trim() ?? '';
       return PinHasher.matches(entered: pin, stored: stored);
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.verifyManagerPin failed: $error\n$stack');
+      debugPrint('DatabaseHelper.verifyOperatorPin failed: $error\n$stack');
       return false;
     }
   }
@@ -1929,7 +2001,7 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
   Future<double> sumPurchasesInWindow({
     required DateTime start,
     DateTime? end,
-    String? managerId,
+    String? operatorId,
   }) async {
     try {
       final Database db = await database;
@@ -1939,10 +2011,10 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
         where.add('datetime(DATETIME) <= datetime(?)');
         args.add(end.toIso8601String());
       }
-      final String? manager = managerId?.trim();
-      if (manager != null && manager.isNotEmpty) {
+      final String? operator = operatorId?.trim();
+      if (operator != null && operator.isNotEmpty) {
         where.add('Manager = ?');
-        args.add(manager);
+        args.add(operator);
       }
       final List<Map<String, Object?>> rows = await db.rawQuery(
         'SELECT COALESCE(SUM(AMOUNT), 0) AS total FROM $tablePurchases '
@@ -1974,8 +2046,8 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
     }
   }
 
-  Future<Map<String, Object?>?> queryOpenShiftForManager(
-    String managerId,
+  Future<Map<String, Object?>?> queryOpenShiftForOperator(
+    String operatorId,
   ) async {
     try {
       final Database db = await database;
@@ -1983,22 +2055,22 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
         tableShifts,
         columns: const <String>['SHIFT_ID', 'MANAGER', 'STATUS'],
         where: 'MANAGER = ? AND ${ShiftStatusStorage.liveSql}',
-        whereArgs: <Object>[managerId.trim()],
+        whereArgs: <Object>[operatorId.trim()],
         orderBy: 'SHIFT_ID DESC',
         limit: 1,
       );
       return rows.isEmpty ? null : rows.first;
     } catch (error, stack) {
       debugPrint(
-        'DatabaseHelper.queryOpenShiftForManager failed: $error\n$stack',
+        'DatabaseHelper.queryOpenShiftForOperator failed: $error\n$stack',
       );
       rethrow;
     }
   }
 
-  Future<String> nextManagerId() async {
+  Future<String> nextOperatorId() async {
     try {
-      final List<Map<String, Object?>> rows = await queryManagers();
+      final List<Map<String, Object?>> rows = await queryOperators();
       int max = 0;
       for (final Map<String, Object?> row in rows) {
         final String id = '${row['manager_ID'] ?? ''}';
@@ -2012,22 +2084,22 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
       }
       return 'mgr-${max + 1}';
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.nextManagerId failed: $error\n$stack');
+      debugPrint('DatabaseHelper.nextOperatorId failed: $error\n$stack');
       rethrow;
     }
   }
 
   /// Updates name always. Replaces the PIN only when [pin] is non-empty.
-  Future<void> updateManager({
-    required String managerId,
-    required String managerName,
+  Future<void> updateOperator({
+    required String operatorId,
+    required String operatorName,
     String? pin,
   }) async {
     try {
-      final String id = managerId.trim();
-      final String name = managerName.trim();
+      final String id = operatorId.trim();
+      final String name = operatorName.trim();
       if (id.isEmpty || name.isEmpty) {
-        throw ArgumentError('Manager ID and name are required');
+        throw ArgumentError('Operator ID and name are required');
       }
       final Database db = await database;
       final Map<String, Object?> values = <String, Object?>{
@@ -2038,54 +2110,98 @@ ORDER BY m.Manager_name COLLATE NOCASE ASC
         values['pin'] = PinHasher.hashIfPlain(nextPin);
       }
       final int changed = await db.update(
-        tableManagers,
+        tableOperators,
         values,
         where: 'manager_ID = ?',
         whereArgs: <Object>[id],
       );
       if (changed == 0) {
-        throw StateError('No manager found for $id');
+        throw StateError('No operator found for $id');
       }
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.updateManager failed: $error\n$stack');
+      debugPrint('DatabaseHelper.updateOperator failed: $error\n$stack');
       rethrow;
     }
   }
 
-  /// Hard-deletes a manager. Refuses if they hold an `OPEN` shift.
-  Future<void> deleteManager(String managerId) async {
-    final String id = managerId.trim();
+  Future<String?> readOperatorFingerprintFmd(String operatorId) async {
+    final Map<String, Object?>? row = await queryOperatorById(operatorId);
+    final String stored = (row?['fingerprint_fmd'] as String?)?.trim() ?? '';
+    return stored.isEmpty ? null : stored;
+  }
+
+  Future<void> writeOperatorFingerprint({
+    required String operatorId,
+    required String protectedFmd,
+  }) async {
+    final String id = operatorId.trim();
+    final String blob = protectedFmd.trim();
+    if (id.isEmpty || blob.isEmpty) {
+      throw ArgumentError('Operator fingerprint template is empty.');
+    }
+    final Database db = await database;
+    final int changed = await db.update(
+      tableOperators,
+      <String, Object?>{
+        'fingerprint_fmd': blob,
+        'fingerprint_enrolled_at': DateTime.now().toIso8601String(),
+      },
+      where: 'manager_ID = ?',
+      whereArgs: <Object>[id],
+    );
+    if (changed == 0) {
+      throw StateError('No operator found for $id');
+    }
+  }
+
+  Future<void> clearOperatorFingerprint(String operatorId) async {
+    final String id = operatorId.trim();
+    final Database db = await database;
+    await db.update(
+      tableOperators,
+      <String, Object?>{
+        'fingerprint_fmd': null,
+        'fingerprint_enrolled_at': null,
+      },
+      where: 'manager_ID = ?',
+      whereArgs: <Object>[id],
+    );
+  }
+
+  /// Hard-deletes a operator. Refuses if they hold an `OPEN` shift.
+  Future<void> deleteOperator(String operatorId) async {
+    final String id = operatorId.trim();
     if (id.isEmpty) {
-      throw ArgumentError('Manager ID is required');
+      throw ArgumentError('Operator ID is required');
     }
     try {
       final Database db = await database;
-      final Map<String, Object?>? row = await queryManagerById(id);
+      final Map<String, Object?>? row = await queryOperatorById(id);
       if (row == null) {
-        throw StateError('No manager found for $id');
+        throw StateError('No operator found for $id');
       }
-      final Map<String, Object?>? open = await queryOpenShiftForManager(id);
+      final Map<String, Object?>? open = await queryOpenShiftForOperator(id);
       if (open != null) {
-        throw ManagerHasOpenShiftException(
-          managerId: id,
-          managerName: (row['Manager_name'] as String?)?.trim() ?? id,
+        throw OperatorHasOpenShiftException(
+          operatorId: id,
+          operatorName: (row['Manager_name'] as String?)?.trim() ?? id,
           shiftId: _asInt(open['SHIFT_ID']),
         );
       }
       final int changed = await db.delete(
-        tableManagers,
+        tableOperators,
         where: 'manager_ID = ?',
         whereArgs: <Object>[id],
       );
       if (changed == 0) {
-        throw StateError('No manager found for $id');
+        throw StateError('No operator found for $id');
       }
-    } on ManagerHasOpenShiftException {
+    } on OperatorHasOpenShiftException {
       rethrow;
     } catch (error, stack) {
-      debugPrint('DatabaseHelper.deleteManager failed: $error\n$stack');
+      debugPrint('DatabaseHelper.deleteOperator failed: $error\n$stack');
       if (_isForeignKeyError(error)) {
-        throw ManagerInUseException(managerId: id);
+        throw OperatorInUseException(operatorId: id);
       }
       rethrow;
     }
@@ -2179,7 +2295,7 @@ SELECT
   m.Manager_name AS manager_name,
   h.Helper_name AS helper_name
 FROM $tableShifts s
-LEFT JOIN $tableManagers m ON m.manager_ID = s.MANAGER
+LEFT JOIN $tableOperators m ON m.manager_ID = s.MANAGER
 LEFT JOIN $tableHelpers h ON h.Helper_ID = s.Helper
 ''';
 
@@ -2206,9 +2322,9 @@ SELECT
   s.CLOSING_METERS AS closing_meters,
   COUNT(CASE WHEN COALESCE(t.IS_TEST, 0) = 0 THEN t.TOKEN END) AS total_transactions,
   COALESCE(SUM(CASE WHEN COALESCE(t.IS_TEST, 0) = 0 THEN t.AMOUNT ELSE 0 END), 0.0) AS total_shift_pkr,
-  COALESCE(SUM(CASE WHEN COALESCE(t.IS_TEST, 0) = 0 THEN t.LITERS ELSE 0 END), 0.0) AS total_shift_liters
+  COALESCE(SUM(t.LITERS), 0.0) AS total_shift_liters
 FROM $tableShifts s
-LEFT JOIN $tableManagers m ON m.manager_ID = s.MANAGER
+LEFT JOIN $tableOperators m ON m.manager_ID = s.MANAGER
 LEFT JOIN $tableSalesTransactions t ON (
   COALESCE(t.UNIT_NO, 0) != $kDirectSaleUnitId
   AND (
@@ -2242,7 +2358,7 @@ ORDER BY datetime(s.START_TIME) DESC
   }
 
   Future<int> insertShift({
-    required String managerId,
+    required String operatorId,
     String? helperId,
     required String startTimeIso,
     String status = ShiftStatusStorage.live,
@@ -2258,7 +2374,7 @@ ORDER BY datetime(s.START_TIME) DESC
     try {
       final DatabaseExecutor db = executor ?? await database;
       return db.insert(tableShifts, <String, Object?>{
-        'MANAGER': managerId,
+        'MANAGER': operatorId,
         'Helper': helperId,
         'START_TIME': startTimeIso,
         'END_TIME': endTimeIso,
@@ -2423,20 +2539,40 @@ ORDER BY datetime(s.START_TIME) DESC
 
   Future<List<Map<String, Object?>>> queryUnifiedUdhaarLedger({
     String? customerId,
+    String? shiftId,
   }) async {
     try {
       final Database db = await database;
       final String? id = customerId?.trim();
-      if (id == null || id.isEmpty) {
+      final String prefix = shiftId == null || shiftId.trim().isEmpty
+          ? ''
+          : '${_shiftToken(shiftId)}/';
+      if (id != null && id.isNotEmpty && prefix.isNotEmpty) {
         return db.query(
           tableUnifiedUdhaarLedger,
+          where: 'Customer_ID = ? AND PRIMARY_KEY LIKE ?',
+          whereArgs: <Object>[id, '$prefix%'],
+          orderBy: 'datetime(DATE_TIME) ASC, PRIMARY_KEY ASC',
+        );
+      }
+      if (id != null && id.isNotEmpty) {
+        return db.query(
+          tableUnifiedUdhaarLedger,
+          where: 'Customer_ID = ?',
+          whereArgs: <Object>[id],
+          orderBy: 'datetime(DATE_TIME) ASC, PRIMARY_KEY ASC',
+        );
+      }
+      if (prefix.isNotEmpty) {
+        return db.query(
+          tableUnifiedUdhaarLedger,
+          where: "TYPE = 'SETTLEMENT' AND PRIMARY_KEY LIKE ?",
+          whereArgs: <Object>['$prefix%'],
           orderBy: 'datetime(DATE_TIME) ASC, PRIMARY_KEY ASC',
         );
       }
       return db.query(
         tableUnifiedUdhaarLedger,
-        where: 'Customer_ID = ?',
-        whereArgs: <Object>[id],
         orderBy: 'datetime(DATE_TIME) ASC, PRIMARY_KEY ASC',
       );
     } catch (error, stack) {
@@ -2751,7 +2887,7 @@ ORDER BY datetime(s.START_TIME) DESC
       tableShifts,
       tableHelpers,
       tableCustomers,
-      tableManagers,
+      tableOperators,
       tableDieselStock,
       tableStationSettings,
       tableAppSettings,
@@ -2924,7 +3060,7 @@ ORDER BY datetime(s.START_TIME) DESC
     }
   }
 
-  /// Manager on the live OPEN shift, or `SYSTEM` when the station is idle.
+  /// Operator on the live OPEN shift, or `SYSTEM` when the station is idle.
   Future<String> auditOperatorId() async {
     try {
       final List<Map<String, Object?>> open = await queryOpenShifts();
@@ -2945,12 +3081,12 @@ ORDER BY datetime(s.START_TIME) DESC
     String? driveFileId,
     String triggerSource = 'MANUAL',
     String details = '',
-    String? managerId,
+    String? operatorId,
     DateTime? at,
   }) async {
     try {
       final Database db = await database;
-      final String operator = (managerId ?? await auditOperatorId()).trim();
+      final String operator = (operatorId ?? await auditOperatorId()).trim();
       return db.insert(tableCloudBackupLogs, <String, Object?>{
         'timestamp': (at ?? DateTime.now()).toIso8601String(),
         'file_name': fileName.trim(),
@@ -2969,13 +3105,13 @@ ORDER BY datetime(s.START_TIME) DESC
   Future<int> insertAuditLog({
     required String actionType,
     required String details,
-    String? managerId,
+    String? operatorId,
     DateTime? at,
     bool elevatedByOwner = false,
   }) async {
     try {
       final Database db = await database;
-      final String operator = (managerId ?? await auditOperatorId()).trim();
+      final String operator = (operatorId ?? await auditOperatorId()).trim();
       return db.insert(tableAuditLogs, <String, Object?>{
         'timestamp': (at ?? DateTime.now()).toIso8601String(),
         'manager_ID': operator.isEmpty ? 'SYSTEM' : operator,
@@ -3110,6 +3246,52 @@ ORDER BY datetime(s.START_TIME) DESC
   Future<void> writeOwnerAutoLockMinutes(int minutes) async {
     final int safe = minutes < 0 ? defaultOwnerAutoLockMinutes : minutes;
     await writeAppSetting(settingOwnerAutoLockMinutes, '$safe');
+  }
+
+  Future<String?> readOwnerFingerprintFmd() async {
+    final String? stored = await readAppSetting(settingOwnerFingerprintFmd);
+    final String trimmed = stored?.trim() ?? '';
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<bool> hasOwnerFingerprint() async {
+    return await readOwnerFingerprintFmd() != null;
+  }
+
+  Future<void> writeOwnerFingerprint({
+    required String protectedFmd,
+    String format = 'ANSI',
+  }) async {
+    final String blob = protectedFmd.trim();
+    if (blob.isEmpty) {
+      throw ArgumentError('Owner fingerprint template is empty.');
+    }
+    await writeAppSetting(settingOwnerFingerprintFmd, blob);
+    await writeAppSetting(settingOwnerFingerprintFormat, format);
+    await writeAppSetting(
+      settingOwnerFingerprintEnrolledAt,
+      DateTime.now().toIso8601String(),
+    );
+  }
+
+  Future<void> clearOwnerFingerprint() async {
+    await deleteAppSetting(settingOwnerFingerprintFmd);
+    await deleteAppSetting(settingOwnerFingerprintFormat);
+    await deleteAppSetting(settingOwnerFingerprintEnrolledAt);
+  }
+
+  Future<void> deleteAppSetting(String key) async {
+    try {
+      final Database db = await database;
+      await db.delete(
+        tableAppSettings,
+        where: 'key = ?',
+        whereArgs: <Object>[key],
+      );
+    } catch (error, stack) {
+      debugPrint('DatabaseHelper.deleteAppSetting failed: $error\n$stack');
+      rethrow;
+    }
   }
 
   Future<String?> readSetting(String key) async {
@@ -3568,35 +3750,35 @@ class PurchaseStockOverdrawException implements Exception {
   }
 }
 
-/// Thrown when a manager still holds an `OPEN` row in `shifts`.
-class ManagerHasOpenShiftException implements Exception {
-  const ManagerHasOpenShiftException({
-    required this.managerId,
-    required this.managerName,
+/// Thrown when a operator still holds an `OPEN` row in `shifts`.
+class OperatorHasOpenShiftException implements Exception {
+  const OperatorHasOpenShiftException({
+    required this.operatorId,
+    required this.operatorName,
     required this.shiftId,
   });
 
-  final String managerId;
-  final String managerName;
+  final String operatorId;
+  final String operatorName;
   final int shiftId;
 
   @override
   String toString() {
-    return '$managerName currently holds Shift #$shiftId. '
-        'Close that shift before removing or inactivating this manager.';
+    return '$operatorName currently holds Shift #$shiftId. '
+        'Close that shift before removing or inactivating this operator.';
   }
 }
 
 /// Thrown when SQLite FK rows (sales, purchases, closed shifts) still reference
-/// the manager.
-class ManagerInUseException implements Exception {
-  const ManagerInUseException({required this.managerId});
+/// the operator.
+class OperatorInUseException implements Exception {
+  const OperatorInUseException({required this.operatorId});
 
-  final String managerId;
+  final String operatorId;
 
   @override
   String toString() {
-    return 'Manager $managerId is referenced by historical station records '
+    return 'Operator $operatorId is referenced by historical station records '
         'and cannot be deleted.';
   }
 }

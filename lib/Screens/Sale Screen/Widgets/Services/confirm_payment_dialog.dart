@@ -7,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../features/customer/domain/customer_models.dart';
 import '../../../../features/customer/presentation/customer_providers.dart';
+import '../../../../features/customer/presentation/widgets/customer_pick_field.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/domain/fuel_precision.dart';
+import '../../../../features/station/domain/sale_fulfillment.dart';
 import '../../../../features/station/presentation/station_providers.dart';
 import '../../../../providers/settings_provider.dart';
 import 'generate_receipt.dart';
@@ -28,6 +30,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
   final TextEditingController _customerId = TextEditingController();
   final TextEditingController _customer = TextEditingController();
   final TextEditingController _vehicle = TextEditingController();
+  final FocusNode _vehicleFocus = FocusNode();
   final TextEditingController _cashNow = TextEditingController();
   final TextEditingController _accountNow = TextEditingController();
 
@@ -48,6 +51,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     _customer.addListener(_onFieldChanged);
     _customerId.addListener(_onCustomerIdChanged);
     _vehicle.addListener(_onFieldChanged);
+    _vehicleFocus.addListener(_onFieldChanged);
   }
 
   CustomerProfile? _matchedCustomer() {
@@ -90,6 +94,9 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     _vehicle
       ..removeListener(_onFieldChanged)
       ..dispose();
+    _vehicleFocus
+      ..removeListener(_onFieldChanged)
+      ..dispose();
     _cashNow.dispose();
     _accountNow.dispose();
     super.dispose();
@@ -109,6 +116,9 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
   }
 
   void _cycleMethod(int delta) {
+    if (ref.read(stationControllerProvider).unit(widget.unitId).isTestRun) {
+      return;
+    }
     const List<_PayPill> methods = <_PayPill>[
       _PayPill.cash,
       _PayPill.udhaar,
@@ -131,6 +141,9 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
   }
 
   void _cycleRail(int delta) {
+    if (ref.read(stationControllerProvider).unit(widget.unitId).isTestRun) {
+      return;
+    }
     setState(() {
       if (_pill != _PayPill.account) {
         _pill = _PayPill.account;
@@ -147,21 +160,25 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     });
   }
 
-  bool _canSubmit(DispenserBay bay) {
-    if (_submitting || !bay.canConfirmPayment) {
+  bool get _isVehicleValid => isVehicleRegistrationValid(_vehicle.text);
+
+  bool _canSubmit(DispenserUnit unit) {
+    if (_submitting || !unit.canConfirmPayment) {
       return false;
     }
-    if (_vehicle.text.trim().isEmpty) {
+    if (!unit.isTestRun && !_isVehicleValid) {
       return false;
     }
-    if (!bay.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
+    if (!unit.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
       return false;
     }
     return true;
   }
 
-  bool _canPreview(DispenserBay bay) {
-    return !_submitting && bay.canConfirmPayment && !bay.isTestRun;
+  bool _canPreview(DispenserUnit unit) {
+    return !_submitting &&
+        unit.canConfirmPayment &&
+        (unit.isTestRun || _isVehicleValid);
   }
 
   double get _cashNowValue {
@@ -170,7 +187,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
 
   int get _saleRupees {
     return roundRupees(
-      ref.read(stationControllerProvider).bay(widget.unitId).amountPkr,
+      ref.read(stationControllerProvider).unit(widget.unitId).amountPkr,
     );
   }
 
@@ -200,6 +217,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     _syncingSplit = true;
     final int sale = _saleRupees;
     final int cash = (int.tryParse(_cashNow.text.trim()) ?? 0).clamp(0, sale);
+    _setSplitText(_cashNow, cash);
     _setSplitText(_accountNow, sale - cash);
     _syncingSplit = false;
     _onFieldChanged();
@@ -216,6 +234,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
       0,
       sale,
     );
+    _setSplitText(_accountNow, account);
     _setSplitText(_cashNow, sale - account);
     _syncingSplit = false;
     _onFieldChanged();
@@ -223,34 +242,34 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
 
   void _preview() {
     _selectThisUnit();
-    final DispenserBay bay = ref
+    final DispenserUnit unit = ref
         .read(stationControllerProvider)
-        .bay(widget.unitId);
-    if (!_canPreview(bay)) {
+        .unit(widget.unitId);
+    if (!_canPreview(unit)) {
       return;
     }
-    if (_udhaarSelected && _matchedCustomer() == null) {
+    if (!unit.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a valid customer ID')),
       );
       return;
     }
-    final String customerName = _udhaarSelected
-        ? (_matchedCustomer()?.name ?? '')
-        : '';
+    final String customerName = unit.isTestRun
+        ? 'TEST'
+        : (_udhaarSelected ? (_matchedCustomer()?.name ?? '') : '');
     if (!ref.read(settingsProvider).showReceiptPreview) {
       final SaleTransaction? draft = ref
           .read(stationControllerProvider.notifier)
-          .receiptDraftForBay(
+          .receiptDraftForUnit(
             unitId: widget.unitId,
             customerName: customerName,
             vehicleNo: _vehicle.text,
-            payment: _paymentMethod,
-            cashNow: _cashNowValue,
+            payment: unit.isTestRun ? PaymentMethod.cash : _paymentMethod,
+            cashNow: unit.isTestRun ? 0 : _cashNowValue,
           );
       if (draft == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This bay is not ready to print')),
+          const SnackBar(content: Text('This unit is not ready to print')),
         );
         return;
       }
@@ -287,35 +306,35 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     }
     final bool shown = ref
         .read(stationControllerProvider.notifier)
-        .previewReceiptForBay(
+        .previewReceiptForUnit(
           unitId: widget.unitId,
           customerName: customerName,
           vehicleNo: _vehicle.text,
-          payment: _paymentMethod,
-          cashNow: _cashNowValue,
+          payment: unit.isTestRun ? PaymentMethod.cash : _paymentMethod,
+          cashNow: unit.isTestRun ? 0 : _cashNowValue,
         );
     if (!shown && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('This bay is not ready to print')),
+        const SnackBar(content: Text('This unit is not ready to print')),
       );
     }
   }
 
   Future<void> _confirm() async {
     _selectThisUnit();
-    final DispenserBay bay = ref
+    final DispenserUnit unit = ref
         .read(stationControllerProvider)
-        .bay(widget.unitId);
+        .unit(widget.unitId);
     if (_submitting) {
       return;
     }
-    if (!bay.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
+    if (!unit.isTestRun && _udhaarSelected && _matchedCustomer() == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a valid customer ID')),
       );
       return;
     }
-    if (!_canSubmit(bay)) {
+    if (!_canSubmit(unit)) {
       return;
     }
     _submitting = true;
@@ -325,15 +344,15 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
     try {
       final SaleTransaction? txn = await ref
           .read(stationControllerProvider.notifier)
-          .confirmAndClearBay(
+          .confirmAndClearUnit(
             unitId: widget.unitId,
             customerName: _udhaarSelected
                 ? (_matchedCustomer()?.name ?? '')
                 : '',
-            vehicleNo: _vehicle.text,
-            payment: _paymentMethod,
+            vehicleNo: persistVehicleNo(_vehicle.text),
+            payment: unit.isTestRun ? PaymentMethod.cash : _paymentMethod,
             customerId: _udhaarSelected ? (_matchedCustomer()?.id ?? '') : '',
-            cashNow: _cashNowValue,
+            cashNow: unit.isTestRun ? 0 : _cashNowValue,
           );
       if (!mounted) {
         return;
@@ -343,7 +362,9 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
           _submitting = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This bay is no longer ready to clear')),
+          const SnackBar(
+            content: Text('This unit is no longer ready to clear'),
+          ),
         );
         return;
       }
@@ -385,9 +406,9 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     ref.watch(customerIdCacheProvider);
-    final DispenserBay bay = ref
+    final DispenserUnit unit = ref
         .watch(stationControllerProvider)
-        .bay(widget.unitId);
+        .unit(widget.unitId);
 
     ref.listen<int>(paymentSubmitNonceProvider, (int? previous, int next) {
       if (ref.read(selectedDispenserIndexProvider) == widget.unitId) {
@@ -413,13 +434,13 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
 
     final String actionLabel;
     final bool actionEnabled;
-    if (bay.canConfirmPayment) {
+    if (unit.canConfirmPayment) {
       actionLabel = 'Confirm';
-      actionEnabled = _canSubmit(bay);
-    } else if (bay.isDispensing) {
+      actionEnabled = _canSubmit(unit);
+    } else if (unit.isDispensing) {
       actionLabel = 'Confirm';
       actionEnabled = false;
-    } else if (bay.isOffline) {
+    } else if (unit.isOffline) {
       actionLabel = 'Unit Offline';
       actionEnabled = false;
     } else {
@@ -452,14 +473,15 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Text(
-                bay.isTestRun
-                    ? 'Test fill — Confirm saves meters only. Not a sale.'
+                unit.isTestRun
+                    ? 'Test fill — stock and liters count. Not a sale. Cash unchanged.'
                     : 'Payment method',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w500,
-                  fontSize: 13,
-                  color: bay.isTestRun ? tokens.warn : tokens.inkMuted,
+                  fontSize: unit.isTestRun ? 10 : 13,
+                  height: unit.isTestRun ? 1.25 : null,
+                  color: unit.isTestRun ? tokens.warn : tokens.inkMuted,
                 ),
               ),
               const SizedBox(height: _kGap),
@@ -468,7 +490,8 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                   _MethodChip(
                     label: 'Cash',
                     icon: Icons.payments_outlined,
-                    selected: _pill == _PayPill.cash,
+                    selected: unit.isTestRun || _pill == _PayPill.cash,
+                    enabled: !unit.isTestRun,
                     onTap: () {
                       _selectThisUnit();
                       setState(() {
@@ -480,7 +503,8 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                   _MethodChip(
                     label: 'Udhaar',
                     icon: Icons.person_outline,
-                    selected: _pill == _PayPill.udhaar,
+                    selected: !unit.isTestRun && _pill == _PayPill.udhaar,
+                    enabled: !unit.isTestRun,
                     onTap: () {
                       _selectThisUnit();
                       setState(() {
@@ -492,7 +516,8 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                   _MethodChip(
                     label: 'Account',
                     icon: Icons.credit_card_outlined,
-                    selected: _pill == _PayPill.account,
+                    selected: !unit.isTestRun && _pill == _PayPill.account,
+                    enabled: !unit.isTestRun,
                     onTap: () {
                       _selectThisUnit();
                       setState(() {
@@ -503,7 +528,7 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                   ),
                 ],
               ),
-              if (_pill == _PayPill.account) ...<Widget>[
+              if (!unit.isTestRun && _pill == _PayPill.account) ...<Widget>[
                 const SizedBox(height: _kGap),
                 Row(
                   children: <Widget>[
@@ -580,16 +605,42 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                 hint: 'Vehicle number',
                 icon: Icons.directions_car_outlined,
                 controller: _vehicle,
+                focusNode: _vehicleFocus,
+                borderColor: unit.isTestRun
+                    ? tokens.line
+                    : (_isVehicleValid
+                          ? tokens.good
+                          : (_vehicleFocus.hasFocus
+                                ? tokens.warn
+                                : tokens.line)),
                 onTap: _selectThisUnit,
                 textInputAction: _udhaarSelected
                     ? TextInputAction.next
                     : TextInputAction.done,
+                inputFormatters: <TextInputFormatter>[
+                  VehicleRegistrationFormatter(),
+                ],
+                textCapitalization: TextCapitalization.characters,
                 onSubmitted: _udhaarSelected ? null : (_) => _confirm(),
               ),
-              if (_udhaarSelected) ...<Widget>[
+              if (!unit.isTestRun &&
+                  unit.canConfirmPayment &&
+                  !_isVehicleValid) ...<Widget>[
+                const SizedBox(height: 4),
+                Text(
+                  'Enter letters and digits (any order) to proceed.',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                    height: 1.2,
+                    color: tokens.inkMuted,
+                  ),
+                ),
+              ],
+              if (!unit.isTestRun && _udhaarSelected) ...<Widget>[
                 const SizedBox(height: _kGap),
-                _CustomerPickRow(
-                  tokens: tokens,
+                CustomerPickField(
                   idController: _customerId,
                   nameController: _customer,
                   onTap: _selectThisUnit,
@@ -604,11 +655,11 @@ class _ConfirmPaymentSheetState extends ConsumerState<ConfirmPaymentSheet> {
                       label: 'Print',
                       icon: Icons.print_outlined,
                       height: _kControlHeight,
-                      background: _canPreview(bay) ? tokens.ink : tokens.line,
-                      foreground: _canPreview(bay)
+                      background: _canPreview(unit) ? tokens.ink : tokens.line,
+                      foreground: _canPreview(unit)
                           ? tokens.card
                           : tokens.inkMuted,
-                      onTap: _canPreview(bay) ? _preview : null,
+                      onTap: _canPreview(unit) ? _preview : null,
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -654,17 +705,21 @@ class _MethodChip extends StatelessWidget {
     required this.icon,
     required this.selected,
     required this.onTap,
+    this.enabled = true,
   });
 
   final String label;
   final IconData icon;
   final bool selected;
+  final bool enabled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final Color foreground = selected ? tokens.card : tokens.ink;
+    final Color foreground = selected
+        ? tokens.card
+        : (enabled ? tokens.ink : tokens.inkMuted);
     final RoundedRectangleBorder shape = _controlShape(
       side: selected ? BorderSide.none : BorderSide(color: tokens.line),
     );
@@ -672,7 +727,7 @@ class _MethodChip extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(_kControlRadius),
-          boxShadow: selected
+          boxShadow: selected && enabled
               ? <BoxShadow>[
                   BoxShadow(
                     color: tokens.coral.withValues(alpha: 0.32),
@@ -683,10 +738,12 @@ class _MethodChip extends StatelessWidget {
               : const <BoxShadow>[],
         ),
         child: Material(
-          color: selected ? tokens.coral : tokens.card,
+          color: selected
+              ? (enabled ? tokens.coral : tokens.coral.withValues(alpha: 0.55))
+              : (enabled ? tokens.card : tokens.line),
           shape: shape,
           child: InkWell(
-            onTap: onTap,
+            onTap: enabled ? onTap : null,
             customBorder: shape,
             hoverColor: tokens.ink.withValues(alpha: 0.06),
             child: SizedBox(
@@ -848,10 +905,13 @@ class _ShellField extends StatelessWidget {
     required this.onTap,
     required this.textInputAction,
     this.inlineLabel,
+    this.focusNode,
+    this.borderColor,
     this.onSubmitted,
     this.onChanged,
     this.keyboardType,
     this.inputFormatters,
+    this.textCapitalization = TextCapitalization.none,
   });
 
   final DispensrTokens tokens;
@@ -859,12 +919,15 @@ class _ShellField extends StatelessWidget {
   final String? inlineLabel;
   final IconData icon;
   final TextEditingController controller;
+  final FocusNode? focusNode;
+  final Color? borderColor;
   final VoidCallback onTap;
   final TextInputAction textInputAction;
   final ValueChanged<String>? onSubmitted;
   final ValueChanged<String>? onChanged;
   final TextInputType? keyboardType;
   final List<TextInputFormatter>? inputFormatters;
+  final TextCapitalization textCapitalization;
 
   @override
   Widget build(BuildContext context) {
@@ -875,7 +938,7 @@ class _ShellField extends StatelessWidget {
       decoration: BoxDecoration(
         color: tokens.card,
         borderRadius: BorderRadius.circular(_kControlRadius),
-        border: Border.all(color: tokens.line),
+        border: Border.all(color: borderColor ?? tokens.line),
       ),
       child: Row(
         children: <Widget>[
@@ -896,10 +959,12 @@ class _ShellField extends StatelessWidget {
           Expanded(
             child: TextField(
               controller: controller,
+              focusNode: focusNode,
               onTap: onTap,
               maxLines: 1,
               textAlignVertical: TextAlignVertical.center,
               textInputAction: textInputAction,
+              textCapitalization: textCapitalization,
               onSubmitted: onSubmitted,
               onChanged: onChanged,
               keyboardType: keyboardType,
@@ -935,154 +1000,10 @@ class _ShellField extends StatelessWidget {
   }
 }
 
-class _CustomerPickRow extends StatelessWidget {
-  const _CustomerPickRow({
-    required this.tokens,
-    required this.idController,
-    required this.nameController,
-    required this.onTap,
-    required this.onSubmitted,
-  });
-
-  final DispensrTokens tokens;
-  final TextEditingController idController;
-  final TextEditingController nameController;
-  final VoidCallback onTap;
-  final ValueChanged<String> onSubmitted;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: _kFieldHeight,
-      padding: const EdgeInsets.fromLTRB(4, 0, 10, 0),
-      decoration: BoxDecoration(
-        color: tokens.card,
-        borderRadius: BorderRadius.circular(_kControlRadius),
-        border: Border.all(color: tokens.line),
-      ),
-      child: Row(
-        children: <Widget>[
-          _CustomerIdBadge(
-            tokens: tokens,
-            controller: idController,
-            onTap: onTap,
-            onSubmitted: onSubmitted,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: GestureDetector(
-              onTap: onTap,
-              behavior: HitTestBehavior.opaque,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  nameController.text.isEmpty
-                      ? 'Customer name'
-                      : nameController.text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: 'Roboto',
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: nameController.text.isEmpty
-                        ? tokens.inkMuted.withValues(alpha: 0.72)
-                        : tokens.ink,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CustomerIdBadge extends StatelessWidget {
-  const _CustomerIdBadge({
-    required this.tokens,
-    required this.controller,
-    required this.onTap,
-    required this.onSubmitted,
-  });
-
-  final DispensrTokens tokens;
-  final TextEditingController controller;
-  final VoidCallback onTap;
-  final ValueChanged<String> onSubmitted;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: _kIdBadgeSize,
-      height: _kIdBadgeSize,
-      child: Material(
-        color: tokens.ink,
-        shape: const CircleBorder(),
-        clipBehavior: Clip.antiAlias,
-        child: Align(
-          alignment: Alignment.center,
-          child: TextField(
-            controller: controller,
-            onTap: onTap,
-            maxLength: 4,
-            keyboardType: TextInputType.number,
-            inputFormatters: <TextInputFormatter>[
-              FilteringTextInputFormatter.digitsOnly,
-            ],
-            textAlign: TextAlign.center,
-            textAlignVertical: TextAlignVertical.center,
-            textInputAction: TextInputAction.done,
-            onSubmitted: onSubmitted,
-            scrollPadding: EdgeInsets.zero,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-              fontSize: 11,
-              height: 1,
-              leadingDistribution: TextLeadingDistribution.even,
-              color: tokens.card,
-            ),
-            strutStyle: const StrutStyle(
-              fontFamily: 'Roboto',
-              fontSize: 11,
-              height: 1,
-              forceStrutHeight: true,
-              leadingDistribution: TextLeadingDistribution.even,
-            ),
-            cursorColor: tokens.card,
-            decoration: InputDecoration(
-              isCollapsed: true,
-              isDense: true,
-              filled: false,
-              counterText: '',
-              hintText: 'ID',
-              hintStyle: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w600,
-                fontSize: 9,
-                height: 1,
-                leadingDistribution: TextLeadingDistribution.even,
-                color: tokens.card.withValues(alpha: 0.55),
-              ),
-              border: InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              contentPadding: EdgeInsets.zero,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 const double _kControlHeight = 32;
 const double _kFieldHeight = 36;
 const double _kControlRadius = 10;
 const double _kGap = 6;
-const double _kIdBadgeSize = 28;
 
 RoundedRectangleBorder _controlShape({BorderSide side = BorderSide.none}) {
   return RoundedRectangleBorder(

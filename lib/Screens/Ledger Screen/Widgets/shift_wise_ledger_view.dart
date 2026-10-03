@@ -46,7 +46,7 @@ class ShiftLedgerTableHeader extends StatelessWidget {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: <Widget>[
         Text(
-          summary.managerBadgeLabel,
+          summary.operatorBadgeLabel,
           style: TextStyle(
             fontFamily: 'Roboto',
             fontWeight: FontWeight.w700,

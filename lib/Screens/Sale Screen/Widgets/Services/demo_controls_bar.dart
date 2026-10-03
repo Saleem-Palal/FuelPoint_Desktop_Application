@@ -96,7 +96,7 @@ class _DemoControlsBarState extends ConsumerState<DemoControlsBar> {
                   if (unitId != unitIds.first) const SizedBox(width: 8),
                   Expanded(
                     child: _UnitDemoColumn(
-                      bay: station.bay(unitId),
+                      unit: station.unit(unitId),
                       onDispense: () {
                         ref
                             .read(stationControllerProvider.notifier)
@@ -121,12 +121,12 @@ class _DemoControlsBarState extends ConsumerState<DemoControlsBar> {
 
 class _UnitDemoColumn extends StatelessWidget {
   const _UnitDemoColumn({
-    required this.bay,
+    required this.unit,
     required this.onDispense,
     required this.onAbort,
   });
 
-  final DispenserBay bay;
+  final DispenserUnit unit;
   final VoidCallback onDispense;
   final VoidCallback onAbort;
 
@@ -145,7 +145,7 @@ class _UnitDemoColumn extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Text(
-            bay.name,
+            unit.name,
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: 'Roboto',

@@ -20,7 +20,7 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
     return DispenserMonitorState.empty();
   }
 
-  /// Socket-manager callback. Never writes [StationState], so Sale UI is idle.
+  /// Socket-operator callback. Never writes [StationState], so Sale UI is idle.
   void ingestWire(DispenserWireFrame frame) {
     _patchLinkActivity(frame);
     if (state.paused) {
@@ -39,14 +39,14 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
 
   void ingestTelemetryExtras(DispenserTelemetry packet) {
     final DateTime now = DateTime.now();
-    final BayDiagnosticSnapshot previous = state.diagnosticFor(packet.unitId);
+    final UnitDiagnosticSnapshot previous = state.diagnosticFor(packet.unitId);
     final DateTime? pingAt = previous.lastPingAt;
     int? latency = previous.latencyMs;
     if (pingAt != null && now.difference(pingAt) < const Duration(seconds: 5)) {
       latency = now.difference(pingAt).inMilliseconds;
     }
-    final Map<int, BayDiagnosticSnapshot> diagnostics =
-        Map<int, BayDiagnosticSnapshot>.from(state.diagnostics);
+    final Map<int, UnitDiagnosticSnapshot> diagnostics =
+        Map<int, UnitDiagnosticSnapshot>.from(state.diagnostics);
     diagnostics[packet.unitId] = previous.copyWith(
       rssiDbm: packet.rssiDbm ?? previous.rssiDbm,
       latencyMs: latency,
@@ -107,7 +107,7 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
       return;
     }
     final DateTime now = DateTime.now();
-    final BayDiagnosticSnapshot previous = state.diagnosticFor(unitId);
+    final UnitDiagnosticSnapshot previous = state.diagnosticFor(unitId);
     _patchUnit(
       unitId,
       frame.outbound
@@ -116,9 +116,9 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
     );
   }
 
-  void _patchUnit(int unitId, BayDiagnosticSnapshot next) {
-    final Map<int, BayDiagnosticSnapshot> diagnostics =
-        Map<int, BayDiagnosticSnapshot>.from(state.diagnostics);
+  void _patchUnit(int unitId, UnitDiagnosticSnapshot next) {
+    final Map<int, UnitDiagnosticSnapshot> diagnostics =
+        Map<int, UnitDiagnosticSnapshot>.from(state.diagnostics);
     diagnostics[unitId] = next;
     state = state.copyWith(diagnostics: diagnostics);
   }

@@ -9,6 +9,7 @@ import '../../../core/widgets/responsive_layout.dart';
 import '../../../features/access/domain/access_policy.dart';
 import '../../../features/access/presentation/access_controller.dart';
 import '../../../features/access/presentation/owner_access_gate.dart';
+import '../../../features/access/domain/operator_credential.dart';
 import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/shift/presentation/shift_hardware.dart';
@@ -22,8 +23,8 @@ import 'shift_handover_dialog.dart';
 import 'start_shift_dialog.dart';
 import 'shift_ui_kit.dart';
 
-class ManagerShiftsTab extends ConsumerWidget {
-  const ManagerShiftsTab({super.key});
+class OperatorShiftsTab extends ConsumerWidget {
+  const OperatorShiftsTab({super.key});
 
   Future<void> _endShift(BuildContext context, WidgetRef ref) async {
     final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
@@ -46,7 +47,7 @@ class ManagerShiftsTab extends ConsumerWidget {
       }
       return;
     }
-    final ManagerShiftRecord? shift = workspace.activeShift;
+    final OperatorShiftRecord? shift = workspace.activeShift;
     if (shift == null) {
       return;
     }
@@ -61,15 +62,15 @@ class ManagerShiftsTab extends ConsumerWidget {
       }
       return;
     }
-    final int? blockingBay = shouldEnforceStationGuards
-        ? dispensingBayIdOf(ref)
+    final int? blockingUnit = shouldEnforceStationGuards
+        ? dispensingUnitIdOf(ref)
         : null;
-    if (blockingBay != null) {
+    if (blockingUnit != null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              ShiftLifecycleGuard.handoverBlockedMessage(blockingBay),
+              ShiftLifecycleGuard.handoverBlockedMessage(blockingUnit),
             ),
             backgroundColor: DispensrTokens.of(context).warn,
           ),
@@ -77,66 +78,72 @@ class ManagerShiftsTab extends ConsumerWidget {
       }
       return;
     }
-    final String? outgoingPin = await showManagerPinDialog(
+    final OperatorCredential? outgoing = await showOperatorPinDialog(
       context,
-      managerName: shift.managerName,
+      operatorId: shift.operatorId,
+      operatorName: shift.operatorName,
       title: 'End Shift & Handover',
       message:
-          'Enter ${shift.managerName}\'s PIN to freeze ${shift.shiftId} for '
-          'cash tally, then authenticate the incoming manager.',
+          'Confirm ${shift.operatorName} to freeze ${shift.shiftId} for '
+          'cash tally, then authenticate the incoming operator.',
     );
-    if (outgoingPin == null || !context.mounted) {
+    if (outgoing == null || !context.mounted) {
       return;
     }
-    final bool outgoingOk = await ref
-        .read(shiftWorkspaceProvider.notifier)
-        .verifyActiveManagerPin(outgoingPin);
+    final bool outgoingOk =
+        outgoing.fingerprintVerified ||
+        await ref
+            .read(shiftWorkspaceProvider.notifier)
+            .verifyActiveOperatorPin(outgoing.pin);
     if (!outgoingOk) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('PIN does not match the on-duty manager.'),
+            content: Text('PIN does not match the on-duty operator.'),
           ),
         );
       }
       return;
     }
     try {
-      final ShiftHandoverResult? result = await showIncomingManagerAuthDialog(
+      final ShiftHandoverResult? result = await showIncomingOperatorAuthDialog(
         context,
         outgoingShift: shift,
-        incomingManagers: workspace.incomingHandoverCandidates,
+        incomingOperators: workspace.incomingHandoverCandidates,
         helpers: workspace.assignableHelpers,
         currentAssignments: unitHelperAssignmentsOf(workspace.helpers),
         onConfirm:
             ({
-              required String incomingManagerId,
+              required String incomingOperatorId,
               required String pin,
+              bool fingerprintVerified = false,
               required Map<int, String?> unitAssignments,
             }) {
               return ref
                   .read(shiftWorkspaceProvider.notifier)
                   .beginHandover(
-                    incomingManagerId: incomingManagerId,
+                    incomingOperatorId: incomingOperatorId,
                     pin: pin,
+                    fingerprintVerified: fingerprintVerified,
                     unitAssignments: unitAssignments,
-                    blockingDispensingBay: shouldEnforceStationGuards
-                        ? dispensingBayIdOf(ref)
+                    blockingDispensingUnit: shouldEnforceStationGuards
+                        ? dispensingUnitIdOf(ref)
                         : null,
-                    closingMeters: currentBayMetersOf(ref),
-                    openingMeters: currentBayMetersOf(ref),
+                    closingMeters: currentUnitMetersOf(ref),
+                    openingMeters: currentUnitMetersOf(ref),
                   );
             },
       );
       if (result == null || !context.mounted) {
         return;
       }
-      if (result.outcome == HandoverOutcome.baysDispensing && context.mounted) {
+      if (result.outcome == HandoverOutcome.unitsDispensing &&
+          context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               ShiftLifecycleGuard.handoverBlockedMessage(
-                result.blockedBayId ?? 0,
+                result.blockedUnitId ?? 0,
               ),
             ),
           ),
@@ -152,7 +159,7 @@ class ManagerShiftsTab extends ConsumerWidget {
         );
         return;
       }
-      final ManagerShiftRecord? opened = result.opened;
+      final OperatorShiftRecord? opened = result.opened;
       if (result.isSuccess && opened != null) {
         ref.read(accessControllerProvider.notifier).lockOwnerAccess();
         ref.read(shellDestinationProvider.notifier).state =
@@ -160,7 +167,7 @@ class ManagerShiftsTab extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '${shift.shiftId} is pending tally. ${opened.managerName} is '
+              '${shift.shiftId} is pending tally. ${opened.operatorName} is '
               'live on ${opened.shiftId}. Enter counted cash in the sidebar.',
             ),
           ),
@@ -201,14 +208,14 @@ class ManagerShiftsTab extends ConsumerWidget {
           child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
               final bool stacked = constraints.maxWidth < 900;
-              const Widget managers = _ManagerProfilePanel();
+              const Widget operators = _OperatorProfilePanel();
               const Widget tally = ShiftTallySidebar();
               if (stacked) {
                 return ScrollableConstrainedBody(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
-                      const SizedBox(height: 280, child: managers),
+                      const SizedBox(height: 280, child: operators),
                       const SizedBox(height: 10),
                       SizedBox(
                         height: constraints.maxHeight > 420
@@ -225,7 +232,7 @@ class ManagerShiftsTab extends ConsumerWidget {
                 children: <Widget>[
                   SizedBox(
                     width: constraints.maxWidth < 1100 ? 260 : 300,
-                    child: managers,
+                    child: operators,
                   ),
                   const SizedBox(width: 10),
                   const Expanded(child: tally),
@@ -239,22 +246,22 @@ class ManagerShiftsTab extends ConsumerWidget {
   }
 }
 
-class _ManagerProfilePanel extends ConsumerWidget {
-  const _ManagerProfilePanel();
+class _OperatorProfilePanel extends ConsumerWidget {
+  const _OperatorProfilePanel();
 
-  Future<void> _addManager(BuildContext context, WidgetRef ref) async {
+  Future<void> _addOperator(BuildContext context, WidgetRef ref) async {
     try {
-      final AddManagerResult? result = await showAddManagerDialog(context);
+      final AddOperatorResult? result = await showAddOperatorDialog(context);
       if (result == null || !context.mounted) {
         return;
       }
       await ref
           .read(shiftWorkspaceProvider.notifier)
-          .addManager(name: result.name, role: result.role, pin: result.pin);
+          .addOperator(name: result.name, role: result.role, pin: result.pin);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${result.name} added as ${managerRoleLabel(result.role)}',
+            '${result.name} added as ${operatorRoleLabel(result.role)}',
           ),
         ),
       );
@@ -264,20 +271,20 @@ class _ManagerProfilePanel extends ConsumerWidget {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Could not add manager: $error')));
+      ).showSnackBar(SnackBar(content: Text('Could not add operator: $error')));
     }
   }
 
-  Future<void> _onManagerTap(
+  Future<void> _onOperatorTap(
     BuildContext context,
     WidgetRef ref,
-    ManagerProfile manager,
+    OperatorProfile operator,
   ) async {
-    final ManagerShiftRecord? open = ref
+    final OperatorShiftRecord? open = ref
         .read(shiftWorkspaceProvider)
         .activeShift;
     if (open != null) {
-      if (open.managerId == manager.id) {
+      if (open.operatorId == operator.id) {
         return;
       }
       if (!context.mounted) {
@@ -290,18 +297,23 @@ class _ManagerProfilePanel extends ConsumerWidget {
     final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
     final StartShiftOutcome? outcome = await showStartShiftDialog(
       context,
-      manager: manager,
+      operator: operator,
       helpers: workspace.assignableHelpers,
       currentAssignments: unitHelperAssignmentsOf(workspace.helpers),
       onConfirm:
-          ({required String pin, required Map<int, String?> unitAssignments}) {
+          ({
+            required String pin,
+            bool fingerprintVerified = false,
+            required Map<int, String?> unitAssignments,
+          }) {
             return ref
                 .read(shiftWorkspaceProvider.notifier)
                 .startShift(
-                  manager.id,
+                  operator.id,
                   pin: pin,
+                  fingerprintVerified: fingerprintVerified,
                   unitAssignments: unitAssignments,
-                  openingMeters: currentBayMetersOf(ref),
+                  openingMeters: currentUnitMetersOf(ref),
                 );
           },
     );
@@ -313,14 +325,14 @@ class _ManagerProfilePanel extends ConsumerWidget {
         ref.read(shellDestinationProvider.notifier).state =
             ShellDestinations.sale;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${manager.name} is now on shift')),
+          SnackBar(content: Text('${operator.name} is now on shift')),
         );
       case StartShiftOutcome.alreadyOnDuty:
         return;
       case StartShiftOutcome.invalidPin:
         return;
       case StartShiftOutcome.blocked:
-        final ManagerShiftRecord? stillOpen = ref
+        final OperatorShiftRecord? stillOpen = ref
             .read(shiftWorkspaceProvider)
             .activeShift;
         if (!context.mounted || stillOpen == null) {
@@ -332,7 +344,7 @@ class _ManagerProfilePanel extends ConsumerWidget {
 
   Future<void> _showBlockedDialog(
     BuildContext context,
-    ManagerShiftRecord open,
+    OperatorShiftRecord open,
   ) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     return showDialog<void>(
@@ -355,8 +367,8 @@ class _ManagerProfilePanel extends ConsumerWidget {
             ),
           ),
           content: Text(
-            '${open.managerName} is already on ${open.shiftId}. '
-            'End that shift and reconcile before starting another manager.',
+            '${open.operatorName} is already on ${open.shiftId}. '
+            'End that shift and reconcile before starting another operator.',
             style: TextStyle(
               fontFamily: 'Roboto',
               fontSize: 13,
@@ -379,12 +391,12 @@ class _ManagerProfilePanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final List<ManagerProfile> managers = ref.watch(
-      shiftWorkspaceProvider.select((ShiftWorkspaceState s) => s.managers),
+    final List<OperatorProfile> operators = ref.watch(
+      shiftWorkspaceProvider.select((ShiftWorkspaceState s) => s.operators),
     );
-    final String? activeManagerId = ref.watch(
+    final String? activeOperatorId = ref.watch(
       shiftWorkspaceProvider.select(
-        (ShiftWorkspaceState s) => s.activeShift?.managerId,
+        (ShiftWorkspaceState s) => s.activeShift?.operatorId,
       ),
     );
 
@@ -393,12 +405,12 @@ class _ManagerProfilePanel extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           ShiftSectionHeader(
-            title: 'Managers',
+            title: 'Operators',
             trailing: DsPillButton(
-              label: '+ Add Manager',
+              label: '+ Add Operator',
               compact: true,
               onPressed: () {
-                unawaited(_addManager(context, ref));
+                unawaited(_addOperator(context, ref));
               },
             ),
           ),
@@ -406,15 +418,15 @@ class _ManagerProfilePanel extends ConsumerWidget {
           Expanded(
             child: ListView.separated(
               padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-              itemCount: managers.length,
+              itemCount: operators.length,
               separatorBuilder: (_, _) => const SizedBox(height: 6),
               itemBuilder: (BuildContext context, int index) {
-                final ManagerProfile manager = managers[index];
-                return _ManagerTile(
-                  manager: manager,
-                  onShift: manager.id == activeManagerId,
+                final OperatorProfile operator = operators[index];
+                return _OperatorTile(
+                  operator: operator,
+                  onShift: operator.id == activeOperatorId,
                   onTap: () {
-                    unawaited(_onManagerTap(context, ref, manager));
+                    unawaited(_onOperatorTap(context, ref, operator));
                   },
                 );
               },
@@ -426,14 +438,14 @@ class _ManagerProfilePanel extends ConsumerWidget {
   }
 }
 
-class _ManagerTile extends StatelessWidget {
-  const _ManagerTile({
-    required this.manager,
+class _OperatorTile extends StatelessWidget {
+  const _OperatorTile({
+    required this.operator,
     required this.onShift,
     required this.onTap,
   });
 
-  final ManagerProfile manager;
+  final OperatorProfile operator;
   final bool onShift;
   final VoidCallback onTap;
 
@@ -464,7 +476,7 @@ class _ManagerTile extends StatelessWidget {
                 radius: 16,
                 backgroundColor: tokens.line,
                 child: Text(
-                  manager.initials,
+                  operator.initials,
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w700,
@@ -479,7 +491,7 @@ class _ManagerTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      manager.name,
+                      operator.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -495,7 +507,7 @@ class _ManagerTile extends StatelessWidget {
                       runSpacing: 4,
                       children: <Widget>[
                         DsStatusPill(
-                          label: managerRoleLabel(manager.role),
+                          label: operatorRoleLabel(operator.role),
                           foreground: tokens.coralPressed,
                           background: tokens.coral.withValues(alpha: 0.12),
                           border: tokens.coral.withValues(alpha: 0.35),
@@ -554,7 +566,7 @@ class _ShiftHandoverPanel extends ConsumerWidget {
       activeShiftMetricsProvider,
     );
     final ReconciliationSnapshot? pending = workspace.pendingReconciliation;
-    final ManagerShiftRecord? displayShift =
+    final OperatorShiftRecord? displayShift =
         pending?.shift ?? workspace.activeShift;
     final ShiftWindowMetrics displayMetrics = pending?.metrics ?? liveMetrics;
 
@@ -577,7 +589,7 @@ class _ShiftHandoverPanel extends ConsumerWidget {
             ),
             const SizedBox(height: 10),
             Expanded(
-              child: workspace.tallyPane == ManagerTallyPane.todaySales
+              child: workspace.tallyPane == OperatorTallyPane.todaySales
                   ? _TodaySalesCard(
                       metrics: displayMetrics,
                       hasShift: displayShift != null,
@@ -598,15 +610,15 @@ class _ActiveShiftCard extends ConsumerWidget {
     this.pendingTally = false,
   });
 
-  final ManagerShiftRecord? shift;
+  final OperatorShiftRecord? shift;
   final ShiftWindowMetrics metrics;
   final bool pendingTally;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final ManagerShiftRecord? open = shift;
-    final ManagerTallyPane pane = ref.watch(
+    final OperatorShiftRecord? open = shift;
+    final OperatorTallyPane pane = ref.watch(
       shiftWorkspaceProvider.select((ShiftWorkspaceState s) => s.tallyPane),
     );
 
@@ -617,7 +629,7 @@ class _ActiveShiftCard extends ConsumerWidget {
         children: <Widget>[
           if (open == null)
             Text(
-              'No open shift — tap a manager to start. Expected cash is fuel cash + udhaar recovery + account payments − udhaar issued.',
+              'No open shift — tap an operator to start. Expected cash is fuel cash + cash udhaar recovery (account recoveries stay off the drawer).',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w500,
@@ -668,9 +680,9 @@ class _ActiveShiftCard extends ConsumerWidget {
               children: <Widget>[
                 Expanded(
                   child: ShiftKpiCard(
-                    label: 'Manager',
-                    value: open.managerName,
-                    hint: managerRoleLabel(open.role),
+                    label: 'Operator',
+                    value: open.operatorName,
+                    hint: operatorRoleLabel(open.role),
                     icon: Icons.person_outline,
                     tint: tokens.coral,
                   ),
@@ -714,15 +726,7 @@ class _ActiveShiftCard extends ConsumerWidget {
             const SizedBox(height: 8),
             Row(
               children: <Widget>[
-                Expanded(
-                  child: ShiftKpiCard(
-                    label: 'Udhaar Recovery',
-                    value: formatPkr(metrics.udhaarRecoveryTotal),
-                    hint: ShiftWindowMetrics.udhaarRecoveryHint,
-                    icon: Icons.handshake_outlined,
-                    tint: tokens.coral,
-                  ),
-                ),
+                Expanded(child: ShiftUdhaarRecoveryCard(metrics: metrics)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ShiftKpiCard(
@@ -739,7 +743,7 @@ class _ActiveShiftCard extends ConsumerWidget {
           const SizedBox(height: 12),
           _TallyPaneToggle(
             pane: pane,
-            onChanged: (ManagerTallyPane next) {
+            onChanged: (OperatorTallyPane next) {
               ref.read(shiftWorkspaceProvider.notifier).setTallyPane(next);
             },
           ),
@@ -752,8 +756,8 @@ class _ActiveShiftCard extends ConsumerWidget {
 class _TallyPaneToggle extends StatelessWidget {
   const _TallyPaneToggle({required this.pane, required this.onChanged});
 
-  final ManagerTallyPane pane;
-  final ValueChanged<ManagerTallyPane> onChanged;
+  final OperatorTallyPane pane;
+  final ValueChanged<OperatorTallyPane> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -770,16 +774,16 @@ class _TallyPaneToggle extends StatelessWidget {
           Expanded(
             child: _PaneChip(
               label: "Today's Sales Transactions",
-              selected: pane == ManagerTallyPane.todaySales,
-              onTap: () => onChanged(ManagerTallyPane.todaySales),
+              selected: pane == OperatorTallyPane.todaySales,
+              onTap: () => onChanged(OperatorTallyPane.todaySales),
             ),
           ),
           const SizedBox(width: 4),
           Expanded(
             child: _PaneChip(
               label: 'Historical Shift Logs',
-              selected: pane == ManagerTallyPane.historical,
-              onTap: () => onChanged(ManagerTallyPane.historical),
+              selected: pane == OperatorTallyPane.historical,
+              onTap: () => onChanged(OperatorTallyPane.historical),
             ),
           ),
         ],
@@ -845,7 +849,7 @@ class _TodaySalesCard extends StatelessWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final String empty = hasShift
         ? 'No fuel sales on this open shift yet.'
-        : 'Start a manager shift to load today’s transactions.';
+        : 'Start a operator shift to load today’s transactions.';
     return ShiftPanelCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -879,7 +883,7 @@ class _TodaySalesCard extends StatelessWidget {
 class _HistoricalShiftsCard extends StatelessWidget {
   const _HistoricalShiftsCard({required this.rows});
 
-  final List<ManagerShiftRecord> rows;
+  final List<OperatorShiftRecord> rows;
 
   @override
   Widget build(BuildContext context) {
@@ -917,7 +921,7 @@ class _HistoricalShiftsCard extends StatelessWidget {
 class _HistoricalShiftTable extends StatelessWidget {
   const _HistoricalShiftTable({required this.rows});
 
-  final List<ManagerShiftRecord> rows;
+  final List<OperatorShiftRecord> rows;
 
   @override
   Widget build(BuildContext context) {
@@ -950,7 +954,7 @@ class _HistoricalShiftTable extends StatelessWidget {
             ),
             columns: const <DataColumn>[
               DataColumn(label: Text('SHIFT ID')),
-              DataColumn(label: Text('MANAGER')),
+              DataColumn(label: Text('OPERATOR')),
               DataColumn(label: Text('ROLE')),
               DataColumn(label: Text('START TIME')),
               DataColumn(label: Text('END TIME')),
@@ -960,7 +964,7 @@ class _HistoricalShiftTable extends StatelessWidget {
               DataColumn(label: Text('STATUS')),
             ],
             rows: <DataRow>[
-              for (final ManagerShiftRecord row in rows)
+              for (final OperatorShiftRecord row in rows)
                 DataRow(
                   cells: <DataCell>[
                     DataCell(
@@ -972,8 +976,8 @@ class _HistoricalShiftTable extends StatelessWidget {
                         ),
                       ),
                     ),
-                    DataCell(Text(row.managerName)),
-                    DataCell(Text(managerRoleLabel(row.role))),
+                    DataCell(Text(row.operatorName)),
+                    DataCell(Text(operatorRoleLabel(row.role))),
                     DataCell(
                       Text(
                         formatDateTime(row.startTime),

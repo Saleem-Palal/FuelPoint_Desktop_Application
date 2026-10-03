@@ -82,7 +82,7 @@ void main() {
     );
   });
 
-  test('live socket or unwanted bay does not auto-retry', () {
+  test('live socket or unwanted unit does not auto-retry', () {
     expect(
       unitWsCanRetry(wanted: true, hasLiveSocket: true, connecting: false),
       isFalse,
@@ -138,10 +138,28 @@ void main() {
     expect(sale!.txId, 'ECC9FFFD1370-4');
   });
 
+  test('recovered saleType prints as a recovered sale', () {
+    expect(
+      SaleTransaction(
+        tokenNo: 100099,
+        unitId: 1,
+        fuelType: kDieselFuelType,
+        amountPkr: 500,
+        volumeLiters: 1,
+        rate: 267,
+        meterCount: 10,
+        timestamp: DateTime(2026, 9, 14, 22, 1),
+        saleType: 'RECOVERED',
+        notes: 'RECOVERED',
+      ).isRecoveredSale,
+      isTrue,
+    );
+  });
+
   group('missingEspTokenRows', () {
     final DateTime at = DateTime(2026, 9, 14, 22, 1);
 
-    test('token match is already on the ledger', () {
+    test('same Token# on a different second is still missing', () {
       final List<EspTokenLogRow> missing = missingEspTokenRows(
         espRows: <EspTokenLogRow>[
           _espRow(token: 100005, unitId: 1, at: at, liters: 12.5),
@@ -156,10 +174,10 @@ void main() {
           ),
         ],
       );
-      expect(missing, isEmpty);
+      expect(missing.map((EspTokenLogRow row) => row.token), <int>[100005]);
     });
 
-    test('different Token# is missing even at a similar DateTime', () {
+    test('same second with different liters is missing', () {
       final List<EspTokenLogRow> missing = missingEspTokenRows(
         espRows: <EspTokenLogRow>[
           _espRow(token: 100008, unitId: 1, at: at, liters: 12.5),
@@ -168,7 +186,7 @@ void main() {
           _sale(
             tokenNo: 100007,
             unitId: 1,
-            at: at.add(const Duration(minutes: 1)),
+            at: at,
             liters: 12.48,
           ),
         ],
@@ -177,7 +195,7 @@ void main() {
     });
 
     test(
-      'popup lists only ESP last-10 Token#s the unit ledger does not have',
+      'toast lists only last-10 fills the unit ledger does not have',
       () {
         final DateTime older = at.subtract(const Duration(hours: 6));
         final List<EspTokenLogRow> espLastTen = <EspTokenLogRow>[
@@ -190,20 +208,13 @@ void main() {
             ),
         ];
         final List<SaleTransaction> appRows = <SaleTransaction>[
-          _sale(tokenNo: 100001, unitId: 1, at: older, liters: 1),
-          _sale(tokenNo: 100002, unitId: 1, at: older, liters: 2),
-          _sale(
-            tokenNo: 100003,
-            unitId: 1,
-            at: older,
-            liters: 3,
-            espTxId: 'ECC9FFFD1370-4',
-          ),
-          _sale(tokenNo: 100004, unitId: 1, at: older, liters: 4),
-          _sale(tokenNo: 100005, unitId: 1, at: older, liters: 5),
-          _sale(tokenNo: 100006, unitId: 1, at: older, liters: 6),
-          _sale(tokenNo: 100007, unitId: 1, at: older, liters: 7),
-          _sale(tokenNo: 100008, unitId: 1, at: older, liters: 8),
+          for (int seq = 1; seq <= 8; seq += 1)
+            _sale(
+              tokenNo: tokenIdFor(unitId: 1, sequence: seq),
+              unitId: 1,
+              at: older.add(Duration(minutes: seq)),
+              liters: seq.toDouble(),
+            ),
         ];
         final List<EspTokenLogRow> missing = missingEspTokenRows(
           espRows: espLastTen,
@@ -217,7 +228,7 @@ void main() {
     );
 
     test(
-      'Token# still in SQLite is not missing even if older than last 10 app rows',
+      'matching fill is on the ledger even when Token# and meter differ',
       () {
         final List<EspTokenLogRow> missing = missingEspTokenRows(
           espRows: <EspTokenLogRow>[
@@ -225,18 +236,11 @@ void main() {
           ],
           appRows: <SaleTransaction>[
             _sale(
-              tokenNo: 100001,
+              tokenNo: 100099,
               unitId: 1,
-              at: at.subtract(const Duration(days: 2)),
+              at: at,
               liters: 9,
             ),
-            for (int seq = 2; seq <= 12; seq += 1)
-              _sale(
-                tokenNo: tokenIdFor(unitId: 1, sequence: seq),
-                unitId: 1,
-                at: at,
-                liters: seq.toDouble(),
-              ),
           ],
         );
         expect(missing, isEmpty);
@@ -268,7 +272,7 @@ void main() {
     });
 
     test(
-      'runaway ESP Token# with the same fill as a ledger sale is not offered',
+      'different Token# with the same second, liters, rate, and rupees is not offered',
       () {
         final List<EspTokenLogRow> missing = missingEspTokenRows(
           espRows: <EspTokenLogRow>[
@@ -284,7 +288,7 @@ void main() {
     );
 
     test(
-      'ESP hundredths meter still matches SQLite truncated meter on Token# 200003',
+      'meter hundredths do not keep a matching fill on the missing list',
       () {
         final List<EspTokenLogRow> missing = missingEspTokenRows(
           espRows: <EspTokenLogRow>[

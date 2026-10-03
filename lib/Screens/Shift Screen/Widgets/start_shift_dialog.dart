@@ -2,18 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
+import '../../../features/access/data/fingerprint_helper_client.dart';
+import '../../../features/access/presentation/operator_fingerprint_watch.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import 'helper_unit_assignment_panel.dart';
 
 typedef StartShiftSubmit =
     Future<StartShiftOutcome> Function({
       required String pin,
+      required bool fingerprintVerified,
       required Map<int, String?> unitAssignments,
     });
 
 Future<StartShiftOutcome?> showStartShiftDialog(
   BuildContext context, {
-  required ManagerProfile manager,
+  required OperatorProfile operator,
   required List<HelperProfile> helpers,
   required Map<int, String?> currentAssignments,
   required StartShiftSubmit onConfirm,
@@ -23,7 +26,7 @@ Future<StartShiftOutcome?> showStartShiftDialog(
     barrierDismissible: false,
     builder: (BuildContext context) {
       return StartShiftDialog(
-        manager: manager,
+        operator: operator,
         helpers: helpers,
         currentAssignments: currentAssignments,
         onConfirm: onConfirm,
@@ -35,13 +38,13 @@ Future<StartShiftOutcome?> showStartShiftDialog(
 class StartShiftDialog extends StatefulWidget {
   const StartShiftDialog({
     super.key,
-    required this.manager,
+    required this.operator,
     required this.helpers,
     required this.currentAssignments,
     required this.onConfirm,
   });
 
-  final ManagerProfile manager;
+  final OperatorProfile operator;
   final List<HelperProfile> helpers;
   final Map<int, String?> currentAssignments;
   final StartShiftSubmit onConfirm;
@@ -55,6 +58,8 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
   late Map<int, String?> _assignments;
   String? _pinError;
   bool _busy = false;
+  bool _fingerprintReady = false;
+  bool _showPin = !FingerprintHelperSession.isSupported;
 
   @override
   void initState() {
@@ -68,7 +73,8 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
     super.dispose();
   }
 
-  bool get _canConfirm => !_busy && _pin.text.trim().length >= 4;
+  bool get _canConfirm =>
+      !_busy && (_fingerprintReady || _pin.text.trim().length >= 4);
 
   Future<void> _submit() async {
     if (!_canConfirm) {
@@ -79,7 +85,8 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
       _pinError = null;
     });
     final StartShiftOutcome outcome = await widget.onConfirm(
-      pin: _pin.text.trim(),
+      pin: _fingerprintReady ? '' : _pin.text.trim(),
+      fingerprintVerified: _fingerprintReady,
       unitAssignments: Map<int, String?>.from(_assignments),
     );
     if (!mounted) {
@@ -88,7 +95,7 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
     if (outcome == StartShiftOutcome.invalidPin) {
       setState(() {
         _busy = false;
-        _pinError = 'PIN does not match ${widget.manager.name}.';
+        _pinError = 'PIN does not match ${widget.operator.name}.';
       });
       return;
     }
@@ -117,7 +124,7 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  'Start this ${widget.manager.name} Shift?',
+                  'Start this ${widget.operator.name} Shift?',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w700,
@@ -126,7 +133,7 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
                   ),
                 ),
                 Text(
-                  'Enter PIN and assign helpers to units',
+                  'Place a finger on the reader, or enter the PIN, and assign helpers',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w500,
@@ -141,12 +148,12 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
       ),
       content: SizedBox(
         width: 560,
-        height: 460,
+        height: 560,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Text(
-              'Sales and cash will tag to ${widget.manager.name}. '
+              'Sales and cash will tag to ${widget.operator.name}. '
               'Assign a helper to each dispenser, or leave a unit unassigned.',
               style: TextStyle(
                 fontFamily: 'Roboto',
@@ -156,44 +163,68 @@ class _StartShiftDialogState extends State<StartShiftDialog> {
               ),
             ),
             const SizedBox(height: 14),
-            Text(
-              '${widget.manager.name}\'s PIN',
-              style: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w600,
-                fontSize: 12,
-                color: tokens.inkMuted,
-              ),
-            ),
-            const SizedBox(height: 6),
-            TextField(
-              controller: _pin,
-              obscureText: true,
-              enabled: !_busy,
-              maxLength: 6,
-              keyboardType: TextInputType.number,
-              inputFormatters: <TextInputFormatter>[
-                FilteringTextInputFormatter.digitsOnly,
-              ],
-              onChanged: (_) {
+            OperatorFingerprintWatch(
+              operatorId: widget.operator.id,
+              showScanMark: true,
+              onMatched: () {
+                if (!mounted) {
+                  return;
+                }
                 setState(() {
+                  _fingerprintReady = true;
                   _pinError = null;
                 });
               },
-              onSubmitted: (_) => _submit(),
-              style: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w700,
-                fontSize: 16,
-                letterSpacing: 4,
-                color: tokens.ink,
-              ),
-              decoration: InputDecoration(
-                hintText: '••••',
-                counterText: '',
-                errorText: _pinError,
-              ),
+              onShowPin: (bool show) {
+                if (!mounted || _showPin == show) {
+                  return;
+                }
+                setState(() {
+                  _showPin = show;
+                });
+              },
             ),
+            if (_showPin) ...<Widget>[
+              const SizedBox(height: 12),
+              Text(
+                '${widget.operator.name}\'s PIN',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                  color: tokens.inkMuted,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _pin,
+                obscureText: true,
+                enabled: !_busy,
+                maxLength: 6,
+                keyboardType: TextInputType.number,
+                inputFormatters: <TextInputFormatter>[
+                  FilteringTextInputFormatter.digitsOnly,
+                ],
+                onChanged: (_) {
+                  setState(() {
+                    _pinError = null;
+                  });
+                },
+                onSubmitted: (_) => _submit(),
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                  letterSpacing: 4,
+                  color: tokens.ink,
+                ),
+                decoration: InputDecoration(
+                  hintText: '••••',
+                  counterText: '',
+                  errorText: _pinError,
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Text(
               'Helper assignment',

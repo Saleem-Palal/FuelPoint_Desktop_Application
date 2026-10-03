@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/security/pin_hasher.dart';
+import '../features/access/data/fingerprint_helper_client.dart';
+import '../features/access/presentation/operator_fingerprint_watch.dart';
 import '../providers/auth_provider.dart';
 
 /// Touchscreen PIN unlock for the station terminal.
@@ -33,6 +35,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final TextEditingController _pin = TextEditingController();
   final FocusNode _pinFocus = FocusNode();
   final FocusNode _keyboardFocus = FocusNode();
+  bool _showPin = !FingerprintHelperSession.isSupported;
 
   @override
   void initState() {
@@ -63,10 +66,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String get _pinValue => _pin.text.trim();
 
   bool _canSubmit(AuthState auth) {
-    return auth.selectedManagerId != null &&
+    return auth.selectedOperatorId != null &&
         PinHasher.isValidPlainPin(_pinValue) &&
         !auth.busy &&
-        auth.managers.isNotEmpty;
+        auth.operators.isNotEmpty;
   }
 
   void _appendDigit(String digit) {
@@ -99,19 +102,36 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   Future<void> _submit() async {
     final AuthState auth = ref.read(authProvider);
-    final String? managerId = auth.selectedManagerId;
-    if (managerId == null || !_canSubmit(auth)) {
+    final String? operatorId = auth.selectedOperatorId;
+    if (operatorId == null || !_canSubmit(auth)) {
       return;
     }
     final bool ok = await ref
         .read(authProvider.notifier)
-        .authenticateManager(managerId, _pinValue);
+        .authenticateOperator(operatorId, _pinValue);
     if (!mounted) {
       return;
     }
     if (!ok) {
       _clearPin();
       _pinFocus.requestFocus();
+      return;
+    }
+    Navigator.of(context).pushNamedAndRemoveUntil('/sale', (_) => false);
+  }
+
+  Future<void> _unlockByFingerprint() async {
+    final String? operatorId = ref.read(authProvider).selectedOperatorId;
+    if (operatorId == null || ref.read(authProvider).busy) {
+      return;
+    }
+    final bool ok = await ref
+        .read(authProvider.notifier)
+        .authenticateOperatorByFingerprint(operatorId);
+    if (!mounted) {
+      return;
+    }
+    if (!ok) {
       return;
     }
     Navigator.of(context).pushNamedAndRemoveUntil('/sale', (_) => false);
@@ -207,10 +227,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         pinFocus: _pinFocus,
                         wide: wide,
                         canSubmit: _canSubmit(auth),
-                        onSelectManager: (String id) {
-                          ref.read(authProvider.notifier).selectManager(id);
+                        onSelectOperator: (String id) {
+                          ref.read(authProvider.notifier).selectOperator(id);
                           _clearPin();
+                          setState(() {
+                            _showPin = !FingerprintHelperSession.isSupported;
+                          });
                           _pinFocus.requestFocus();
+                        },
+                        showPin: _showPin,
+                        onShowPin: (bool show) {
+                          if (!mounted || _showPin == show) {
+                            return;
+                          }
+                          setState(() {
+                            _showPin = show;
+                          });
+                          if (show) {
+                            _pinFocus.requestFocus();
+                          }
+                        },
+                        onFingerprintMatched: () {
+                          unawaited(_unlockByFingerprint());
                         },
                         onDigit: _appendDigit,
                         onBackspace: _backspace,
@@ -236,11 +274,14 @@ class _LoginCard extends StatelessWidget {
     required this.pinFocus,
     required this.wide,
     required this.canSubmit,
-    required this.onSelectManager,
+    required this.onSelectOperator,
     required this.onDigit,
     required this.onBackspace,
     required this.onClear,
     required this.onSubmit,
+    required this.showPin,
+    required this.onShowPin,
+    required this.onFingerprintMatched,
   });
 
   final AuthState auth;
@@ -248,11 +289,14 @@ class _LoginCard extends StatelessWidget {
   final FocusNode pinFocus;
   final bool wide;
   final bool canSubmit;
-  final ValueChanged<String> onSelectManager;
+  final ValueChanged<String> onSelectOperator;
   final ValueChanged<String> onDigit;
   final VoidCallback onBackspace;
   final VoidCallback onClear;
   final VoidCallback onSubmit;
+  final bool showPin;
+  final ValueChanged<bool> onShowPin;
+  final VoidCallback onFingerprintMatched;
 
   @override
   Widget build(BuildContext context) {
@@ -260,7 +304,10 @@ class _LoginCard extends StatelessWidget {
       auth: auth,
       pin: pin,
       pinFocus: pinFocus,
-      onSelectManager: onSelectManager,
+      showPin: showPin,
+      onShowPin: onShowPin,
+      onFingerprintMatched: onFingerprintMatched,
+      onSelectOperator: onSelectOperator,
       onSubmit: onSubmit,
     );
     final Widget keypad = _PinKeypad(
@@ -289,70 +336,77 @@ class _LoginCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Expanded(flex: 6, child: form),
-                  const SizedBox(width: 28),
-                  Expanded(flex: 5, child: keypad),
+                  if (showPin) ...<Widget>[
+                    const SizedBox(width: 28),
+                    Expanded(flex: 5, child: keypad),
+                  ],
                 ],
               )
-            else ...<Widget>[form, const SizedBox(height: 20), keypad],
-            const SizedBox(height: 18),
-            SizedBox(
-              height: 56,
-              child: FilledButton(
-                onPressed: canSubmit ? onSubmit : null,
-                style: ButtonStyle(
-                  backgroundColor: WidgetStateProperty.resolveWith<Color>((
-                    Set<WidgetState> states,
-                  ) {
-                    if (states.contains(WidgetState.disabled)) {
-                      return _LoginPalette.disabled;
-                    }
-                    if (states.contains(WidgetState.hovered) ||
-                        states.contains(WidgetState.pressed)) {
-                      return const Color(0xFF218838);
-                    }
-                    return _LoginPalette.success;
-                  }),
-                  foregroundColor: WidgetStateProperty.resolveWith<Color>((
-                    Set<WidgetState> states,
-                  ) {
-                    if (states.contains(WidgetState.disabled)) {
-                      return _LoginPalette.muted;
-                    }
-                    return _LoginPalette.text;
-                  }),
-                  overlayColor: WidgetStateProperty.all(
-                    const Color(0x22FFFFFF),
-                  ),
-                  shape: WidgetStateProperty.all(
-                    RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
+            else ...<Widget>[
+              form,
+              if (showPin) ...<Widget>[const SizedBox(height: 20), keypad],
+            ],
+            if (showPin) ...<Widget>[
+              const SizedBox(height: 18),
+              SizedBox(
+                height: 56,
+                child: FilledButton(
+                  onPressed: canSubmit ? onSubmit : null,
+                  style: ButtonStyle(
+                    backgroundColor: WidgetStateProperty.resolveWith<Color>((
+                      Set<WidgetState> states,
+                    ) {
+                      if (states.contains(WidgetState.disabled)) {
+                        return _LoginPalette.disabled;
+                      }
+                      if (states.contains(WidgetState.hovered) ||
+                          states.contains(WidgetState.pressed)) {
+                        return const Color(0xFF218838);
+                      }
+                      return _LoginPalette.success;
+                    }),
+                    foregroundColor: WidgetStateProperty.resolveWith<Color>((
+                      Set<WidgetState> states,
+                    ) {
+                      if (states.contains(WidgetState.disabled)) {
+                        return _LoginPalette.muted;
+                      }
+                      return _LoginPalette.text;
+                    }),
+                    overlayColor: WidgetStateProperty.all(
+                      const Color(0x22FFFFFF),
+                    ),
+                    shape: WidgetStateProperty.all(
+                      RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                     ),
                   ),
-                ),
-                child: auth.busy
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.2,
-                          color: _LoginPalette.text,
-                        ),
-                      )
-                    : const FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          'Login / Unlock System',
-                          maxLines: 1,
-                          style: TextStyle(
-                            fontFamily: 'Roboto',
-                            fontWeight: FontWeight.w700,
-                            fontSize: 16,
-                            letterSpacing: 0.3,
+                  child: auth.busy
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: _LoginPalette.text,
+                          ),
+                        )
+                      : const FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            'Login / Unlock System',
+                            maxLines: 1,
+                            style: TextStyle(
+                              fontFamily: 'Roboto',
+                              fontWeight: FontWeight.w700,
+                              fontSize: 16,
+                              letterSpacing: 0.3,
+                            ),
                           ),
                         ),
-                      ),
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),
@@ -414,7 +468,7 @@ class _StationHeader extends ConsumerWidget {
               const SizedBox(height: 4),
               Text(
                 contact.isEmpty
-                    ? 'Manager PIN required to unlock the terminal'
+                    ? 'Operator PIN required to unlock the terminal'
                     : contact,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -438,14 +492,20 @@ class _LoginForm extends StatelessWidget {
     required this.auth,
     required this.pin,
     required this.pinFocus,
-    required this.onSelectManager,
+    required this.showPin,
+    required this.onShowPin,
+    required this.onFingerprintMatched,
+    required this.onSelectOperator,
     required this.onSubmit,
   });
 
   final AuthState auth;
   final TextEditingController pin;
   final FocusNode pinFocus;
-  final ValueChanged<String> onSelectManager;
+  final bool showPin;
+  final ValueChanged<bool> onShowPin;
+  final VoidCallback onFingerprintMatched;
+  final ValueChanged<String> onSelectOperator;
   final VoidCallback onSubmit;
 
   @override
@@ -453,7 +513,7 @@ class _LoginForm extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const _FieldLabel(index: '01', title: 'On-Duty Manager'),
+        const _FieldLabel(index: '01', title: 'On-Duty Operator'),
         const SizedBox(height: 10),
         if (auth.loading)
           const Padding(
@@ -469,72 +529,82 @@ class _LoginForm extends StatelessWidget {
               ),
             ),
           )
-        else if (auth.managers.isEmpty)
+        else if (auth.operators.isEmpty)
           const _InlineBanner(
             color: _LoginPalette.alert,
             icon: Icons.person_off_outlined,
             message:
-                'No managers are registered. Complete setup and add the first manager account.',
+                'No operators are registered. Complete setup and add the first operator account.',
           )
         else ...<Widget>[
-          _ManagerDropdown(auth: auth, onSelect: onSelectManager),
+          _OperatorDropdown(auth: auth, onSelect: onSelectOperator),
           const SizedBox(height: 10),
-          _ManagerCards(auth: auth, onSelect: onSelectManager),
+          _OperatorCards(auth: auth, onSelect: onSelectOperator),
         ],
         const SizedBox(height: 18),
-        const _FieldLabel(index: '02', title: 'Manager PIN'),
-        const SizedBox(height: 10),
-        TextField(
-          controller: pin,
-          focusNode: pinFocus,
-          obscureText: true,
-          obscuringCharacter: '•',
-          keyboardType: TextInputType.number,
-          textInputAction: TextInputAction.done,
-          inputFormatters: <TextInputFormatter>[
-            FilteringTextInputFormatter.digitsOnly,
-            LengthLimitingTextInputFormatter(PinHasher.maxPinLength),
-          ],
-          onSubmitted: (_) => onSubmit(),
-          style: const TextStyle(
-            fontFamily: 'Roboto',
-            fontWeight: FontWeight.w700,
-            fontSize: 28,
-            letterSpacing: 10,
-            color: _LoginPalette.text,
+        if (auth.selectedOperatorId != null)
+          OperatorFingerprintWatch(
+            operatorId: auth.selectedOperatorId,
+            onDark: true,
+            onMatched: onFingerprintMatched,
+            onShowPin: onShowPin,
           ),
-          decoration: InputDecoration(
-            hintText: '••••',
-            hintStyle: TextStyle(
+        if (showPin) ...<Widget>[
+          const SizedBox(height: 12),
+          const _FieldLabel(index: '02', title: 'Operator PIN'),
+          const SizedBox(height: 10),
+          TextField(
+            controller: pin,
+            focusNode: pinFocus,
+            obscureText: true,
+            obscuringCharacter: '•',
+            keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            inputFormatters: <TextInputFormatter>[
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(PinHasher.maxPinLength),
+            ],
+            onSubmitted: (_) => onSubmit(),
+            style: const TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w700,
               fontSize: 28,
               letterSpacing: 10,
-              color: _LoginPalette.muted.withValues(alpha: 0.45),
+              color: _LoginPalette.text,
             ),
-            prefixIcon: const Icon(
-              Icons.pin_outlined,
-              color: _LoginPalette.muted,
-            ),
-            filled: true,
-            fillColor: _LoginPalette.fieldFill,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 18,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(color: _LoginPalette.fieldBorder),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: const BorderSide(
-                color: _LoginPalette.accent,
-                width: 2,
+            decoration: InputDecoration(
+              hintText: '••••',
+              hintStyle: TextStyle(
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w700,
+                fontSize: 28,
+                letterSpacing: 10,
+                color: _LoginPalette.muted.withValues(alpha: 0.45),
+              ),
+              prefixIcon: const Icon(
+                Icons.pin_outlined,
+                color: _LoginPalette.muted,
+              ),
+              filled: true,
+              fillColor: _LoginPalette.fieldFill,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 18,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: _LoginPalette.fieldBorder),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: _LoginPalette.accent,
+                  width: 2,
+                ),
               ),
             ),
           ),
-        ),
+        ],
         if (auth.errorMessage != null) ...<Widget>[
           const SizedBox(height: 12),
           _InlineBanner(
@@ -550,15 +620,15 @@ class _LoginForm extends StatelessWidget {
   }
 }
 
-class _ManagerDropdown extends StatelessWidget {
-  const _ManagerDropdown({required this.auth, required this.onSelect});
+class _OperatorDropdown extends StatelessWidget {
+  const _OperatorDropdown({required this.auth, required this.onSelect});
 
   final AuthState auth;
   final ValueChanged<String> onSelect;
 
   @override
   Widget build(BuildContext context) {
-    final String? selected = auth.selectedManagerId;
+    final String? selected = auth.selectedOperatorId;
     return DropdownButtonFormField<String>(
       initialValue: selected,
       isExpanded: true,
@@ -586,11 +656,11 @@ class _ManagerDropdown extends StatelessWidget {
         ),
       ),
       items: <DropdownMenuItem<String>>[
-        for (final AuthManager manager in auth.managers)
+        for (final AuthOperator operator in auth.operators)
           DropdownMenuItem<String>(
-            value: manager.id,
+            value: operator.id,
             child: Text(
-              '${manager.name}  ·  ${manager.id}',
+              '${operator.name}  ·  ${operator.id}',
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -606,8 +676,8 @@ class _ManagerDropdown extends StatelessWidget {
   }
 }
 
-class _ManagerCards extends StatelessWidget {
-  const _ManagerCards({required this.auth, required this.onSelect});
+class _OperatorCards extends StatelessWidget {
+  const _OperatorCards({required this.auth, required this.onSelect});
 
   final AuthState auth;
   final ValueChanged<String> onSelect;
@@ -618,33 +688,33 @@ class _ManagerCards extends StatelessWidget {
       spacing: 8,
       runSpacing: 8,
       children: <Widget>[
-        for (final AuthManager manager in auth.managers)
-          _ManagerChip(
-            manager: manager,
-            selected: manager.id == auth.selectedManagerId,
-            onTap: auth.busy ? null : () => onSelect(manager.id),
+        for (final AuthOperator operator in auth.operators)
+          _OperatorChip(
+            operator: operator,
+            selected: operator.id == auth.selectedOperatorId,
+            onTap: auth.busy ? null : () => onSelect(operator.id),
           ),
       ],
     );
   }
 }
 
-class _ManagerChip extends StatefulWidget {
-  const _ManagerChip({
-    required this.manager,
+class _OperatorChip extends StatefulWidget {
+  const _OperatorChip({
+    required this.operator,
     required this.selected,
     required this.onTap,
   });
 
-  final AuthManager manager;
+  final AuthOperator operator;
   final bool selected;
   final VoidCallback? onTap;
 
   @override
-  State<_ManagerChip> createState() => _ManagerChipState();
+  State<_OperatorChip> createState() => _OperatorChipState();
 }
 
-class _ManagerChipState extends State<_ManagerChip> {
+class _OperatorChipState extends State<_OperatorChip> {
   bool _hovered = false;
 
   @override
@@ -685,7 +755,7 @@ class _ManagerChipState extends State<_ManagerChip> {
                       ? _LoginPalette.accent
                       : _LoginPalette.keyFill,
                   child: Text(
-                    widget.manager.initials,
+                    widget.operator.initials,
                     style: const TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w700,
@@ -696,7 +766,7 @@ class _ManagerChipState extends State<_ManagerChip> {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  widget.manager.name,
+                  widget.operator.name,
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w600,

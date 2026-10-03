@@ -16,7 +16,7 @@ class ActiveShiftBanner extends StatefulWidget {
     this.onManualEndShift,
   });
 
-  final ManagerShiftRecord? shift;
+  final OperatorShiftRecord? shift;
   final double expectedCash;
   final VoidCallback? onEndShift;
   final VoidCallback? onManualEndShift;
@@ -51,7 +51,7 @@ class _ActiveShiftBannerState extends State<ActiveShiftBanner> {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final ManagerShiftRecord? shift = widget.shift;
+    final OperatorShiftRecord? shift = widget.shift;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -99,7 +99,7 @@ class _IdleBanner extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                'No active manager shift',
+                'No active operator shift',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w700,
@@ -108,7 +108,7 @@ class _IdleBanner extends StatelessWidget {
                 ),
               ),
               Text(
-                'Select a manager on the left to start the next shift.',
+                'Select a operator on the left to start the next shift.',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -137,7 +137,7 @@ class _LiveBanner extends StatelessWidget {
   });
 
   final DispensrTokens tokens;
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
   final double expectedCash;
   final DateTime now;
   final VoidCallback? onEndShift;
@@ -220,7 +220,7 @@ class _BannerIdentity extends StatelessWidget {
   const _BannerIdentity({required this.tokens, required this.shift});
 
   final DispensrTokens tokens;
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
 
   @override
   Widget build(BuildContext context) {
@@ -228,7 +228,7 @@ class _BannerIdentity extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Text(
-          shift.managerName,
+          shift.operatorName,
           style: TextStyle(
             fontFamily: 'Roboto',
             fontWeight: FontWeight.w700,
@@ -238,7 +238,7 @@ class _BannerIdentity extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         DsStatusPill(
-          label: managerRoleLabel(shift.role),
+          label: operatorRoleLabel(shift.role),
           foreground: tokens.coral,
           background: tokens.coral.withValues(alpha: 0.18),
           border: tokens.coral.withValues(alpha: 0.45),

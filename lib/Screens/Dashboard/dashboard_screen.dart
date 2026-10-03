@@ -8,7 +8,7 @@ import '../../core/widgets/app_screen_header.dart';
 import '../../features/station/domain/dashboard_models.dart';
 import '../../features/station/presentation/dashboard_providers.dart';
 import '../../features/station/presentation/workspace_refresh.dart';
-import 'Widgets/dashboard_bay_strip.dart';
+import 'Widgets/dashboard_unit_strip.dart';
 import 'Widgets/dashboard_kpi_row.dart';
 import 'Widgets/dashboard_peak_hours.dart';
 import 'Widgets/dashboard_staff_strip.dart';
@@ -115,26 +115,26 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         children: <Widget>[
                           DashboardKpiRow(kpis: snapshot.kpis),
                           const SizedBox(height: 10),
-                          DashboardBayStrip(
-                            bays: snapshot.bays,
-                            range: ref.watch(dashboardBayRangeProvider),
+                          DashboardUnitStrip(
+                            units: snapshot.units,
+                            range: ref.watch(dashboardUnitRangeProvider),
                             onRangeChanged: (DashboardRangePreset preset) {
                               ref
-                                      .read(dashboardBayRangeProvider.notifier)
+                                      .read(dashboardUnitRangeProvider.notifier)
                                       .state =
                                   preset;
                             },
                           ),
                           const SizedBox(height: 10),
                           DashboardStaffStrip(
-                            title: 'Manager sales',
-                            emptyMessage: 'No managers on file.',
-                            members: snapshot.managers,
-                            range: ref.watch(dashboardManagerRangeProvider),
+                            title: 'Operator sales',
+                            emptyMessage: 'No operators on file.',
+                            members: snapshot.operators,
+                            range: ref.watch(dashboardOperatorRangeProvider),
                             onRangeChanged: (DashboardRangePreset preset) {
                               ref
                                       .read(
-                                        dashboardManagerRangeProvider.notifier,
+                                        dashboardOperatorRangeProvider.notifier,
                                       )
                                       .state =
                                   preset;

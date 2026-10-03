@@ -8,6 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
 import '../../core/widgets/date_range_selector.dart';
+import '../../features/customer/domain/customer_models.dart';
+import '../../features/customer/presentation/customer_providers.dart';
+import '../../features/customer/presentation/widgets/customer_pick_field.dart';
 import '../../features/station/data/ledger_pdf_export.dart';
 import '../../features/station/data/transaction_store.dart';
 import '../../features/station/domain/dispenser_models.dart';
@@ -617,8 +620,9 @@ class _SalesKpiBar extends StatelessWidget {
           child: _KpiCard(
             spec: _KpiSpec(
               label: 'Total Volume Dispensed',
-              value: formatTableLiters(slice.totalVolumeLiters),
-              hint: 'Filtered view',
+              value: formatTableLiters(slice.physicalVolumeLiters),
+              hint:
+                  'Real volume: ${formatTableLiters(slice.totalVolumeLiters)} | Test volume: ${formatTableLiters(slice.testVolumeLiters)}',
               icon: Icons.water_drop_outlined,
               tint: tokens.coral,
             ),
@@ -787,15 +791,22 @@ class _KpiCard extends StatelessWidget {
                     color: tokens.ink,
                   ),
                 ),
-                Text(
-                  spec.hint,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: 'Roboto',
-                    fontWeight: FontWeight.w500,
-                    fontSize: 11,
-                    color: tokens.inkMuted,
+                SizedBox(
+                  width: double.infinity,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      spec.hint,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w500,
+                        fontSize: 11,
+                        color: tokens.inkMuted,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -949,7 +960,7 @@ String? _shiftPdfLabel(ShiftLedgerSummary? shift) {
   if (shift == null) {
     return null;
   }
-  return '${shift.shiftId} · ${shift.managerBadgeLabel}';
+  return '${shift.shiftId} · ${shift.operatorBadgeLabel}';
 }
 
 class _UnitChip extends StatelessWidget {
@@ -1155,7 +1166,7 @@ const List<_SalesCol> _salesCols = <_SalesCol>[
   _SalesCol('CUSTOMER NAME', 130),
   _SalesCol('VEHICLE NO', 96),
   _SalesCol('HELPER', 90),
-  _SalesCol('CASHIER', 90),
+  _SalesCol('OPERATOR', 90),
   _SalesCol('ACTIONS', 86),
 ];
 
@@ -1457,6 +1468,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
                   : _PaymentPill(
                       method: row.payment,
                       settled: row.udhaarSettled,
+                      pending: row.isAccountPending,
                     ),
             ),
             const SizedBox(width: 14),
@@ -1475,7 +1487,7 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
               width: _salesCols[10].width,
               numeric: true,
               child: Text(
-                formatTableTenderPkr(row.accountAmount),
+                formatTableTenderPkr(row.receiptAccountAmount),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: dataStyle,
@@ -1525,9 +1537,11 @@ class _VirtualSalesTableState extends ConsumerState<_VirtualSalesTable> {
                       onPrint: () {
                         unawaited(_reprint(context, ref, row));
                       },
-                      onEdit: () {
-                        unawaited(_editSale(context, ref, row));
-                      },
+                      onEdit: row.isAccountPending
+                          ? null
+                          : () {
+                              unawaited(_editSale(context, ref, row));
+                            },
                     ),
             ),
           ],
@@ -1689,7 +1703,7 @@ class _RowActions extends StatelessWidget {
   const _RowActions({required this.onPrint, required this.onEdit});
 
   final VoidCallback onPrint;
-  final VoidCallback onEdit;
+  final VoidCallback? onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -1703,12 +1717,13 @@ class _RowActions extends StatelessWidget {
           color: tokens.coralPressed,
           onPressed: onPrint,
         ),
-        _ActionIcon(
-          tooltip: 'Edit',
-          icon: Icons.edit_outlined,
-          color: tokens.inkMuted,
-          onPressed: onEdit,
-        ),
+        if (onEdit != null)
+          _ActionIcon(
+            tooltip: 'Edit',
+            icon: Icons.edit_outlined,
+            color: tokens.inkMuted,
+            onPressed: onEdit ?? () {},
+          ),
       ],
     );
   }
@@ -1747,11 +1762,13 @@ class _PaymentPill extends StatelessWidget {
     required this.method,
     this.settled = false,
     this.isTest = false,
+    this.pending = false,
   });
 
   final PaymentMethod method;
   final bool settled;
   final bool isTest;
+  final bool pending;
 
   @override
   Widget build(BuildContext context) {
@@ -1767,20 +1784,27 @@ class _PaymentPill extends StatelessWidget {
     }
     late final Color fg;
     late final Color bg;
-    switch (method) {
-      case PaymentMethod.cash:
-        fg = tokens.good;
-        bg = tokens.good.withValues(alpha: 0.12);
-      case PaymentMethod.udhaar:
-        fg = settled ? tokens.good : tokens.bad;
-        bg = (settled ? tokens.good : tokens.bad).withValues(alpha: 0.12);
-      case PaymentMethod.bankAccount:
-      case PaymentMethod.easyPaisa:
-        fg = tokens.coralPressed;
-        bg = tokens.coral.withValues(alpha: 0.14);
+    if (pending) {
+      fg = tokens.warn;
+      bg = tokens.warn.withValues(alpha: 0.12);
+    } else {
+      switch (method) {
+        case PaymentMethod.cash:
+          fg = tokens.good;
+          bg = tokens.good.withValues(alpha: 0.12);
+        case PaymentMethod.udhaar:
+          fg = settled ? tokens.good : tokens.bad;
+          bg = (settled ? tokens.good : tokens.bad).withValues(alpha: 0.12);
+        case PaymentMethod.bankAccount:
+        case PaymentMethod.easyPaisa:
+          fg = tokens.coralPressed;
+          bg = tokens.coral.withValues(alpha: 0.14);
+      }
     }
     return DsStatusPill(
-      label: method == PaymentMethod.udhaar && settled
+      label: pending
+          ? '${method.ledgerPill} · PENDING'
+          : method == PaymentMethod.udhaar && settled
           ? 'UDHAAR · SETTLED'
           : method.ledgerPill,
       foreground: fg,
@@ -1826,6 +1850,9 @@ Future<void> _editSale(
   WidgetRef ref,
   SaleTransaction row,
 ) async {
+  if (row.isAccountPending) {
+    return;
+  }
   final bool? saved = await showDialog<bool>(
     context: context,
     builder: (BuildContext context) {
@@ -1970,6 +1997,7 @@ class _ReprintReceiptDialogState extends State<_ReprintReceiptDialog> {
                           payment: widget.txn.payment,
                           stationCopy: _stationCapture,
                           kind: ReceiptPrintKind.secondCopy,
+                          recovered: widget.txn.isRecoveredSale,
                         ),
                         details: saleReceiptDetails(widget.txn),
                         handwritingLines: ReceiptCopy.handwritingLinesFor(
@@ -2026,8 +2054,8 @@ enum _EditPill { cash, udhaar, account }
 enum _EditRail { bank, easyPaisa }
 
 class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
+  late final TextEditingController _customerId;
   late final TextEditingController _customer;
-  late final TextEditingController _vehicle;
   late final TextEditingController _cashNow;
   late _EditPill _pill;
   late _EditRail _rail;
@@ -2036,11 +2064,10 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
   @override
   void initState() {
     super.initState();
-    final String customer = widget.txn.customerName.trim();
-    _customer = TextEditingController(
-      text: customer.toLowerCase() == 'walk-in' ? '' : customer,
-    );
-    _vehicle = TextEditingController(text: widget.txn.vehicleNo);
+    _customerId = TextEditingController();
+    _customer = TextEditingController();
+    _seedCustomerFromTxn();
+    _customerId.addListener(_onCustomerIdChanged);
     final int cashNow = widget.txn.cashAmount.round();
     _cashNow = TextEditingController(text: cashNow > 0 ? '$cashNow' : '');
     switch (widget.txn.payment) {
@@ -2059,10 +2086,64 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
     }
   }
 
+  void _seedCustomerFromTxn() {
+    final String name = widget.txn.customerName.trim();
+    if (name.isEmpty || name.toLowerCase() == 'walk-in') {
+      return;
+    }
+    final Map<String, CustomerProfile> cache = ref.read(
+      customerIdCacheProvider,
+    );
+    for (final CustomerProfile profile in cache.values) {
+      if (profile.name.trim().toLowerCase() == name.toLowerCase()) {
+        _customerId.text = profile.id;
+        _customer.text = profile.name;
+        return;
+      }
+    }
+    _customer.text = name;
+  }
+
+  CustomerProfile? _matchedCustomer() {
+    final String key = normalizeCustomerIdQuery(_customerId.text);
+    if (key.isEmpty) {
+      return null;
+    }
+    return ref.read(customerIdCacheProvider)[key];
+  }
+
+  void _onCustomerIdChanged() {
+    final CustomerProfile? match = _matchedCustomer();
+    if (match != null) {
+      if (_customer.text != match.name) {
+        _customer.value = TextEditingValue(
+          text: match.name,
+          selection: TextSelection.collapsed(offset: match.name.length),
+        );
+      }
+    } else if (_customer.text.isNotEmpty) {
+      _customer.clear();
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  String get _resolvedCustomerName {
+    final CustomerProfile? match = _matchedCustomer();
+    if (match != null) {
+      return match.name;
+    }
+    final String typed = _customer.text.trim();
+    return typed.isEmpty ? 'Walk-in' : typed;
+  }
+
   @override
   void dispose() {
+    _customerId
+      ..removeListener(_onCustomerIdChanged)
+      ..dispose();
     _customer.dispose();
-    _vehicle.dispose();
     _cashNow.dispose();
     super.dispose();
   }
@@ -2080,15 +2161,15 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
     }
   }
 
-  bool get _udhaarRequiresName => _pill == _EditPill.udhaar;
+  bool get _udhaarRequiresCustomer => _pill == _EditPill.udhaar;
 
   Future<void> _save() async {
     if (_saving) {
       return;
     }
-    if (_udhaarRequiresName && _customer.text.trim().isEmpty) {
+    if (_udhaarRequiresCustomer && _matchedCustomer() == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Customer name is required for Udhaar')),
+        const SnackBar(content: Text('Enter a valid customer ID for Udhaar')),
       );
       return;
     }
@@ -2100,8 +2181,8 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
           .read(stationControllerProvider.notifier)
           .updateSaleMetadata(
             tokenNo: widget.txn.tokenNo,
-            customerName: _customer.text,
-            vehicleNo: _vehicle.text,
+            customerName: _resolvedCustomerName,
+            vehicleNo: widget.txn.vehicleNo,
             payment: _payment,
             cashNow: double.tryParse(_cashNow.text.trim()) ?? 0,
             saleAmount: widget.txn.amountPkr,
@@ -2141,10 +2222,8 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
       cashNow: double.tryParse(_cashNow.text.trim()) ?? 0,
     );
     final SaleTransaction preview = widget.txn.copyWith(
-      customerName: _customer.text.trim().isEmpty
-          ? 'Walk-in'
-          : _customer.text.trim(),
-      vehicleNo: _vehicle.text,
+      customerName: _resolvedCustomerName,
+      vehicleNo: widget.txn.vehicleNo,
       payment: split.payment,
       cashAmount: split.cashAmount,
       accountAmount: split.accountAmount,
@@ -2175,6 +2254,7 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
+    ref.watch(customerIdCacheProvider);
     return Dialog(
       backgroundColor: tokens.card,
       shape: RoundedRectangleBorder(
@@ -2306,25 +2386,10 @@ class _EditSaleDialogState extends ConsumerState<EditSaleDialog> {
                 ),
               ],
               const SizedBox(height: 12),
-              TextField(
-                controller: _customer,
-                textInputAction: TextInputAction.next,
-                style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Customer Name',
-                  hintText: 'Walk-in if empty',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _vehicle,
-                textInputAction: TextInputAction.done,
+              CustomerPickField(
+                idController: _customerId,
+                nameController: _customer,
                 onSubmitted: (_) => unawaited(_save()),
-                style: const TextStyle(fontFamily: 'Roboto', fontSize: 13),
-                decoration: const InputDecoration(
-                  labelText: 'Vehicle No',
-                  hintText: 'Optional',
-                ),
               ),
               const SizedBox(height: 16),
               Row(

@@ -12,6 +12,7 @@ import '../../../../features/station/domain/dispenser_models.dart';
 import '../../../../features/station/presentation/station_providers.dart';
 import '../../../../utils/fuel_formatter.dart';
 import 'confirm_payment_dialog.dart';
+import 'esp_last_ten_dialog.dart';
 import 'fuel_nozzle_graphic.dart';
 import 'helper_duty_dialog.dart';
 
@@ -36,37 +37,37 @@ class DispenserUnitData {
     required this.volumeLiters,
   });
 
-  factory DispenserUnitData.fromBay(
-    DispenserBay bay, {
+  factory DispenserUnitData.fromUnit(
+    DispenserUnit unit, {
     required bool espConnected,
     required bool fdxBoardLinked,
   }) {
     return DispenserUnitData(
-      unitId: bay.unitId,
-      unitNumber: bay.unitId.toString().padLeft(2, '0'),
-      name: bay.name,
-      fuelType: bay.fuelType,
+      unitId: unit.unitId,
+      unitNumber: unit.unitId.toString().padLeft(2, '0'),
+      name: unit.name,
+      fuelType: unit.fuelType,
       online: espConnected && fdxBoardLinked,
       espConnected: espConnected,
       fdxBoardLinked: fdxBoardLinked,
-      runState: bay.status,
-      rupees: bay.status == DispenserRunState.litersPreset
+      runState: unit.status,
+      rupees: unit.status == DispenserRunState.litersPreset
           ? ''
-          : bay.status == DispenserRunState.rupeesPreset
-          ? '${bay.amountPkr.truncate()}'
-          : FuelFormatter.lcdDispenserAmount(bay.amountPkr),
-      liters: bay.status == DispenserRunState.rupeesPreset
+          : unit.status == DispenserRunState.rupeesPreset
+          ? '${unit.amountPkr.truncate()}'
+          : FuelFormatter.lcdDispenserAmount(unit.amountPkr),
+      liters: unit.status == DispenserRunState.rupeesPreset
           ? ''
-          : bay.status == DispenserRunState.litersPreset
-          ? '${bay.volumeLiters.truncate()}'
-          : FuelFormatter.lcdVolume(bay.volumeLiters),
-      ratePerLitre: FuelFormatter.lcdAverageRate(bay.rate),
-      lastRupees: bay.lastRupees,
-      lastLiters: bay.lastLiters,
-      lastTime: bay.lastTime,
-      lastCashier: bay.lastCashier,
-      totalMeter: FuelFormatter.lcdVolume(bay.meterCount),
-      volumeLiters: bay.volumeLiters,
+          : unit.status == DispenserRunState.litersPreset
+          ? '${unit.volumeLiters.truncate()}'
+          : FuelFormatter.lcdVolume(unit.volumeLiters),
+      ratePerLitre: FuelFormatter.lcdAverageRate(unit.rate),
+      lastRupees: unit.lastRupees,
+      lastLiters: unit.lastLiters,
+      lastTime: unit.lastTime,
+      lastCashier: unit.lastCashier,
+      totalMeter: FuelFormatter.lcdVolume(unit.meterCount),
+      volumeLiters: unit.volumeLiters,
     );
   }
 
@@ -94,7 +95,7 @@ class DispenserUnitData {
   bool get isFdxDisconnected => espConnected && !fdxBoardLinked;
   bool get isCycleComplete => runState == DispenserRunState.cycleComplete;
   bool get canConfirmPayment =>
-      isCycleComplete && volumeLiters >= DispenserBay.zeroVolumeEpsilon;
+      isCycleComplete && volumeLiters >= DispenserUnit.zeroVolumeEpsilon;
 }
 
 /// One dispenser card. Instantiate once per unit with different [data].
@@ -241,8 +242,8 @@ class DispenserUnitsWidget extends ConsumerWidget {
   }
 }
 
-class BayHelperAssigner extends ConsumerWidget {
-  const BayHelperAssigner({super.key, required this.unitId});
+class UnitHelperAssigner extends ConsumerWidget {
+  const UnitHelperAssigner({super.key, required this.unitId});
 
   final int unitId;
 
@@ -280,7 +281,7 @@ class BayHelperAssigner extends ConsumerWidget {
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
-          key: ValueKey<String>('bay-helper-$unitId-$selectedId'),
+          key: ValueKey<String>('unit-helper-$unitId-$selectedId'),
           value: selectedId,
           isDense: true,
           isExpanded: true,
@@ -552,7 +553,7 @@ class _Header extends ConsumerWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
-                    _BayLinkIcons(unitId: data.unitId),
+                    _UnitLinkIcons(unitId: data.unitId),
                     const SizedBox(width: 6),
                     DsStatusPill(
                       label: offline ? 'Offline' : 'Online',
@@ -567,26 +568,45 @@ class _Header extends ConsumerWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                DsStatusPill(
-                  label: 'Token#${formatTokenNo(nextToken)}',
-                  foreground: tokens.good,
-                  background: tokens.good.withValues(alpha: 0.18),
-                  border: tokens.good.withValues(alpha: 0.35),
-                  dot: false,
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    _LinkIconButton(
+                      tooltip: 'ESP last 10',
+                      icon: Icons.history,
+                      tokens: tokens,
+                      onPressed: () {
+                        unawaited(
+                          showEspLastTenDialog(
+                            context,
+                            unitId: data.unitId,
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(width: 6),
+                    DsStatusPill(
+                      label: 'Token#${formatTokenNo(nextToken)}',
+                      foreground: tokens.good,
+                      background: tokens.good.withValues(alpha: 0.18),
+                      border: tokens.good.withValues(alpha: 0.35),
+                      dot: false,
+                    ),
+                  ],
                 ),
               ],
             ),
           ],
         ),
         const SizedBox(height: 8),
-        BayHelperAssigner(unitId: data.unitId),
+        UnitHelperAssigner(unitId: data.unitId),
       ],
     );
   }
 }
 
-class _BayLinkIcons extends ConsumerWidget {
-  const _BayLinkIcons({required this.unitId});
+class _UnitLinkIcons extends ConsumerWidget {
+  const _UnitLinkIcons({required this.unitId});
 
   final int unitId;
 
@@ -601,7 +621,7 @@ class _BayLinkIcons extends ConsumerWidget {
           icon: Icons.wifi_find_outlined,
           tokens: tokens,
           onPressed: () {
-            ref.read(stationControllerProvider.notifier).rescanBayWifi(unitId);
+            ref.read(stationControllerProvider.notifier).rescanUnitWifi(unitId);
           },
         ),
         const SizedBox(width: 2),
@@ -613,6 +633,8 @@ class _BayLinkIcons extends ConsumerWidget {
             ref.read(stationControllerProvider.notifier).connectUnit(unitId);
           },
         ),
+        const SizedBox(width: 2),
+        _FdxOkButton(unitId: unitId),
       ],
     );
   }
@@ -652,6 +674,55 @@ class _LinkIconButton extends StatelessWidget {
   }
 }
 
+class _FdxOkButton extends ConsumerWidget {
+  const _FdxOkButton({required this.unitId});
+
+  final int unitId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final bool dispensing = ref.watch(
+      stationControllerProvider.select(
+        (StationState station) => station.unit(unitId).isDispensing,
+      ),
+    );
+    final Color ink = dispensing ? tokens.inkMuted : tokens.ink;
+    return Tooltip(
+      message: dispensing ? 'Dispensing' : 'Reset',
+      child: Material(
+        color: tokens.canvas,
+        shape: CircleBorder(side: BorderSide(color: tokens.line)),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: dispensing
+              ? null
+              : () {
+                  ref
+                      .read(stationControllerProvider.notifier)
+                      .resetFdxBoard(unitId);
+                },
+          child: SizedBox(
+            width: 26,
+            height: 26,
+            child: Center(
+              child: Text(
+                'OK',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  color: ink,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _TestModeSwitch extends ConsumerWidget {
   const _TestModeSwitch({required this.unitId, required this.tokens});
 
@@ -660,17 +731,17 @@ class _TestModeSwitch extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final DispenserBay bay = ref.watch(
+    final DispenserUnit unit = ref.watch(
       stationControllerProvider.select(
-        (StationState station) => station.bay(unitId),
+        (StationState station) => station.unit(unitId),
       ),
     );
-    final bool on = bay.isTestRun;
-    final bool locked = bay.isDispensing;
+    final bool on = unit.isTestRun;
+    final bool locked = unit.isDispensing;
 
     return Tooltip(
       message: on
-          ? 'Test fill: meters saved, stock and KPIs unchanged'
+          ? 'Test fill: stock and liters count. Not a sale. Cash unchanged.'
           : 'Arm a test fill (not a sale)',
       child: InkWell(
         onTap: locked && on
@@ -761,7 +832,7 @@ class _LcdWithNozzleState extends ConsumerState<_LcdWithNozzle>
   void initState() {
     super.initState();
     _roll = AnimationController(vsync: this);
-    final LiveBayLcd live = ref.read(liveBayLcdProvider(widget.unitId));
+    final LiveUnitLcd live = ref.read(liveUnitLcdProvider(widget.unitId));
     _fromAmount = _toAmount = live.amountPkr;
     _fromLiters = _toLiters = live.volumeLiters;
   }
@@ -779,7 +850,7 @@ class _LcdWithNozzleState extends ConsumerState<_LcdWithNozzle>
     return from + (to - from) * _roll.value;
   }
 
-  void _retarget(LiveBayLcd next) {
+  void _retarget(LiveUnitLcd next) {
     if (next.status == DispenserRunState.rupeesPreset ||
         next.status == DispenserRunState.litersPreset) {
       _fromAmount = _toAmount = next.amountPkr;
@@ -811,10 +882,10 @@ class _LcdWithNozzleState extends ConsumerState<_LcdWithNozzle>
 
   @override
   Widget build(BuildContext context) {
-    final LiveBayLcd live = ref.watch(liveBayLcdProvider(widget.unitId));
-    ref.listen<LiveBayLcd>(liveBayLcdProvider(widget.unitId), (
-      LiveBayLcd? previous,
-      LiveBayLcd next,
+    final LiveUnitLcd live = ref.watch(liveUnitLcdProvider(widget.unitId));
+    ref.listen<LiveUnitLcd>(liveUnitLcdProvider(widget.unitId), (
+      LiveUnitLcd? previous,
+      LiveUnitLcd next,
     ) {
       if (previous == null ||
           previous.amountPkr != next.amountPkr ||

@@ -136,6 +136,20 @@ String formatDateTime(DateTime time) {
   return '$day-$month-${time.year} ${formatClock(time)}';
 }
 
+/// Compact stamp for A4 tables: `dd-MM-yyyy HH:mm` (no seconds).
+String formatCompactDateTime(DateTime time) {
+  final String day = time.day.toString().padLeft(2, '0');
+  final String month = time.month.toString().padLeft(2, '0');
+  final String hour = time.hour.toString().padLeft(2, '0');
+  final String minute = time.minute.toString().padLeft(2, '0');
+  return '$day-$month-${time.year} $hour:$minute';
+}
+
+/// Shift report table stamp: `29 2:06 AM`.
+String formatShiftTableTime(DateTime time) {
+  return '${time.day} ${formatClock(time)}';
+}
+
 String formatDateOnly(DateTime time) {
   final String day = time.day.toString().padLeft(2, '0');
   final String month = time.month.toString().padLeft(2, '0');

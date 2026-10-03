@@ -12,7 +12,7 @@ import '../../features/station/presentation/dispenser_monitor_providers.dart';
 import '../../features/station/presentation/office_lan_provider.dart';
 import '../../features/station/presentation/station_providers.dart';
 import '../../providers/settings_provider.dart';
-import 'Widgets/diagnostic_bay_card.dart';
+import 'Widgets/diagnostic_unit_card.dart';
 import 'Widgets/gateway_header_card.dart';
 import 'Widgets/telemetry_terminal.dart';
 
@@ -36,6 +36,11 @@ class _DispenserScreenState extends ConsumerState<DispenserScreen> {
     );
     final DispenserMonitorController monitorCtl = ref.read(
       dispenserMonitorProvider.notifier,
+    );
+    final bool showManualKeypadUnlock = ref.watch(
+      settingsProvider.select(
+        (SettingsState settings) => settings.showManualKeypadUnlock,
+      ),
     );
     final List<int> unitIds = visibleDispenserUnitIds(
       showUnit5: ref.watch(settingsProvider).showUnit5,
@@ -88,12 +93,13 @@ class _DispenserScreenState extends ConsumerState<DispenserScreen> {
                     station: station,
                     monitor: monitor,
                     onOfficeLan: onOfficeLan,
+                    showManualKeypadUnlock: showManualKeypadUnlock,
                     anyKeypadLocked: unitIds.any(
-                      (int unitId) => station.bay(unitId).keypadLocked,
+                      (int unitId) => station.unit(unitId).keypadLocked,
                     ),
                     onGlobalLock: () {
                       final bool unlocking = unitIds.any(
-                        (int unitId) => station.bay(unitId).keypadLocked,
+                        (int unitId) => station.unit(unitId).keypadLocked,
                       );
                       stationCtl.toggleAllMonitorKeypads();
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -101,7 +107,7 @@ class _DispenserScreenState extends ConsumerState<DispenserScreen> {
                           content: Text(
                             unlocking
                                 ? 'Global keypad unlock for 5 seconds, then auto-lock.'
-                                : 'Global keypad lock dispatched to all ${unitIds.length} bays.',
+                                : 'Global keypad lock dispatched to all ${unitIds.length} units.',
                           ),
                         ),
                       );
@@ -117,11 +123,12 @@ class _DispenserScreenState extends ConsumerState<DispenserScreen> {
                         runSpacing: 10,
                         children: <Widget>[
                           for (final int unitId in unitIds)
-                            DiagnosticBayCard(
-                              bay: station.bay(unitId),
+                            DiagnosticUnitCard(
+                              unit: station.unit(unitId),
                               endpoint: station.endpoint(unitId),
                               snapshot: monitor.diagnosticFor(unitId),
                               clock: monitor.clock,
+                              showManualKeypadUnlock: showManualKeypadUnlock,
                             ),
                         ],
                       ),

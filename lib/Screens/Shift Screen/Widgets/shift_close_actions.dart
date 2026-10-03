@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../Shell/shell_navigation.dart';
 import '../../../features/access/domain/access_policy.dart';
+import '../../../features/access/domain/operator_credential.dart';
 import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/shift/presentation/shift_hardware.dart';
@@ -27,7 +28,7 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
     }
     return;
   }
-  final ManagerShiftRecord? shift = workspace.activeShift;
+  final OperatorShiftRecord? shift = workspace.activeShift;
   if (shift == null) {
     return;
   }
@@ -41,39 +42,41 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
     }
     return;
   }
-  final int? blockingBay = shouldEnforceStationGuards
-      ? dispensingBayIdOf(ref)
+  final int? blockingUnit = shouldEnforceStationGuards
+      ? dispensingUnitIdOf(ref)
       : null;
-  if (blockingBay != null) {
+  if (blockingUnit != null) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(ShiftLifecycleGuard.endBlockedMessage(blockingBay)),
+          content: Text(ShiftLifecycleGuard.endBlockedMessage(blockingUnit)),
         ),
       );
     }
     return;
   }
-  final String? pin = await showManagerPinDialog(
+  final OperatorCredential? auth = await showOperatorPinDialog(
     context,
-    managerName: shift.managerName,
+    operatorId: shift.operatorId,
+    operatorName: shift.operatorName,
     title: 'End Shift (Manual)',
     message:
-        'Enter ${shift.managerName}\'s PIN to freeze ${shift.shiftId} and '
+        'Confirm ${shift.operatorName} to freeze ${shift.shiftId} and '
         'open the cash tally. All helpers will be taken off duty.',
   );
-  if (pin == null || !context.mounted) {
+  if (auth == null || !context.mounted) {
     return;
   }
   try {
     final ShiftHandoverResult result = await ref
         .read(shiftWorkspaceProvider.notifier)
         .beginManualEnd(
-          pin: pin,
-          blockingDispensingBay: shouldEnforceStationGuards
-              ? dispensingBayIdOf(ref)
+          pin: auth.pin,
+          fingerprintVerified: auth.fingerprintVerified,
+          blockingDispensingUnit: shouldEnforceStationGuards
+              ? dispensingUnitIdOf(ref)
               : null,
-          closingMeters: currentBayMetersOf(ref),
+          closingMeters: currentUnitMetersOf(ref),
         );
     if (!context.mounted) {
       return;
@@ -81,16 +84,16 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
     if (result.outcome == HandoverOutcome.invalidPin) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('PIN does not match the on-duty manager.'),
+          content: Text('PIN does not match the on-duty operator.'),
         ),
       );
       return;
     }
-    if (result.outcome == HandoverOutcome.baysDispensing) {
+    if (result.outcome == HandoverOutcome.unitsDispensing) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            ShiftLifecycleGuard.endBlockedMessage(result.blockedBayId ?? 0),
+            ShiftLifecycleGuard.endBlockedMessage(result.blockedUnitId ?? 0),
           ),
         ),
       );
@@ -131,33 +134,40 @@ Future<void> promptManualEndShift(BuildContext context, WidgetRef ref) async {
 
 Future<bool> promptForceCloseShift(BuildContext context, WidgetRef ref) async {
   final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-  final ManagerShiftRecord? shift =
+  final OperatorShiftRecord? shift =
       workspace.activeShift ?? workspace.pendingReconciliation?.shift;
   if (shift == null) {
     return true;
   }
-  final String? pin = await showManagerPinDialog(
+  final String pendingNote = workspace.hasUnconfirmedAccount
+      ? ' Unconfirmed account transfers are still waiting on the Sale screen.'
+      : '';
+  final OperatorCredential? auth = await showOperatorPinDialog(
     context,
-    managerName: shift.managerName,
+    operatorId: shift.operatorId,
+    operatorName: shift.operatorName,
     title: 'Force Close Application',
     message:
-        'Enter ${shift.managerName}\'s PIN to mark ${shift.shiftId} as '
-        'FORCE_CLOSED and quit. This is written to the audit log.',
+        'Confirm ${shift.operatorName} to mark ${shift.shiftId} as '
+        'FORCE_CLOSED and quit. This is written to the audit log.$pendingNote',
   );
-  if (pin == null || !context.mounted) {
+  if (auth == null || !context.mounted) {
     return false;
   }
   try {
     final bool ok = await ref
         .read(shiftWorkspaceProvider.notifier)
-        .forceCloseActiveShift(pin: pin);
+        .forceCloseActiveShift(
+          pin: auth.pin,
+          fingerprintVerified: auth.fingerprintVerified,
+        );
     if (!context.mounted) {
       return ok;
     }
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('PIN does not match the on-duty manager.'),
+          content: Text('PIN does not match the on-duty operator.'),
         ),
       );
     }
@@ -174,7 +184,7 @@ Future<bool> promptForceCloseShift(BuildContext context, WidgetRef ref) async {
 
 Future<void> promptUnverifiedShift(BuildContext context, WidgetRef ref) async {
   final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-  final ManagerShiftRecord? shift = workspace.activeShift;
+  final OperatorShiftRecord? shift = workspace.activeShift;
   if (shift == null || !workspace.isUnverifiedSession) {
     return;
   }
@@ -186,31 +196,35 @@ Future<void> promptUnverifiedShift(BuildContext context, WidgetRef ref) async {
   if (action == null || !context.mounted) {
     return;
   }
-  final String? pin = await showManagerPinDialog(
+  final OperatorCredential? auth = await showOperatorPinDialog(
     context,
-    managerName: shift.managerName,
+    operatorId: shift.operatorId,
+    operatorName: shift.operatorName,
     title: action == UnverifiedShiftAction.resume
         ? 'Resume open shift'
         : 'Reconcile previous shift',
     message:
-        'Enter ${shift.managerName}\'s PIN to '
+        'Confirm ${shift.operatorName} to '
         '${action == UnverifiedShiftAction.resume ? 'resume' : 'close'} '
         '${shift.shiftId}.',
   );
-  if (pin == null || !context.mounted) {
+  if (auth == null || !context.mounted) {
     return promptUnverifiedShift(context, ref);
   }
   if (action == UnverifiedShiftAction.resume) {
     final bool ok = await ref
         .read(shiftWorkspaceProvider.notifier)
-        .resumeUnverifiedSession(pin);
+        .resumeUnverifiedSession(
+          auth.pin,
+          fingerprintVerified: auth.fingerprintVerified,
+        );
     if (!context.mounted) {
       return;
     }
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('PIN does not match the on-duty manager.'),
+          content: Text('PIN does not match the on-duty operator.'),
         ),
       );
       return promptUnverifiedShift(context, ref);
@@ -220,13 +234,17 @@ Future<void> promptUnverifiedShift(BuildContext context, WidgetRef ref) async {
   }
   final ShiftHandoverResult result = await ref
       .read(shiftWorkspaceProvider.notifier)
-      .beginManualEnd(pin: pin, closingMeters: currentBayMetersOf(ref));
+      .beginManualEnd(
+        pin: auth.pin,
+        fingerprintVerified: auth.fingerprintVerified,
+        closingMeters: currentUnitMetersOf(ref),
+      );
   if (!context.mounted) {
     return;
   }
   if (result.outcome == HandoverOutcome.invalidPin) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('PIN does not match the on-duty manager.')),
+      const SnackBar(content: Text('PIN does not match the on-duty operator.')),
     );
     return promptUnverifiedShift(context, ref);
   }

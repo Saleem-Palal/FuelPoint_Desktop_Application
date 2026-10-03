@@ -96,8 +96,26 @@ class EspTokenLogRow {
   }
 }
 
-bool _sameFillAsLedger(EspTokenLogRow row, SaleTransaction sale) {
+bool _sameCalendarSecond(DateTime a, DateTime b) {
+  final DateTime left = a.toLocal();
+  final DateTime right = b.toLocal();
+  return left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day &&
+      left.hour == right.hour &&
+      left.minute == right.minute &&
+      left.second == right.second;
+}
+
+bool espRowMatchesLedger(EspTokenLogRow row, SaleTransaction sale) {
   if (row.unitId != sale.unitId) {
+    return false;
+  }
+  final DateTime? stamp = row.at;
+  if (stamp == null) {
+    return false;
+  }
+  if (!_sameCalendarSecond(stamp, sale.timestamp)) {
     return false;
   }
   if (roundRupees(row.amountPkr) != roundRupees(sale.amountPkr)) {
@@ -109,40 +127,36 @@ bool _sameFillAsLedger(EspTokenLogRow row, SaleTransaction sale) {
   if (parseFuel(row.rate) != parseFuel(sale.rate)) {
     return false;
   }
-  // SQLite stores whole liters of total meter (truncate/round). ESP logs
-  // hundredths — 78.74 vs 78 must still count as the same fill.
-  final int espMeter = row.meterCount.round();
-  return (espMeter - sale.meterCount).abs() <= 1;
+  return true;
 }
 
-/// ESP last-10 Token# rows that unit does not already have in SQLite.
+bool espRowAlreadyOnLedger({
+  required EspTokenLogRow row,
+  required List<SaleTransaction> appRows,
+}) {
+  return appRows.any((SaleTransaction sale) => espRowMatchesLedger(row, sale));
+}
+
+/// ESP last-10 rows that unit does not already have in SQLite.
 ///
-/// A row is already on the ledger when Token# matches, or when unit + rupees
-/// + liters + rate + meter match a saved sale (duplicate hang-up Token#).
+/// Identity is unit + exact second + rupees + liters + rate.
 List<EspTokenLogRow> missingEspTokenRows({
   required List<EspTokenLogRow> espRows,
   required List<SaleTransaction> appRows,
 }) {
-  final Set<int> savedTokens = <int>{
-    for (final SaleTransaction sale in appRows)
-      if (sale.tokenNo > 0) sale.tokenNo,
-  };
   final List<EspTokenLogRow> missing = <EspTokenLogRow>[];
   final Set<int> seen = <int>{};
   for (final EspTokenLogRow row in espRows) {
     if (row.token < 1 || row.unitId < 1) {
       continue;
     }
-    if (row.volumeLiters.abs() < DispenserBay.zeroVolumeEpsilon) {
+    if (row.volumeLiters.abs() < DispenserUnit.zeroVolumeEpsilon) {
       continue;
     }
-    if (savedTokens.contains(row.token) || !seen.add(row.token)) {
+    if (!seen.add(row.token)) {
       continue;
     }
-    final bool duplicateFill = appRows.any(
-      (SaleTransaction sale) => _sameFillAsLedger(row, sale),
-    );
-    if (duplicateFill) {
+    if (espRowAlreadyOnLedger(row: row, appRows: appRows)) {
       continue;
     }
     missing.add(row);
@@ -152,7 +166,9 @@ List<EspTokenLogRow> missingEspTokenRows({
     if (unit != 0) {
       return unit;
     }
-    return a.token.compareTo(b.token);
+    final DateTime aAt = a.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+    final DateTime bAt = b.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+    return aAt.compareTo(bAt);
   });
   return missing;
 }

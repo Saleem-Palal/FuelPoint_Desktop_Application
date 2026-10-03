@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../Screens/Sale Screen/Widgets/Services/esp_last_ten_dialog.dart';
 import '../../features/station/domain/dispenser_models.dart';
 import '../../features/station/domain/esp_token_log.dart';
 import '../../features/station/domain/money_format.dart';
@@ -126,7 +127,7 @@ class _RecoverSaleRow extends ConsumerWidget {
           children: <Widget>[
             Expanded(
               child: Text(
-                'Unit ${row.unitId}  ${formatLedgerToken(row.token)}\n'
+                'Unit ${row.unitId}  ${espLogStamp(row.at)}\n'
                 '${formatLiters(row.volumeLiters)}  ·  ${formatPkr(row.amountPkr)}',
                 style: TextStyle(
                   fontFamily: 'Roboto',
@@ -148,9 +149,11 @@ class _RecoverSaleRow extends ConsumerWidget {
             FilledButton(
               onPressed: () {
                 unawaited(
-                  ref
-                      .read(stationControllerProvider.notifier)
-                      .recoverEspLogRow(row),
+                  recoverEspSaleInteractively(
+                    context: context,
+                    ref: ref,
+                    row: row,
+                  ),
                 );
               },
               child: const Text('Recover'),

@@ -6,20 +6,22 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/security/pin_hasher.dart';
 import '../core/theme/dispensr_theme.dart';
+import '../features/access/data/fingerprint_helper_client.dart';
+import '../features/access/presentation/operator_fingerprint_enrollment_dialog.dart';
 import '../core/widgets/app_screen_header.dart';
 import '../core/widgets/fuel_point_stat_card.dart';
 import '../core/widgets/responsive_layout.dart';
 import '../features/station/presentation/workspace_refresh.dart';
-import '../providers/managers_provider.dart';
+import '../providers/operators_provider.dart';
 
-class ManagersScreen extends ConsumerStatefulWidget {
-  const ManagersScreen({super.key});
+class OperatorsScreen extends ConsumerStatefulWidget {
+  const OperatorsScreen({super.key});
 
   @override
-  ConsumerState<ManagersScreen> createState() => _ManagersScreenState();
+  ConsumerState<OperatorsScreen> createState() => _OperatorsScreenState();
 }
 
-class _ManagersScreenState extends ConsumerState<ManagersScreen> {
+class _OperatorsScreenState extends ConsumerState<OperatorsScreen> {
   final TextEditingController _search = TextEditingController();
   final TextEditingController _id = TextEditingController();
   final TextEditingController _name = TextEditingController();
@@ -36,7 +38,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        unawaited(refreshManagersFromDatabase(ref));
+        unawaited(refreshOperatorsFromDatabase(ref));
       }
     });
   }
@@ -52,7 +54,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
     super.dispose();
   }
 
-  void _syncForm(ManagersState workspace) {
+  void _syncForm(OperatorsState workspace) {
     if (workspace.isCreateMode) {
       if (_boundCreate && _boundSelectedId == null) {
         if (_id.text != workspace.nextId && _name.text.isEmpty) {
@@ -67,7 +69,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
       _pin.clear();
       return;
     }
-    final StationManager? selected = workspace.selected;
+    final StationOperator? selected = workspace.selected;
     if (selected == null) {
       return;
     }
@@ -82,8 +84,8 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
   }
 
   void _beginCreate() {
-    ref.read(managersProvider.notifier).startCreate();
-    final String nextId = ref.read(managersProvider).nextId;
+    ref.read(operatorsProvider.notifier).startCreate();
+    final String nextId = ref.read(operatorsProvider).nextId;
     _boundCreate = true;
     _boundSelectedId = null;
     _id.text = nextId;
@@ -92,39 +94,52 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
     _nameFocus.requestFocus();
   }
 
+  Future<void> _enrollFingerprint(StationOperator operator) async {
+    final bool changed = await showOperatorFingerprintEnrollmentDialog(
+      context,
+      operatorId: operator.id,
+      operatorName: operator.name,
+      enrolled: operator.fingerprintEnrolled,
+    );
+    if (!mounted || !changed) {
+      return;
+    }
+    await ref.read(operatorsProvider.notifier).reload();
+  }
+
   Future<void> _save() async {
-    final ManagersNotifier notifier = ref.read(managersProvider.notifier);
-    final ManagerMutationResult result = await notifier.save(
-      managerId: _id.text,
-      managerName: _name.text,
+    final OperatorsNotifier notifier = ref.read(operatorsProvider.notifier);
+    final OperatorMutationResult result = await notifier.save(
+      operatorId: _id.text,
+      operatorName: _name.text,
       pin: _pin.text,
     );
     if (!mounted) {
       return;
     }
     switch (result.outcome) {
-      case ManagerMutationOutcome.created:
+      case OperatorMutationOutcome.created:
         _boundCreate = false;
         _boundSelectedId = _id.text.trim();
         _pin.clear();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${result.managerName} saved to directory')),
+          SnackBar(content: Text('${result.operatorName} saved to directory')),
         );
-      case ManagerMutationOutcome.updated:
+      case OperatorMutationOutcome.updated:
         _pin.clear();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${result.managerName} updated')),
+          SnackBar(content: Text('${result.operatorName} updated')),
         );
-      case ManagerMutationOutcome.openShiftBlocked:
+      case OperatorMutationOutcome.openShiftBlocked:
         await _showOpenShiftLockDialog(result);
-      case ManagerMutationOutcome.duplicateId:
-      case ManagerMutationOutcome.invalidId:
-      case ManagerMutationOutcome.invalidName:
-      case ManagerMutationOutcome.invalidPin:
-      case ManagerMutationOutcome.inUse:
-      case ManagerMutationOutcome.notFound:
-      case ManagerMutationOutcome.failed:
-      case ManagerMutationOutcome.deleted:
+      case OperatorMutationOutcome.duplicateId:
+      case OperatorMutationOutcome.invalidId:
+      case OperatorMutationOutcome.invalidName:
+      case OperatorMutationOutcome.invalidPin:
+      case OperatorMutationOutcome.inUse:
+      case OperatorMutationOutcome.notFound:
+      case OperatorMutationOutcome.failed:
+      case OperatorMutationOutcome.deleted:
         if (result.message.isNotEmpty) {
           ScaffoldMessenger.of(
             context,
@@ -133,16 +148,16 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
     }
   }
 
-  Future<void> _delete(StationManager manager) async {
-    if (manager.hasOpenShift) {
+  Future<void> _delete(StationOperator operator) async {
+    if (operator.hasOpenShift) {
       await _showOpenShiftLockDialog(
-        ManagerMutationResult(
-          outcome: ManagerMutationOutcome.openShiftBlocked,
-          managerName: manager.name,
-          shiftId: manager.openShiftId,
+        OperatorMutationResult(
+          outcome: OperatorMutationOutcome.openShiftBlocked,
+          operatorName: operator.name,
+          shiftId: operator.openShiftId,
           message:
-              '${manager.name} currently holds ${manager.statusLabel}. '
-              'Close that OPEN shift before removing or inactivating this manager.',
+              '${operator.name} currently holds ${operator.statusLabel}. '
+              'Close that OPEN shift before removing or inactivating this operator.',
         ),
       );
       return;
@@ -159,7 +174,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
             side: BorderSide(color: tokens.line),
           ),
           title: Text(
-            'Remove manager',
+            'Remove operator',
             style: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w700,
@@ -168,7 +183,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
             ),
           ),
           content: Text(
-            'Delete ${manager.name} (${manager.id}) from the station directory? '
+            'Delete ${operator.name} (${operator.id}) from the station directory? '
             'This cannot be undone.',
             style: TextStyle(
               fontFamily: 'Roboto',
@@ -198,9 +213,9 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
     if (confirmed != true || !mounted) {
       return;
     }
-    final ManagerMutationResult result = await ref
-        .read(managersProvider.notifier)
-        .delete(manager.id);
+    final OperatorMutationResult result = await ref
+        .read(operatorsProvider.notifier)
+        .delete(operator.id);
     if (!mounted) {
       return;
     }
@@ -208,12 +223,12 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
       await _showOpenShiftLockDialog(result);
       return;
     }
-    if (result.outcome == ManagerMutationOutcome.deleted) {
+    if (result.outcome == OperatorMutationOutcome.deleted) {
       _boundCreate = true;
       _boundSelectedId = null;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('${result.managerName} removed')));
+      ).showSnackBar(SnackBar(content: Text('${result.operatorName} removed')));
       return;
     }
     if (result.message.isNotEmpty) {
@@ -223,12 +238,12 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
     }
   }
 
-  Future<void> _showOpenShiftLockDialog(ManagerMutationResult result) {
+  Future<void> _showOpenShiftLockDialog(OperatorMutationResult result) {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final int shiftId = result.shiftId ?? 0;
-    final String name = result.managerName.isEmpty
-        ? 'This manager'
-        : result.managerName;
+    final String name = result.operatorName.isEmpty
+        ? 'This operator'
+        : result.operatorName;
     return showDialog<void>(
       context: context,
       builder: (BuildContext context) {
@@ -260,7 +275,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
             result.message.isNotEmpty
                 ? result.message
                 : '$name currently holds Shift #$shiftId. '
-                      'Close the OPEN shift before deleting or inactivating this manager.',
+                      'Close the OPEN shift before deleting or inactivating this operator.',
             style: TextStyle(
               fontFamily: 'Roboto',
               fontSize: 13,
@@ -309,10 +324,10 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final ManagersState workspace = ref.watch(managersProvider);
-    ref.listen<ManagersState>(managersProvider, (
-      ManagersState? previous,
-      ManagersState next,
+    final OperatorsState workspace = ref.watch(operatorsProvider);
+    ref.listen<OperatorsState>(operatorsProvider, (
+      OperatorsState? previous,
+      OperatorsState next,
     ) {
       final bool selectionChanged = previous?.selectedId != next.selectedId;
       final bool createChanged =
@@ -334,11 +349,11 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
       _didInitialFormSync = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _syncForm(ref.read(managersProvider));
+          _syncForm(ref.read(operatorsProvider));
         }
       });
     }
-    final StationManager? selected = workspace.selected;
+    final StationOperator? selected = workspace.selected;
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
@@ -361,10 +376,10 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
                 child: AppScreenHeader(
-                  title: 'Managers',
+                  title: 'Operators',
                   icon: Icons.manage_accounts_outlined,
                   trailingAction: AppHeaderActionButton(
-                    label: 'New Manager',
+                    label: 'New Operator',
                     icon: Icons.person_add_alt_1_outlined,
                     onPressed: _beginCreate,
                   ),
@@ -389,12 +404,12 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
                                   workspace: workspace,
                                   onSearch: (String value) {
                                     ref
-                                        .read(managersProvider.notifier)
+                                        .read(operatorsProvider.notifier)
                                         .setSearch(value);
                                   },
                                   onSelect: (String id) {
                                     ref
-                                        .read(managersProvider.notifier)
+                                        .read(operatorsProvider.notifier)
                                         .select(id);
                                   },
                                   onCreate: _beginCreate,
@@ -423,6 +438,15 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
                                       ? null
                                       : () {
                                           unawaited(_delete(selected));
+                                        },
+                                  onEnrollFingerprint:
+                                      selected == null ||
+                                          !FingerprintHelperSession.isSupported
+                                      ? null
+                                      : () {
+                                          unawaited(
+                                            _enrollFingerprint(selected),
+                                          );
                                         },
                                   onCancel: _beginCreate,
                                 );
@@ -467,7 +491,7 @@ class _ManagersScreenState extends ConsumerState<ManagersScreen> {
 class _KpiBar extends StatelessWidget {
   const _KpiBar({required this.workspace});
 
-  final ManagersState workspace;
+  final OperatorsState workspace;
 
   @override
   Widget build(BuildContext context) {
@@ -477,8 +501,8 @@ class _KpiBar extends StatelessWidget {
       children: <Widget>[
         FuelPointStatCard(
           title: 'Directory',
-          value: '${workspace.managers.length}',
-          subtitle: 'Station manager profiles',
+          value: '${workspace.operators.length}',
+          subtitle: 'Station operator profiles',
           icon: Icons.groups_outlined,
           badgeBackgroundColor: tokens.coral.withValues(alpha: 0.12),
           badgeIconColor: tokens.coralPressed,
@@ -518,7 +542,7 @@ class _DirectoryPane extends StatelessWidget {
 
   final TextEditingController search;
   final FocusNode searchFocus;
-  final ManagersState workspace;
+  final OperatorsState workspace;
   final ValueChanged<String> onSearch;
   final ValueChanged<String> onSelect;
   final VoidCallback onCreate;
@@ -526,7 +550,7 @@ class _DirectoryPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final List<StationManager> rows = workspace.filtered;
+    final List<StationOperator> rows = workspace.filtered;
     return Container(
       decoration: BoxDecoration(
         color: tokens.card,
@@ -546,7 +570,7 @@ class _DirectoryPane extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Manager Directory',
+                    'Operator Directory',
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w700,
@@ -577,7 +601,7 @@ class _DirectoryPane extends StatelessWidget {
                 color: tokens.ink,
               ),
               decoration: InputDecoration(
-                hintText: 'Search by name or manager ID',
+                hintText: 'Search by name or operator ID',
                 prefixIcon: Icon(
                   Icons.search,
                   size: 18,
@@ -608,8 +632,8 @@ class _DirectoryPane extends StatelessWidget {
                 ? Center(
                     child: Text(
                       workspace.search.trim().isEmpty
-                          ? 'No managers on file. Create the first profile.'
-                          : 'No managers match that search.',
+                          ? 'No operators on file. Create the first profile.'
+                          : 'No operators match that search.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: 'Roboto',
@@ -622,11 +646,11 @@ class _DirectoryPane extends StatelessWidget {
                     itemCount: rows.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (BuildContext context, int index) {
-                      final StationManager manager = rows[index];
-                      return _ManagerCard(
-                        manager: manager,
-                        selected: manager.id == workspace.selectedId,
-                        onTap: () => onSelect(manager.id),
+                      final StationOperator operator = rows[index];
+                      return _OperatorCard(
+                        operator: operator,
+                        selected: operator.id == workspace.selectedId,
+                        onTap: () => onSelect(operator.id),
                       );
                     },
                   ),
@@ -637,29 +661,29 @@ class _DirectoryPane extends StatelessWidget {
   }
 }
 
-class _ManagerCard extends StatefulWidget {
-  const _ManagerCard({
-    required this.manager,
+class _OperatorCard extends StatefulWidget {
+  const _OperatorCard({
+    required this.operator,
     required this.selected,
     required this.onTap,
   });
 
-  final StationManager manager;
+  final StationOperator operator;
   final bool selected;
   final VoidCallback onTap;
 
   @override
-  State<_ManagerCard> createState() => _ManagerCardState();
+  State<_OperatorCard> createState() => _OperatorCardState();
 }
 
-class _ManagerCardState extends State<_ManagerCard> {
+class _OperatorCardState extends State<_OperatorCard> {
   bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final StationManager manager = widget.manager;
-    final bool onShift = manager.hasOpenShift;
+    final StationOperator operator = widget.operator;
+    final bool onShift = operator.hasOpenShift;
     final ColorScheme colors = Theme.of(context).colorScheme;
     final Color border = widget.selected
         ? tokens.coral
@@ -695,7 +719,7 @@ class _ManagerCardState extends State<_ManagerCard> {
                       ? tokens.good.withValues(alpha: 0.16)
                       : tokens.line,
                   child: Text(
-                    manager.initials,
+                    operator.initials,
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w700,
@@ -713,7 +737,7 @@ class _ManagerCardState extends State<_ManagerCard> {
                         children: <Widget>[
                           Expanded(
                             child: Text(
-                              manager.name,
+                              operator.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -726,7 +750,7 @@ class _ManagerCardState extends State<_ManagerCard> {
                           ),
                           const SizedBox(width: 8),
                           DsStatusPill(
-                            label: manager.statusLabel,
+                            label: operator.statusLabel,
                             foreground: onShift ? tokens.good : tokens.inkMuted,
                             background:
                                 (onShift ? tokens.good : tokens.inkMuted)
@@ -741,11 +765,16 @@ class _ManagerCardState extends State<_ManagerCard> {
                         spacing: 10,
                         runSpacing: 4,
                         children: <Widget>[
-                          _MetaChip(icon: Icons.tag, label: manager.id),
+                          _MetaChip(icon: Icons.tag, label: operator.id),
                           _MetaChip(
                             icon: Icons.lock_outline,
-                            label: manager.maskedPin,
+                            label: operator.maskedPin,
                           ),
+                          if (operator.fingerprintEnrolled)
+                            const _MetaChip(
+                              icon: Icons.fingerprint,
+                              label: 'Fingerprint',
+                            ),
                         ],
                       ),
                     ],
@@ -806,11 +835,12 @@ class _FormPane extends StatelessWidget {
     required this.onSave,
     required this.onCancel,
     this.onDelete,
+    this.onEnrollFingerprint,
   });
 
   final bool isCreate;
   final bool busy;
-  final StationManager? selected;
+  final StationOperator? selected;
   final TextEditingController idController;
   final TextEditingController nameController;
   final TextEditingController pinController;
@@ -823,6 +853,7 @@ class _FormPane extends StatelessWidget {
   final VoidCallback onSave;
   final VoidCallback onCancel;
   final VoidCallback? onDelete;
+  final VoidCallback? onEnrollFingerprint;
 
   @override
   Widget build(BuildContext context) {
@@ -853,7 +884,7 @@ class _FormPane extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    isCreate ? 'New Manager' : 'Edit Profile',
+                    isCreate ? 'New Operator' : 'Edit Profile',
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w700,
@@ -879,7 +910,7 @@ class _FormPane extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  _FieldLabel(label: 'Manager ID'),
+                  _FieldLabel(label: 'Operator ID'),
                   const SizedBox(height: 6),
                   TextField(
                     controller: idController,
@@ -905,7 +936,7 @@ class _FormPane extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  _FieldLabel(label: 'Manager Full Name'),
+                  _FieldLabel(label: 'Operator Full Name'),
                   const SizedBox(height: 6),
                   TextField(
                     controller: nameController,
@@ -988,6 +1019,40 @@ class _FormPane extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  if (isCreate)
+                    Text(
+                      'Save this operator first, then enroll a fingerprint.',
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontSize: 11,
+                        height: 1.35,
+                        color: tokens.inkMuted,
+                      ),
+                    )
+                  else if (onEnrollFingerprint != null) ...<Widget>[
+                    DsPillButton(
+                      label: (selected?.fingerprintEnrolled ?? false)
+                          ? 'Re-enroll fingerprint'
+                          : 'Enroll fingerprint',
+                      icon: Icons.fingerprint,
+                      compact: true,
+                      variant: DsPillVariant.outline,
+                      onPressed: busy ? null : onEnrollFingerprint,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      (selected?.fingerprintEnrolled ?? false)
+                          ? 'Fingerprint enrolled. It can unlock login and shift actions. PIN stays the backup.'
+                          : 'Optional fingerprint for login and shift actions. PIN stays the backup.',
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontSize: 11,
+                        height: 1.35,
+                        color: tokens.inkMuted,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
                   Row(
                     children: <Widget>[
                       if (!isCreate) ...<Widget>[
@@ -1016,7 +1081,7 @@ class _FormPane extends StatelessWidget {
                         child: DsPillButton(
                           label: busy
                               ? 'Saving…'
-                              : (isCreate ? 'Create Manager' : 'Save Changes'),
+                              : (isCreate ? 'Create Operator' : 'Save Changes'),
                           icon: Icons.check,
                           compact: true,
                           onPressed: busy ? null : onSave,

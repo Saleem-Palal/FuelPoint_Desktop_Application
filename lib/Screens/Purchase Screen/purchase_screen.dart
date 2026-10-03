@@ -171,11 +171,11 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  ({String id, String name, String pin}) _managerCreds() {
+  ({String id, String name, String pin}) _operatorCreds() {
     final ShiftWorkspaceState shift = ref.read(shiftWorkspaceProvider);
-    return PurchaseRepository.managerCreds(
+    return PurchaseRepository.operatorCreds(
       activeShift: shift.activeShift,
-      managers: shift.managers,
+      operators: shift.operators,
     );
   }
 
@@ -184,7 +184,7 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
       _snack('Enter quantity and rate before adding stock.');
       return;
     }
-    final ({String id, String name, String pin}) manager = _managerCreds();
+    final ({String id, String name, String pin}) operator = _operatorCreds();
     try {
       await ref
           .read(purchaseControllerProvider)
@@ -193,9 +193,9 @@ class _PurchaseScreenState extends ConsumerState<PurchaseScreen> {
             purchaseRate: _purchaseRate,
             totalAmountPkr: _totalCost,
             tafseel: _tafseelController.text,
-            managerId: manager.id,
-            managerName: manager.name,
-            managerPin: manager.pin,
+            operatorId: operator.id,
+            operatorName: operator.name,
+            operatorPin: operator.pin,
           );
     } catch (_) {
       if (!mounted) {

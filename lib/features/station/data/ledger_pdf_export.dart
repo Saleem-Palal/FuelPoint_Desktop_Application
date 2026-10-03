@@ -82,7 +82,7 @@ class LedgerPdfExport {
       'Customer',
       'Vehicle',
       'Helper',
-      'Cashier',
+      'Operator',
     ];
     final List<List<String>> data = <List<String>>[
       for (final SaleTransaction row in slice.rows)
@@ -97,11 +97,13 @@ class LedgerPdfExport {
           formatMeterReading(row.closingMeter),
           row.isTest
               ? 'Test'
+              : row.isAccountPending
+              ? '${row.payment.ledgerPill} · PENDING'
               : (row.udhaarSettled
                     ? 'UDHAAR · SETTLED'
                     : row.payment.ledgerPill),
           formatTableTenderPkr(row.cashAmount),
-          formatTableTenderPkr(row.accountAmount),
+          formatTableTenderPkr(row.receiptAccountAmount),
           displayCustomerName(row.customerName),
           displayVehicleNo(row.vehicleNo),
           row.helperName.trim().isEmpty ? '—' : row.helperName,
@@ -133,7 +135,12 @@ class LedgerPdfExport {
           return <pw.Widget>[
             _kpiRow(theme, <_KpiLine>[
               _KpiLine('Total Sales', formatTablePkr(slice.totalAmountPkr)),
-              _KpiLine('Volume', formatTableLiters(slice.totalVolumeLiters)),
+              _KpiLine(
+                'Volume',
+                formatTableLiters(slice.physicalVolumeLiters),
+                detail:
+                    'Real volume: ${formatTableLiters(slice.totalVolumeLiters)} | Test volume: ${formatTableLiters(slice.testVolumeLiters)}',
+              ),
               _KpiLine('Udhaar Amount', formatTablePkr(slice.udhaarAmountPkr)),
               _KpiLine('Udhaar Txns', '${slice.udhaarCount}'),
             ]),
@@ -351,6 +358,17 @@ class LedgerPdfExport {
                       fontSize: 11,
                     ),
                   ),
+                  if (items[i].detail != null) ...<pw.Widget>[
+                    pw.SizedBox(height: 2),
+                    pw.Text(
+                      items[i].detail!,
+                      style: pw.TextStyle(
+                        color: theme.muted,
+                        font: theme.regular,
+                        fontSize: 7,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -396,10 +414,11 @@ class LedgerPdfExport {
 }
 
 class _KpiLine {
-  const _KpiLine(this.label, this.value);
+  const _KpiLine(this.label, this.value, {this.detail});
 
   final String label;
   final String value;
+  final String? detail;
 }
 
 class _PdfTheme {

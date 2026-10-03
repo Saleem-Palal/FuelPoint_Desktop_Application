@@ -136,7 +136,7 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
                                     color: tokens.warn,
                                     icon: Icons.lock_clock,
                                     message:
-                                        'No LIVE shift — start a manager shift to enable keypads and sales.',
+                                        'No LIVE shift — start a operator shift to enable keypads and sales.',
                                   ),
                                   const SizedBox(height: 10),
                                 ],
@@ -234,7 +234,12 @@ class _UnitsRow extends ConsumerWidget {
         for (int i = 0; i < unitIds.length; i++) ...<Widget>[
           if (i > 0) const SizedBox(width: 8),
           Expanded(
-            child: _unitCell(tokens, station.bay(unitIds[i]), station, monitor),
+            child: _unitCell(
+              tokens,
+              station.unit(unitIds[i]),
+              station,
+              monitor,
+            ),
           ),
         ],
       ],
@@ -243,35 +248,35 @@ class _UnitsRow extends ConsumerWidget {
 
   Widget _unitCell(
     DispensrTokens tokens,
-    DispenserBay bay,
+    DispenserUnit unit,
     StationState station,
     DispenserMonitorState monitor,
   ) {
-    final SaleTransaction? receiptTxn = receiptOverlays[bay.unitId];
+    final SaleTransaction? receiptTxn = receiptOverlays[unit.unitId];
     return ClipRRect(
       borderRadius: BorderRadius.circular(tokens.radius20),
       child: Stack(
         children: <Widget>[
           DispenserUnitsWidget(
-            key: ValueKey<int>(bay.unitId),
-            data: DispenserUnitData.fromBay(
-              bay,
+            key: ValueKey<int>(unit.unitId),
+            data: DispenserUnitData.fromUnit(
+              unit,
               espConnected:
                   !shouldEnforceStationGuards ||
-                  station.endpoint(bay.unitId).connected,
+                  station.endpoint(unit.unitId).connected,
               fdxBoardLinked:
                   !shouldEnforceStationGuards ||
-                  monitor.diagnosticFor(bay.unitId).espToBoardLink != false,
+                  monitor.diagnosticFor(unit.unitId).espToBoardLink != false,
             ),
-            isSelected: selectedUnitId == bay.unitId,
-            abortNotice: station.abortNoticeFor(bay.unitId),
-            onSelect: () => onSelect(bay.unitId),
+            isSelected: selectedUnitId == unit.unitId,
+            abortNotice: station.abortNoticeFor(unit.unitId),
+            onSelect: () => onSelect(unit.unitId),
           ),
           if (receiptTxn != null)
             Positioned.fill(
               child: UnitReceiptOverlay(
                 txn: receiptTxn,
-                onDismiss: () => onDismissReceipt(bay.unitId),
+                onDismiss: () => onDismissReceipt(unit.unitId),
               ),
             ),
         ],
@@ -408,7 +413,7 @@ class _TransactionsCard extends ConsumerWidget {
                             const DataColumn(label: Text('CUSTOMER NAME')),
                             const DataColumn(label: Text('VEHICLE NO')),
                             const DataColumn(label: Text('HELPER')),
-                            const DataColumn(label: Text('MANAGER')),
+                            const DataColumn(label: Text('OPERATOR')),
                             const DataColumn(label: Text('ACTIONS')),
                           ],
                           rows: <DataRow>[
@@ -486,14 +491,22 @@ class _TransactionsCard extends ConsumerWidget {
                                   ),
                                   DataCell(
                                     Text(
-                                      row.isTest ? 'Test' : row.payment.label,
+                                      row.isTest
+                                          ? 'Test'
+                                          : row.isAccountPending
+                                          ? '${row.payment.label} · Pending'
+                                          : row.payment.label,
                                     ),
                                   ),
                                   DataCell(
                                     Text(formatTableTenderPkr(row.cashAmount)),
                                   ),
                                   DataCell(
-                                    Text(formatTableTenderPkr(row.accountAmount)),
+                                    Text(
+                                      formatTableTenderPkr(
+                                        row.receiptAccountAmount,
+                                      ),
+                                    ),
                                   ),
                                   DataCell(
                                     Text(
@@ -503,7 +516,10 @@ class _TransactionsCard extends ConsumerWidget {
                                   ),
                                   DataCell(
                                     Text(
-                                      displayVehicleNo(row.vehicleNo),
+                                      displaySaleFulfillment(
+                                        vehicleNo: row.vehicleNo,
+                                        drumQty: row.drumQty,
+                                      ),
                                       style: TextStyle(color: tokens.inkMuted),
                                     ),
                                   ),
@@ -548,7 +564,7 @@ class _TransactionsCard extends ConsumerWidget {
                                               color: tokens.ink,
                                             ),
                                           ),
-                                          if (showEdit)
+                                          if (showEdit && !row.isAccountPending)
                                             IconButton(
                                               tooltip: 'Edit',
                                               visualDensity:
@@ -623,6 +639,9 @@ Future<void> _editRecent(
   WidgetRef ref,
   SaleTransaction row,
 ) async {
+  if (row.isAccountPending) {
+    return;
+  }
   final bool? saved = await showDialog<bool>(
     context: context,
     builder: (BuildContext context) {
@@ -783,9 +802,7 @@ class _ShiftPeekKpisState extends ConsumerState<_ShiftPeekKpis> {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(tokens.radius20),
-                  border: liveShift
-                      ? null
-                      : Border.all(color: tokens.line),
+                  border: liveShift ? null : Border.all(color: tokens.line),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,

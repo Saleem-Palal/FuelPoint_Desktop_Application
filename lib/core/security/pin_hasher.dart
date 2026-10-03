@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
-/// SHA-256 PIN hashing for SQLite `managers.pin`.
+/// SHA-256 PIN hashing for SQLite `operators.pin`.
 ///
 /// Legacy plaintext PINs (4–6 digits) still verify until the next write
 /// upgrades them. Already-hashed 64-char hex values are never re-hashed.
@@ -29,7 +29,7 @@ class PinHasher {
   static String hashIfPlain(String pin) {
     final String trimmed = pin.trim();
     if (trimmed.isEmpty) {
-      throw ArgumentError('Manager PIN is required');
+      throw ArgumentError('Operator PIN is required');
     }
     if (looksHashed(trimmed)) {
       return trimmed;

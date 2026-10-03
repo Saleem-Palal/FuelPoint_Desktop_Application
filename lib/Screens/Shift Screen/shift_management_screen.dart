@@ -9,7 +9,7 @@ import '../../features/shift/domain/shift_models.dart';
 import '../../features/shift/presentation/shift_providers.dart';
 import '../../features/station/presentation/workspace_refresh.dart';
 import 'Widgets/helper_shifts_tab.dart';
-import 'Widgets/manager_shifts_tab.dart';
+import 'Widgets/operator_shifts_tab.dart';
 
 class ShiftManagementScreen extends ConsumerStatefulWidget {
   const ShiftManagementScreen({super.key});
@@ -59,8 +59,8 @@ class _ShiftManagementScreenState extends ConsumerState<ShiftManagementScreen> {
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-              child: workspace.tab == ShiftWorkspaceTab.managers
-                  ? const ManagerShiftsTab()
+              child: workspace.tab == ShiftWorkspaceTab.operators
+                  ? const OperatorShiftsTab()
                   : const HelperShiftsTab(),
             ),
           ),
@@ -91,10 +91,10 @@ class _ShiftTabToggle extends StatelessWidget {
         children: <Widget>[
           Expanded(
             child: _TabChip(
-              label: 'Manager Shifts & Cash Tally',
+              label: 'Operator Shifts & Cash Tally',
               icon: Icons.account_balance_wallet_outlined,
-              selected: tab == ShiftWorkspaceTab.managers,
-              onTap: () => onChanged(ShiftWorkspaceTab.managers),
+              selected: tab == ShiftWorkspaceTab.operators,
+              onTap: () => onChanged(ShiftWorkspaceTab.operators),
             ),
           ),
           const SizedBox(width: 4),

@@ -106,8 +106,8 @@ class StationTableInfo {
 
   String get label {
     switch (name) {
-      case DatabaseHelper.tableManagers:
-        return 'Managers';
+      case DatabaseHelper.tableOperators:
+        return 'Operators';
       case DatabaseHelper.tableHelpers:
         return 'Helpers';
       case DatabaseHelper.tableCustomers:
@@ -139,14 +139,14 @@ class AuditLogEntry {
   const AuditLogEntry({
     required this.id,
     required this.timestamp,
-    required this.managerId,
+    required this.operatorId,
     required this.actionType,
     required this.details,
   });
 
   final int id;
   final DateTime timestamp;
-  final String managerId;
+  final String operatorId;
   final String actionType;
   final String details;
 
@@ -164,7 +164,7 @@ class AuditLogEntry {
     return AuditLogEntry(
       id: id,
       timestamp: parsed ?? DateTime.fromMillisecondsSinceEpoch(0),
-      managerId: '${row['manager_ID'] ?? 'SYSTEM'}'.trim(),
+      operatorId: '${row['manager_ID'] ?? 'SYSTEM'}'.trim(),
       actionType: '${row['action_type'] ?? ''}'.trim(),
       details: '${row['details'] ?? ''}',
     );
@@ -194,6 +194,7 @@ class SettingsState {
     this.errorMessage,
     this.statusMessage,
     this.showUnit5 = false,
+    this.showManualKeypadUnlock = false,
     this.showReceiptPreview = false,
     this.showRecentSaleEdit = false,
     this.lowStockThresholdLiters = 0,
@@ -220,6 +221,7 @@ class SettingsState {
   final String? errorMessage;
   final String? statusMessage;
   final bool showUnit5;
+  final bool showManualKeypadUnlock;
   final bool showReceiptPreview;
   final bool showRecentSaleEdit;
 
@@ -270,6 +272,7 @@ class SettingsState {
     String? statusMessage,
     bool clearStatus = false,
     bool? showUnit5,
+    bool? showManualKeypadUnlock,
     bool? showReceiptPreview,
     bool? showRecentSaleEdit,
     double? lowStockThresholdLiters,
@@ -306,6 +309,8 @@ class SettingsState {
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       statusMessage: clearStatus ? null : (statusMessage ?? this.statusMessage),
       showUnit5: showUnit5 ?? this.showUnit5,
+      showManualKeypadUnlock:
+          showManualKeypadUnlock ?? this.showManualKeypadUnlock,
       showReceiptPreview: showReceiptPreview ?? this.showReceiptPreview,
       showRecentSaleEdit: showRecentSaleEdit ?? this.showRecentSaleEdit,
       lowStockThresholdLiters:
@@ -328,6 +333,7 @@ class SettingsState {
       auditPage: 0,
       auditPageSize: 12,
       showUnit5: false,
+      showManualKeypadUnlock: false,
       showReceiptPreview: false,
       showRecentSaleEdit: false,
     );
@@ -379,6 +385,9 @@ class SettingsNotifier extends Notifier<SettingsState> {
       final String? showUnit5Raw = await _db.readSetting(
         DatabaseHelper.settingShowUnit5,
       );
+      final String? showManualKeypadUnlockRaw = await _db.readSetting(
+        DatabaseHelper.settingShowManualKeypadUnlock,
+      );
       final String? showReceiptPreviewRaw = await _db.readSetting(
         DatabaseHelper.settingShowReceiptPreview,
       );
@@ -410,6 +419,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
         lastBackupFileName: lastFile,
         lastBackupDriveFileId: lastId,
         showUnit5: showUnit5Raw == '1',
+        showManualKeypadUnlock: showManualKeypadUnlockRaw == '1',
         showReceiptPreview: showReceiptPreviewRaw == '1',
         showRecentSaleEdit: showRecentSaleEditRaw == '1',
         lowStockThresholdLiters: sanitizeLowStockThreshold(thresholdRaw),
@@ -712,6 +722,9 @@ class SettingsNotifier extends Notifier<SettingsState> {
             : state.autoBackupIntervalHours,
         clearLastBackup: clearedSettings,
         showUnit5: clearedSettings ? false : state.showUnit5,
+        showManualKeypadUnlock: clearedSettings
+            ? false
+            : state.showManualKeypadUnlock,
         showReceiptPreview: clearedSettings ? false : state.showReceiptPreview,
         showRecentSaleEdit: clearedSettings ? false : state.showRecentSaleEdit,
         lowStockThresholdLiters: clearedSettings
@@ -1101,6 +1114,24 @@ class SettingsNotifier extends Notifier<SettingsState> {
       debugPrint('SettingsNotifier.setShowUnit5 failed: $error\n$stack');
       state = state.copyWith(
         errorMessage: 'Could not save the Unit 5 display preference. $error',
+      );
+    }
+  }
+
+  Future<void> setShowManualKeypadUnlock(bool enabled) async {
+    try {
+      await _db.writeSetting(
+        DatabaseHelper.settingShowManualKeypadUnlock,
+        enabled ? '1' : '0',
+      );
+      state = state.copyWith(showManualKeypadUnlock: enabled);
+    } catch (error, stack) {
+      debugPrint(
+        'SettingsNotifier.setShowManualKeypadUnlock failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        errorMessage:
+            'Could not save the manual keypad unlock preference. $error',
       );
     }
   }

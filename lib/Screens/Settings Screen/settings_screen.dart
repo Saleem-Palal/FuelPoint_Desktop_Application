@@ -19,7 +19,7 @@ import '../../features/station/domain/money_format.dart';
 import '../../features/station/domain/receipt_footer_settings.dart';
 import '../../features/station/presentation/purchase_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
-import '../../providers/managers_provider.dart';
+import '../../providers/operators_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/database_helper.dart';
 
@@ -99,7 +99,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
     bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
     await ref.read(shiftWorkspaceProvider.notifier).reload();
-    await ref.read(managersProvider.notifier).reload();
+    await ref.read(operatorsProvider.notifier).reload();
   }
 
   Future<void> _restoreFromGoogleDrive() async {
@@ -163,7 +163,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     await ref.read(stationControllerProvider.notifier).reloadPersistedData();
     await ref.read(purchaseControllerProvider).reload();
     await ref.read(shiftWorkspaceProvider.notifier).reload();
-    await ref.read(managersProvider.notifier).reload();
+    await ref.read(operatorsProvider.notifier).reload();
   }
 
   Future<void> _eraseTables() async {
@@ -202,7 +202,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     await ref.read(stationControllerProvider.notifier).reloadPersistedData();
     await ref.read(purchaseControllerProvider).reload();
     await ref.read(shiftWorkspaceProvider.notifier).reload();
-    await ref.read(managersProvider.notifier).reload();
+    await ref.read(operatorsProvider.notifier).reload();
   }
 
   Future<bool?> _confirmRestore(String path) {
@@ -685,6 +685,39 @@ class _SaleFloorCardState extends ConsumerState<_SaleFloorCard> {
               subtitle: Text(
                 'Hidden by default. Turn on when a fifth dispenser is in service. '
                 'The other units expand to fill the row when this is off.',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 11,
+                  color: tokens.inkMuted,
+                ),
+              ),
+            ),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: settings.showManualKeypadUnlock,
+              activeThumbColor: tokens.good,
+              onChanged: widget.enabled
+                  ? (bool value) {
+                      unawaited(
+                        ref
+                            .read(settingsProvider.notifier)
+                            .setShowManualKeypadUnlock(value),
+                      );
+                    }
+                  : null,
+              title: Text(
+                'Show manual keypad unlock',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+              subtitle: Text(
+                'Hidden by default. When on, Dispenser Monitor shows Unlock '
+                'Keypad on each unit and Global Keypad Unlock. Unlock holds '
+                'for 5 seconds, then auto-locks.',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontSize: 11,
@@ -1756,7 +1789,7 @@ class _AuditCard extends ConsumerWidget {
                               ),
                               columns: const <DataColumn>[
                                 DataColumn(label: Text('TIMESTAMP')),
-                                DataColumn(label: Text('MANAGER ID')),
+                                DataColumn(label: Text('OPERATOR ID')),
                                 DataColumn(label: Text('ACTION TYPE')),
                                 DataColumn(label: Text('DETAILS')),
                               ],
@@ -1770,7 +1803,7 @@ class _AuditCard extends ConsumerWidget {
                                       ),
                                       DataCell(
                                         Text(
-                                          row.managerId,
+                                          row.operatorId,
                                           style: const TextStyle(
                                             fontWeight: FontWeight.w700,
                                           ),
@@ -2043,7 +2076,7 @@ class _EraseTablesDialogState extends State<_EraseTablesDialog> {
     return widget.hasOpenShift &&
         (_selected.contains(DatabaseHelper.tableShifts) ||
             _selected.contains(DatabaseHelper.tableSalesTransactions) ||
-            _selected.contains(DatabaseHelper.tableManagers));
+            _selected.contains(DatabaseHelper.tableOperators));
   }
 
   void _toggleAll() {
@@ -2160,7 +2193,7 @@ class _EraseTablesDialogState extends State<_EraseTablesDialog> {
               Padding(
                 padding: const EdgeInsets.only(top: 10),
                 child: Text(
-                  'An OPEN shift is live. Erasing shifts, sales, or managers '
+                  'An OPEN shift is live. Erasing shifts, sales, or operators '
                   'will drop in-progress station data.',
                   style: TextStyle(
                     fontFamily: 'Roboto',

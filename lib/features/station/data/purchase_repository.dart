@@ -18,7 +18,7 @@ class PurchaseRecord {
     required this.rate,
     required this.amount,
     this.tafseel = '',
-    this.managerName = '',
+    this.operatorName = '',
   });
 
   final String invNo;
@@ -27,7 +27,7 @@ class PurchaseRecord {
   final double rate;
   final double amount;
   final String tafseel;
-  final String managerName;
+  final String operatorName;
 
   bool get isInitialDip => isInitialDipTafseel(tafseel);
 }
@@ -59,9 +59,9 @@ class PurchaseRepository {
     required double rate,
     required double amount,
     required String tafseel,
-    required String managerId,
-    required String managerName,
-    required String managerPin,
+    required String operatorId,
+    required String operatorName,
+    required String operatorPin,
   }) async {
     try {
       await _db.commitPurchase(
@@ -71,9 +71,9 @@ class PurchaseRepository {
         rate: rate,
         amount: amount,
         tafseel: tafseel,
-        managerId: managerId,
-        managerName: managerName,
-        managerPin: managerPin,
+        operatorId: operatorId,
+        operatorName: operatorName,
+        operatorPin: operatorPin,
       );
     } catch (error, stack) {
       debugPrint('PurchaseRepository.commitPurchase failed: $error\n$stack');
@@ -143,24 +143,24 @@ class PurchaseRepository {
       ratePerLiter: row.rate,
       totalAmount: row.amount,
       tafseel: row.tafseel,
-      user: row.managerName,
+      user: row.operatorName,
     );
   }
 
-  static ({String id, String name, String pin}) managerCreds({
-    required ManagerShiftRecord? activeShift,
-    required List<ManagerProfile> managers,
+  static ({String id, String name, String pin}) operatorCreds({
+    required OperatorShiftRecord? activeShift,
+    required List<OperatorProfile> operators,
   }) {
-    final String id = SalesTransactionRepository.managerIdFor(activeShift);
+    final String id = SalesTransactionRepository.operatorIdFor(activeShift);
     return (
       id: id,
-      name: SalesTransactionRepository.managerNameFor(
+      name: SalesTransactionRepository.operatorNameFor(
         shift: activeShift,
-        fallbackName: 'Cashier',
+        fallbackName: 'Operator',
       ),
-      pin: SalesTransactionRepository.managerPinFor(
-        managers: managers,
-        managerId: id,
+      pin: SalesTransactionRepository.operatorPinFor(
+        operators: operators,
+        operatorId: id,
       ),
     );
   }
@@ -173,7 +173,7 @@ class PurchaseRepository {
       rate: _asDouble(row['RATE']),
       amount: _asDouble(row['AMOUNT']),
       tafseel: (row['TAFSEEL'] as String?)?.trim() ?? '',
-      managerName: (row['manager_name'] as String?)?.trim() ?? '',
+      operatorName: (row['manager_name'] as String?)?.trim() ?? '',
     );
   }
 

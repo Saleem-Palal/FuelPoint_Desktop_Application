@@ -34,7 +34,7 @@ void main() {
         isTrue,
       );
       expect(
-        AccessPolicy.destinationRequiresOwner(ShellDestinations.managers),
+        AccessPolicy.destinationRequiresOwner(ShellDestinations.operators),
         isTrue,
       );
       expect(
@@ -45,15 +45,15 @@ void main() {
 
     test('keeps sale and customers unlocked; shifts requires owner', () {
       expect(
-        AccessPolicy.isManagerUnlockedDestination(ShellDestinations.sale),
+        AccessPolicy.isOperatorUnlockedDestination(ShellDestinations.sale),
         isTrue,
       );
       expect(
-        AccessPolicy.isManagerUnlockedDestination(ShellDestinations.customers),
+        AccessPolicy.isOperatorUnlockedDestination(ShellDestinations.customers),
         isTrue,
       );
       expect(
-        AccessPolicy.isManagerUnlockedDestination(ShellDestinations.shifts),
+        AccessPolicy.isOperatorUnlockedDestination(ShellDestinations.shifts),
         isFalse,
       );
       expect(

@@ -60,6 +60,41 @@ void main() {
     });
   });
 
+  group('resolvePendingAccountConfirm', () {
+    test('a zero account remainder becomes a cash ticket', () {
+      final confirmed = resolvePendingAccountConfirm(
+        payment: PaymentMethod.bankAccount,
+        saleAmount: 2989,
+        cashAmount: 2989,
+      );
+      expect(confirmed.payment, PaymentMethod.cash);
+      expect(confirmed.cashAmount, 2989);
+      expect(confirmed.accountAmount, 0);
+    });
+
+    test('a partial account keeps the original bank method', () {
+      final confirmed = resolvePendingAccountConfirm(
+        payment: PaymentMethod.easyPaisa,
+        saleAmount: 2989,
+        cashAmount: 2000,
+      );
+      expect(confirmed.payment, PaymentMethod.easyPaisa);
+      expect(confirmed.cashAmount, 2000);
+      expect(confirmed.accountAmount, 989);
+    });
+
+    test('cash above the ticket is cut down to the sale', () {
+      final confirmed = resolvePendingAccountConfirm(
+        payment: PaymentMethod.bankAccount,
+        saleAmount: 1000,
+        cashAmount: 5000,
+      );
+      expect(confirmed.payment, PaymentMethod.cash);
+      expect(confirmed.cashAmount, 1000);
+      expect(confirmed.accountAmount, 0);
+    });
+  });
+
   group('saleTenderNeedsUpdate', () {
     SaleTransaction cashHangup() {
       return SaleTransaction(

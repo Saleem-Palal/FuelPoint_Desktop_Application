@@ -1,6 +1,6 @@
 import '../../station/domain/dispenser_models.dart';
 
-enum SettlementPaymentMode { cash, bankTransfer }
+enum SettlementPaymentMode { cash, bankTransfer, easyPaisa }
 
 extension SettlementPaymentModeX on SettlementPaymentMode {
   String get label {
@@ -8,7 +8,9 @@ extension SettlementPaymentModeX on SettlementPaymentMode {
       case SettlementPaymentMode.cash:
         return 'Cash';
       case SettlementPaymentMode.bankTransfer:
-        return 'Bank Transfer';
+        return 'Bank';
+      case SettlementPaymentMode.easyPaisa:
+        return 'EasyPaisa';
     }
   }
 
@@ -17,7 +19,27 @@ extension SettlementPaymentModeX on SettlementPaymentMode {
       case SettlementPaymentMode.cash:
         return 'CASH';
       case SettlementPaymentMode.bankTransfer:
-        return 'BANK TRANSFER';
+        return 'BANK';
+      case SettlementPaymentMode.easyPaisa:
+        return 'EASYPAISA';
+    }
+  }
+
+  bool get isAccount {
+    return this == SettlementPaymentMode.bankTransfer ||
+        this == SettlementPaymentMode.easyPaisa;
+  }
+
+  static SettlementPaymentMode parse(String? raw) {
+    switch ((raw ?? '').trim().toUpperCase()) {
+      case 'BANK':
+      case 'BANK TRANSFER':
+        return SettlementPaymentMode.bankTransfer;
+      case 'EASYPAISA':
+      case 'EASY PAISA':
+        return SettlementPaymentMode.easyPaisa;
+      default:
+        return SettlementPaymentMode.cash;
     }
   }
 }
@@ -62,6 +84,8 @@ class CustomerSettlement {
     required this.timestamp,
     required this.previousBalance,
     required this.remainingBalance,
+    this.cashAmountPkr = 0,
+    this.accountAmountPkr = 0,
     this.notes = '',
     this.cashierName = 'Amir R.',
     this.cashierId = 'AR',
@@ -77,10 +101,33 @@ class CustomerSettlement {
   final DateTime timestamp;
   final double previousBalance;
   final double remainingBalance;
+  final double cashAmountPkr;
+  final double accountAmountPkr;
   final String notes;
   final String cashierName;
   final String cashierId;
   final String shiftId;
+
+  bool get isPartial => remainingBalance > 0.004;
+
+  bool get hasAccountTender => accountAmountPkr > 0.004;
+
+  String get tenderLabel {
+    final bool cash = cashAmountPkr > 0.004;
+    final bool account = accountAmountPkr > 0.004;
+    if (cash && account) {
+      return 'Cash + ${paymentMode.label}';
+    }
+    if (account) {
+      return paymentMode.label;
+    }
+    return 'Cash';
+  }
+
+  String get receiptPaymentLabel {
+    final String base = tenderLabel;
+    return isPartial ? 'Partial · $base' : base;
+  }
 }
 
 enum CustomerLedgerKind { sale, settlement }
@@ -280,31 +327,111 @@ class UnifiedUdhaarRow {
 String encodeSettlementDescription({
   required String receiptNo,
   required SettlementPaymentMode paymentMode,
-  required String notes,
+  required double cashAmountPkr,
+  required double accountAmountPkr,
+  String notes = '',
 }) {
-  final String mode = paymentMode == SettlementPaymentMode.cash
-      ? 'CASH'
-      : 'BANK';
-  return '$receiptNo|$mode|${notes.trim()}';
+  return <String>[
+    receiptNo,
+    paymentMode.ledgerPill,
+    cashAmountPkr.toStringAsFixed(2),
+    accountAmountPkr.toStringAsFixed(2),
+    notes.trim(),
+  ].join('|');
 }
 
-({String receiptNo, SettlementPaymentMode paymentMode, String notes})
-parseSettlementDescription(String raw) {
+class SettlementTender {
+  const SettlementTender({
+    required this.receiptNo,
+    required this.paymentMode,
+    required this.cashAmountPkr,
+    required this.accountAmountPkr,
+    required this.notes,
+  });
+
+  final String receiptNo;
+  final SettlementPaymentMode paymentMode;
+  final double cashAmountPkr;
+  final double accountAmountPkr;
+  final String notes;
+}
+
+SettlementTender parseSettlementDescription(
+  String raw, {
+  required double paidPkr,
+}) {
   final List<String> parts = raw.split('|');
   if (parts.length < 2) {
-    return (
+    return SettlementTender(
       receiptNo: '',
       paymentMode: SettlementPaymentMode.cash,
+      cashAmountPkr: paidPkr,
+      accountAmountPkr: 0,
       notes: raw.trim(),
     );
   }
-  final String mode = parts[1].trim().toUpperCase();
-  return (
+  final SettlementPaymentMode mode = SettlementPaymentModeX.parse(parts[1]);
+  final double? encodedCash = parts.length > 2
+      ? double.tryParse(parts[2].trim())
+      : null;
+  final double? encodedAccount = parts.length > 3
+      ? double.tryParse(parts[3].trim())
+      : null;
+  if (encodedCash != null && encodedAccount != null) {
+    return SettlementTender(
+      receiptNo: parts[0].trim(),
+      paymentMode: mode,
+      cashAmountPkr: encodedCash,
+      accountAmountPkr: encodedAccount,
+      notes: parts.length > 4 ? parts.sublist(4).join('|').trim() : '',
+    );
+  }
+  final bool account = mode.isAccount;
+  return SettlementTender(
     receiptNo: parts[0].trim(),
-    paymentMode: mode == 'BANK' || mode == 'BANK TRANSFER'
-        ? SettlementPaymentMode.bankTransfer
-        : SettlementPaymentMode.cash,
+    paymentMode: mode,
+    cashAmountPkr: account ? 0 : paidPkr,
+    accountAmountPkr: account ? paidPkr : 0,
     notes: parts.length > 2 ? parts.sublist(2).join('|').trim() : '',
+  );
+}
+
+class UdhaarRecoveryShiftTotals {
+  const UdhaarRecoveryShiftTotals({
+    this.cash = 0,
+    this.account = 0,
+    this.partialPaid = 0,
+  });
+
+  final double cash;
+  final double account;
+  final double partialPaid;
+}
+
+UdhaarRecoveryShiftTotals udhaarRecoveryTotalsFromRows(
+  Iterable<UnifiedUdhaarRow> rows,
+) {
+  double cash = 0;
+  double account = 0;
+  double partial = 0;
+  for (final UnifiedUdhaarRow row in rows) {
+    if (row.type != UnifiedUdhaarType.settlement) {
+      continue;
+    }
+    final SettlementTender tender = parseSettlementDescription(
+      row.description,
+      paidPkr: row.amountPkr,
+    );
+    cash += tender.cashAmountPkr;
+    account += tender.accountAmountPkr;
+    if (row.remainingPkr > 0.004) {
+      partial += row.amountPkr;
+    }
+  }
+  return UdhaarRecoveryShiftTotals(
+    cash: cash,
+    account: account,
+    partialPaid: partial,
   );
 }
 
@@ -324,10 +451,13 @@ String ledgerStatusFor({
 CustomerSettlement settlementFromLedgerRow(
   UnifiedUdhaarRow row, {
   int id = 0,
-  String cashierName = 'Cashier',
+  String cashierName = 'Operator',
   String cashierId = '',
 }) {
-  final parsed = parseSettlementDescription(row.description);
+  final SettlementTender parsed = parseSettlementDescription(
+    row.description,
+    paidPkr: row.amountPkr,
+  );
   return CustomerSettlement(
     id: id,
     receiptNo: parsed.receiptNo.isEmpty ? row.primaryKey : parsed.receiptNo,
@@ -338,6 +468,8 @@ CustomerSettlement settlementFromLedgerRow(
     timestamp: row.at,
     previousBalance: row.remainingPkr + row.amountPkr,
     remainingBalance: row.remainingPkr,
+    cashAmountPkr: parsed.cashAmountPkr,
+    accountAmountPkr: parsed.accountAmountPkr,
     notes: parsed.notes,
     cashierName: cashierName,
     cashierId: cashierId,
@@ -371,8 +503,8 @@ double cashInHandFromLedgers({
     }
   }
   for (final CustomerSettlement settlement in settlements) {
-    if (settlement.paymentMode == SettlementPaymentMode.cash) {
-      total += settlement.amountPkr;
+    if (settlement.cashAmountPkr > 0) {
+      total += settlement.cashAmountPkr;
     }
   }
   return total;

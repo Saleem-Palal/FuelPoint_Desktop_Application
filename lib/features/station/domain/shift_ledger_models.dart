@@ -9,8 +9,8 @@ import 'dispenser_models.dart';
 class ShiftLedgerSummary {
   const ShiftLedgerSummary({
     required this.shiftId,
-    required this.managerId,
-    required this.managerName,
+    required this.operatorId,
+    required this.operatorName,
     required this.role,
     required this.startTime,
     required this.status,
@@ -23,32 +23,32 @@ class ShiftLedgerSummary {
   });
 
   final String shiftId;
-  final String managerId;
-  final String managerName;
-  final ManagerRole role;
+  final String operatorId;
+  final String operatorName;
+  final OperatorRole role;
   final DateTime startTime;
   final DateTime? endTime;
-  final ManagerShiftStatus status;
+  final OperatorShiftStatus status;
   final int totalTransactions;
   final double totalShiftPkr;
   final double totalShiftLiters;
   final Map<int, double> openingMeters;
   final Map<int, double> closingMeters;
 
-  bool get isLive => status == ManagerShiftStatus.open;
+  bool get isLive => status == OperatorShiftStatus.open;
 
-  String get managerBadgeLabel {
-    final String name = managerName.trim().isEmpty
-        ? 'Manager'
-        : managerName.trim();
-    return '$name (${managerRoleLabel(role).toUpperCase()})';
+  String get operatorBadgeLabel {
+    final String name = operatorName.trim().isEmpty
+        ? 'Operator'
+        : operatorName.trim();
+    return '$name (${operatorRoleLabel(role).toUpperCase()})';
   }
 
   ShiftLedgerSummary copyWith({
-    String? managerName,
-    ManagerRole? role,
+    String? operatorName,
+    OperatorRole? role,
     DateTime? endTime,
-    ManagerShiftStatus? status,
+    OperatorShiftStatus? status,
     int? totalTransactions,
     double? totalShiftPkr,
     double? totalShiftLiters,
@@ -57,8 +57,8 @@ class ShiftLedgerSummary {
   }) {
     return ShiftLedgerSummary(
       shiftId: shiftId,
-      managerId: managerId,
-      managerName: managerName ?? this.managerName,
+      operatorId: operatorId,
+      operatorName: operatorName ?? this.operatorName,
       role: role ?? this.role,
       startTime: startTime,
       endTime: endTime ?? this.endTime,
@@ -91,11 +91,14 @@ class ShiftLedgerSummary {
     double liters = 0;
     int count = 0;
     for (final SaleTransaction row in rows) {
-      if (row.isTest || isDirectSaleUnit(row.unitId)) {
+      if (isDirectSaleUnit(row.unitId)) {
+        continue;
+      }
+      liters += row.volumeLiters;
+      if (row.isTest) {
         continue;
       }
       pkr += row.amountPkr;
-      liters += row.volumeLiters;
       count += 1;
     }
     return copyWith(
@@ -136,7 +139,7 @@ bool helperSaleBelongsToShift(
   if (row.shiftId.isNotEmpty) {
     return false;
   }
-  if (row.managerId.isNotEmpty && row.managerId != summary.managerId) {
+  if (row.operatorId.isNotEmpty && row.operatorId != summary.operatorId) {
     return false;
   }
   return isInShiftWindow(
@@ -286,20 +289,20 @@ String steppedShiftId(
   return shifts[next].shiftId;
 }
 
-List<ShiftLedgerSummary> attachManagerRoles(
+List<ShiftLedgerSummary> attachOperatorRoles(
   List<ShiftLedgerSummary> summaries,
-  List<ManagerProfile> managers,
+  List<OperatorProfile> operators,
 ) {
   return summaries.map((ShiftLedgerSummary row) {
-    for (final ManagerProfile manager in managers) {
-      if (manager.id == row.managerId) {
-        return row.copyWith(role: manager.role, managerName: manager.name);
+    for (final OperatorProfile operator in operators) {
+      if (operator.id == row.operatorId) {
+        return row.copyWith(role: operator.role, operatorName: operator.name);
       }
     }
     return row;
   }).toList();
 }
 
-ManagerShiftStatus shiftStatusFromStorage(String raw) {
+OperatorShiftStatus shiftStatusFromStorage(String raw) {
   return ShiftStatusStorage.fromStorage(raw);
 }

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/station/domain/money_format.dart';
+import 'shift_ui_kit.dart';
 
 class ShiftSettlementResult {
   const ShiftSettlementResult({required this.actualCash, required this.notes});
@@ -14,7 +15,7 @@ class ShiftSettlementResult {
 
 Future<ShiftSettlementResult?> showShiftSettlementDialog(
   BuildContext context, {
-  required ManagerShiftRecord shift,
+  required OperatorShiftRecord shift,
   required ShiftWindowMetrics metrics,
 }) {
   return showDialog<ShiftSettlementResult>(
@@ -32,7 +33,7 @@ class ShiftSettlementDialog extends StatefulWidget {
     required this.metrics,
   });
 
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
   final ShiftWindowMetrics metrics;
 
   @override
@@ -142,7 +143,7 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
                   ),
                 ),
                 Text(
-                  '${widget.shift.shiftId} · ${widget.shift.managerName}',
+                  '${widget.shift.shiftId} · ${widget.shift.operatorName}',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w500,
@@ -170,8 +171,8 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
               const SizedBox(height: 10),
               _ReadOnlyField(
                 label: 'Udhaar Recovery (PKR)',
-                value: formatPkr(widget.metrics.udhaarRecoveryTotal),
-                hint: 'Cash settlements this shift',
+                value: formatPkr(widget.metrics.udhaarRecoveryCombined),
+                hint: formatUdhaarRecoverySplit(widget.metrics),
               ),
               const SizedBox(height: 10),
               Row(

@@ -19,17 +19,17 @@ class ShiftProvider {
   });
 
   final bool hasActiveShift;
-  final ManagerShiftRecord? activeShift;
+  final OperatorShiftRecord? activeShift;
   final ReconciliationSnapshot? pendingReconciliation;
   final bool isUnverifiedSession;
 
-  ManagerShiftRecord? get blockingShift {
+  OperatorShiftRecord? get blockingShift {
     return activeShift ?? pendingReconciliation?.shift;
   }
 
-  String get liveManagerName {
-    return blockingShift?.managerName.trim().isNotEmpty == true
-        ? blockingShift!.managerName.trim()
+  String get liveOperatorName {
+    return blockingShift?.operatorName.trim().isNotEmpty == true
+        ? blockingShift!.operatorName.trim()
         : 'Unknown';
   }
 }

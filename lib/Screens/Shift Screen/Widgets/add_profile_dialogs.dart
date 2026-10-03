@@ -4,15 +4,15 @@ import 'package:flutter/services.dart';
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/domain/shift_models.dart';
 
-class AddManagerResult {
-  const AddManagerResult({
+class AddOperatorResult {
+  const AddOperatorResult({
     required this.name,
     required this.role,
-    this.pin = kDefaultManagerPin,
+    this.pin = kDefaultOperatorPin,
   });
 
   final String name;
-  final ManagerRole role;
+  final OperatorRole role;
   final String pin;
 }
 
@@ -35,26 +35,26 @@ Future<double?> showEditRewardRateDialog(
   );
 }
 
-Future<AddManagerResult?> showAddManagerDialog(BuildContext context) {
-  return showDialog<AddManagerResult>(
+Future<AddOperatorResult?> showAddOperatorDialog(BuildContext context) {
+  return showDialog<AddOperatorResult>(
     context: context,
-    builder: (BuildContext context) => const _AddManagerDialog(),
+    builder: (BuildContext context) => const _AddOperatorDialog(),
   );
 }
 
-class _AddManagerDialog extends StatefulWidget {
-  const _AddManagerDialog();
+class _AddOperatorDialog extends StatefulWidget {
+  const _AddOperatorDialog();
 
   @override
-  State<_AddManagerDialog> createState() => _AddManagerDialogState();
+  State<_AddOperatorDialog> createState() => _AddOperatorDialogState();
 }
 
-class _AddManagerDialogState extends State<_AddManagerDialog> {
+class _AddOperatorDialogState extends State<_AddOperatorDialog> {
   final TextEditingController _name = TextEditingController();
   final TextEditingController _pin = TextEditingController(
-    text: kDefaultManagerPin,
+    text: kDefaultOperatorPin,
   );
-  ManagerRole _role = ManagerRole.manager;
+  OperatorRole _role = OperatorRole.operator;
 
   @override
   void dispose() {
@@ -73,7 +73,7 @@ class _AddManagerDialogState extends State<_AddManagerDialog> {
       return;
     }
     Navigator.of(context).pop(
-      AddManagerResult(
+      AddOperatorResult(
         name: _name.text.trim(),
         role: _role,
         pin: _pin.text.trim(),
@@ -100,7 +100,7 @@ class _AddManagerDialogState extends State<_AddManagerDialog> {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Add Manager',
+              'Add Operator',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w700,
@@ -136,20 +136,20 @@ class _AddManagerDialogState extends State<_AddManagerDialog> {
             const SizedBox(height: 12),
             _LabeledField(
               label: 'Role',
-              child: DropdownButtonFormField<ManagerRole>(
+              child: DropdownButtonFormField<OperatorRole>(
                 initialValue: _role,
                 decoration: const InputDecoration(),
-                items: const <DropdownMenuItem<ManagerRole>>[
-                  DropdownMenuItem<ManagerRole>(
-                    value: ManagerRole.manager,
-                    child: Text('Manager'),
+                items: const <DropdownMenuItem<OperatorRole>>[
+                  DropdownMenuItem<OperatorRole>(
+                    value: OperatorRole.operator,
+                    child: Text('Operator'),
                   ),
-                  DropdownMenuItem<ManagerRole>(
-                    value: ManagerRole.owner,
+                  DropdownMenuItem<OperatorRole>(
+                    value: OperatorRole.owner,
                     child: Text('Owner'),
                   ),
                 ],
-                onChanged: (ManagerRole? value) {
+                onChanged: (OperatorRole? value) {
                   if (value == null) {
                     return;
                   }
@@ -200,7 +200,7 @@ class _AddManagerDialogState extends State<_AddManagerDialog> {
             const SizedBox(width: 8),
             Expanded(
               child: DsPillButton(
-                label: 'Save Manager',
+                label: 'Save Operator',
                 compact: true,
                 icon: Icons.check,
                 onPressed: _canSave ? _save : null,

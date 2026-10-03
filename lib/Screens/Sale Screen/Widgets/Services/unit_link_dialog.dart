@@ -72,9 +72,9 @@ class _UnitLinkDialogState extends ConsumerState<_UnitLinkDialog> {
   @override
   Widget build(BuildContext context) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final DispenserBay bay = ref
+    final DispenserUnit unit = ref
         .watch(stationControllerProvider)
-        .bay(widget.unitId);
+        .unit(widget.unitId);
     final UnitEndpoint endpoint = ref
         .watch(stationControllerProvider)
         .endpoint(widget.unitId);
@@ -93,7 +93,7 @@ class _UnitLinkDialogState extends ConsumerState<_UnitLinkDialog> {
         children: <Widget>[
           Expanded(
             child: Text(
-              '${bay.name} link',
+              '${unit.name} link',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w700,

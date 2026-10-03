@@ -16,7 +16,7 @@ class ShellDestinations {
   static const int dispenserMonitor = 6;
   static const int settings = 7;
   static const int customers = 8;
-  static const int managers = 9;
+  static const int operators = 9;
 }
 
 final shellDestinationProvider = StateProvider<int>(

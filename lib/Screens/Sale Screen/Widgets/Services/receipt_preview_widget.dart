@@ -41,6 +41,7 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
       payment: widget.txn.payment,
       stationCopy: _stationCapture,
       kind: widget.printKind,
+      recovered: widget.txn.isRecoveredSale,
     );
   }
 
@@ -203,8 +204,18 @@ List<ThermalReceiptDetail> saleReceiptDetails(SaleTransaction txn) {
       label: 'Vehicle No.',
       value: txn.vehicleNo.trim().isEmpty ? '—' : txn.vehicleNo.trim(),
     ),
-    ThermalReceiptDetail(label: 'Payment', value: txn.payment.label),
+    ThermalReceiptDetail(
+      label: 'Payment',
+      value: txn.isAccountPending
+          ? '${txn.payment.label} · Pending'
+          : txn.payment.label,
+    ),
   ];
+  if (txn.isAccountPending) {
+    rows.add(
+      const ThermalReceiptDetail(label: 'Status', value: 'Account pending'),
+    );
+  }
   switch (txn.payment) {
     case PaymentMethod.bankAccount:
     case PaymentMethod.easyPaisa:
@@ -221,7 +232,7 @@ List<ThermalReceiptDetail> saleReceiptDetails(SaleTransaction txn) {
     case PaymentMethod.udhaar:
       break;
   }
-  rows.add(ThermalReceiptDetail(label: 'Manager', value: txn.cashierName));
+  rows.add(ThermalReceiptDetail(label: 'Operator', value: txn.cashierName));
   rows.add(
     ThermalReceiptDetail(
       label: 'Helper',
@@ -257,6 +268,7 @@ Future<void> spoolSaleReceipt({
                 payment: txn.payment,
                 stationCopy: stationCapture,
                 kind: kind,
+                recovered: txn.isRecoveredSale,
               ),
               handwritingLines: ReceiptCopy.handwritingLinesFor(
                 payment: txn.payment,
@@ -342,7 +354,7 @@ class ThermalReceiptView extends ConsumerWidget {
                  value: ticket.paymentLabel,
                ),
                ThermalReceiptDetail(
-                 label: 'Manager',
+                 label: 'Operator',
                  value: ticket.cashierName,
                ),
                ThermalReceiptDetail(
@@ -716,9 +728,7 @@ class _UrduText extends StatelessWidget {
         text,
         textAlign: TextAlign.center,
         maxLines: maxLines,
-        overflow: maxLines == null
-            ? TextOverflow.clip
-            : TextOverflow.ellipsis,
+        overflow: maxLines == null ? TextOverflow.clip : TextOverflow.ellipsis,
         style: TextStyle(
           fontFamily: ReceiptCopy.urduFontFamily,
           fontFamilyFallback: const <String>[ReceiptCopy.latinFontFamily],

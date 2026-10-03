@@ -6,25 +6,29 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
+import '../../../features/access/data/fingerprint_helper_client.dart';
+import '../../../features/access/presentation/operator_fingerprint_watch.dart';
 import '../../../features/shift/data/shift_summary_export.dart';
 import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
 import '../../../features/station/domain/money_format.dart';
+import '../../../providers/settings_provider.dart';
 import 'helper_unit_assignment_panel.dart';
 import 'shift_ui_kit.dart';
 
 typedef ShiftAuthSubmit =
     Future<ShiftHandoverResult> Function({
-      required String incomingManagerId,
+      required String incomingOperatorId,
       required String pin,
+      required bool fingerprintVerified,
       required Map<int, String?> unitAssignments,
     });
 
-Future<ShiftHandoverResult?> showIncomingManagerAuthDialog(
+Future<ShiftHandoverResult?> showIncomingOperatorAuthDialog(
   BuildContext context, {
-  required ManagerShiftRecord outgoingShift,
-  required List<ManagerProfile> incomingManagers,
+  required OperatorShiftRecord outgoingShift,
+  required List<OperatorProfile> incomingOperators,
   required List<HelperProfile> helpers,
   required Map<int, String?> currentAssignments,
   required ShiftAuthSubmit onConfirm,
@@ -35,7 +39,7 @@ Future<ShiftHandoverResult?> showIncomingManagerAuthDialog(
     builder: (BuildContext context) {
       return ShiftIncomingAuthDialog(
         outgoingShift: outgoingShift,
-        incomingManagers: incomingManagers,
+        incomingOperators: incomingOperators,
         helpers: helpers,
         currentAssignments: currentAssignments,
         onConfirm: onConfirm,
@@ -48,14 +52,14 @@ class ShiftIncomingAuthDialog extends StatefulWidget {
   const ShiftIncomingAuthDialog({
     super.key,
     required this.outgoingShift,
-    required this.incomingManagers,
+    required this.incomingOperators,
     required this.helpers,
     required this.currentAssignments,
     required this.onConfirm,
   });
 
-  final ManagerShiftRecord outgoingShift;
-  final List<ManagerProfile> incomingManagers;
+  final OperatorShiftRecord outgoingShift;
+  final List<OperatorProfile> incomingOperators;
   final List<HelperProfile> helpers;
   final Map<int, String?> currentAssignments;
   final ShiftAuthSubmit onConfirm;
@@ -71,6 +75,8 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
   String? _pinError;
   late Map<int, String?> _assignments;
   bool _busy = false;
+  bool _fingerprintReady = false;
+  bool _showPin = !FingerprintHelperSession.isSupported;
 
   @override
   void initState() {
@@ -87,17 +93,17 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
   bool get _canConfirm {
     return !_busy &&
         _selectedIncomingId != null &&
-        _pin.text.trim().length >= 4;
+        (_fingerprintReady || _pin.text.trim().length >= 4);
   }
 
-  ManagerProfile? get _selectedManager {
+  OperatorProfile? get _selectedOperator {
     final String? id = _selectedIncomingId;
     if (id == null) {
       return null;
     }
-    for (final ManagerProfile manager in widget.incomingManagers) {
-      if (manager.id == id) {
-        return manager;
+    for (final OperatorProfile operator in widget.incomingOperators) {
+      if (operator.id == id) {
+        return operator;
       }
     }
     return null;
@@ -107,6 +113,8 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
     setState(() {
       _selectedIncomingId = id;
       _pinError = null;
+      _fingerprintReady = false;
+      _showPin = !FingerprintHelperSession.isSupported;
       _pin.clear();
     });
   }
@@ -115,6 +123,8 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
     setState(() {
       _selectedIncomingId = null;
       _pinError = null;
+      _fingerprintReady = false;
+      _showPin = !FingerprintHelperSession.isSupported;
       _pin.clear();
     });
   }
@@ -129,8 +139,9 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
       _pinError = null;
     });
     final ShiftHandoverResult result = await widget.onConfirm(
-      incomingManagerId: incomingId,
-      pin: _pin.text.trim(),
+      incomingOperatorId: incomingId,
+      pin: _fingerprintReady ? '' : _pin.text.trim(),
+      fingerprintVerified: _fingerprintReady,
       unitAssignments: Map<int, String?>.from(_assignments),
     );
     if (!mounted) {
@@ -139,15 +150,15 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
     if (result.outcome == HandoverOutcome.invalidPin) {
       setState(() {
         _busy = false;
-        _pinError = 'PIN does not match the selected manager.';
+        _pinError = 'PIN does not match the selected operator.';
       });
       return;
     }
-    if (result.outcome == HandoverOutcome.baysDispensing) {
+    if (result.outcome == HandoverOutcome.unitsDispensing) {
       setState(() {
         _busy = false;
         _pinError =
-            'Handover Blocked: Bay #${result.blockedBayId ?? 0} is actively dispensing. Wait for nozzle stowage.';
+            'Handover Blocked: Unit #${result.blockedUnitId ?? 0} is actively dispensing. Wait for nozzle stowage.';
       });
       return;
     }
@@ -190,7 +201,7 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  'Incoming Manager Authentication',
+                  'Incoming Operator Authentication',
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w700,
@@ -214,16 +225,16 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
       ),
       content: SizedBox(
         width: 560,
-        height: 480,
+        height: 580,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Text(
               _selectedIncomingId == null
-                  ? 'Select the incoming manager. Fuel sales will tag to the '
-                        'new shift immediately. ${widget.outgoingShift.managerName} '
+                  ? 'Select the incoming operator. Fuel sales will tag to the '
+                        'new shift immediately. ${widget.outgoingShift.operatorName} '
                         'can tally cash afterwards.'
-                  : 'Enter ${_selectedManager?.name ?? 'the incoming manager'}\'s '
+                  : 'Enter ${_selectedOperator?.name ?? 'the incoming operator'}\'s '
                         'PIN and review helper duty. Keep or reassign who is on each unit.',
               style: TextStyle(
                 fontFamily: 'Roboto',
@@ -235,13 +246,13 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
             const SizedBox(height: 14),
             if (_selectedIncomingId == null)
               Expanded(
-                child: widget.incomingManagers.isEmpty
+                child: widget.incomingOperators.isEmpty
                     ? const ShiftEmptyHint(
                         message:
-                            'Add another manager on the Shifts screen before handing off.',
+                            'Add another operator on the Shifts screen before handing off.',
                       )
                     : GridView.builder(
-                        itemCount: widget.incomingManagers.length,
+                        itemCount: widget.incomingOperators.length,
                         gridDelegate:
                             const SliverGridDelegateWithMaxCrossAxisExtent(
                               maxCrossAxisExtent: 260,
@@ -250,12 +261,12 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
                               mainAxisSpacing: 10,
                             ),
                         itemBuilder: (BuildContext context, int index) {
-                          final ManagerProfile manager =
-                              widget.incomingManagers[index];
-                          return _IncomingManagerCard(
-                            manager: manager,
-                            selected: manager.id == _selectedIncomingId,
-                            onTap: () => _selectIncoming(manager.id),
+                          final OperatorProfile operator =
+                              widget.incomingOperators[index];
+                          return _IncomingOperatorCard(
+                            operator: operator,
+                            selected: operator.id == _selectedIncomingId,
+                            onTap: () => _selectIncoming(operator.id),
                           );
                         },
                       ),
@@ -267,7 +278,7 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
                   onPressed: _busy ? null : _clearIncoming,
                   icon: const Icon(Icons.arrow_back, size: 16),
                   label: Text(
-                    'Change manager · ${_selectedManager?.name ?? ''}',
+                    'Change operator · ${_selectedOperator?.name ?? ''}',
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w600,
@@ -278,44 +289,68 @@ class _ShiftIncomingAuthDialogState extends State<ShiftIncomingAuthDialog> {
                 ),
               ),
               const SizedBox(height: 4),
-              Text(
-                'Incoming manager PIN',
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                  color: tokens.inkMuted,
-                ),
-              ),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _pin,
-                enabled: !_busy,
-                obscureText: true,
-                maxLength: 6,
-                keyboardType: TextInputType.number,
-                inputFormatters: <TextInputFormatter>[
-                  FilteringTextInputFormatter.digitsOnly,
-                ],
-                onChanged: (_) {
+              OperatorFingerprintWatch(
+                operatorId: _selectedIncomingId,
+                showScanMark: true,
+                onMatched: () {
+                  if (!mounted) {
+                    return;
+                  }
                   setState(() {
+                    _fingerprintReady = true;
                     _pinError = null;
                   });
                 },
-                onSubmitted: (_) => _submit(),
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 16,
-                  letterSpacing: 4,
-                  color: tokens.ink,
-                ),
-                decoration: InputDecoration(
-                  hintText: '••••',
-                  counterText: '',
-                  errorText: _pinError,
-                ),
+                onShowPin: (bool show) {
+                  if (!mounted || _showPin == show) {
+                    return;
+                  }
+                  setState(() {
+                    _showPin = show;
+                  });
+                },
               ),
+              if (_showPin) ...<Widget>[
+                const SizedBox(height: 12),
+                Text(
+                  'Incoming operator PIN',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    color: tokens.inkMuted,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _pin,
+                  enabled: !_busy,
+                  obscureText: true,
+                  maxLength: 6,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  onChanged: (_) {
+                    setState(() {
+                      _pinError = null;
+                    });
+                  },
+                  onSubmitted: (_) => _submit(),
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    letterSpacing: 4,
+                    color: tokens.ink,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: '••••',
+                    counterText: '',
+                    errorText: _pinError,
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               Text(
                 'Helper assignment',
@@ -435,13 +470,14 @@ class _ShiftReconciliationOverlayState
     try {
       final File file = await ShiftSummaryExport.instance.printPdf(
         _preview(snapshot),
+        showUnit5: ref.read(settingsProvider).showUnit5,
       );
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('PDF saved: ${file.path}')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('PDF saved: ${file.path}')));
     } catch (error) {
       if (!mounted) {
         return;
@@ -512,7 +548,7 @@ class _ShiftReconciliationOverlayState
     if (snapshot == null) {
       return const SizedBox.shrink();
     }
-    final ManagerShiftRecord? live = ref.watch(activeShiftNotifierProvider);
+    final OperatorShiftRecord? live = ref.watch(activeShiftNotifierProvider);
     final DispensrTokens tokens = DispensrTokens.of(context);
     final double? actual = _actualCashOf();
     final double? variance = actual == null
@@ -608,7 +644,7 @@ class _CollapsedRail extends StatelessWidget {
   });
 
   final DispensrTokens tokens;
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
   final VoidCallback onExpand;
 
   @override
@@ -665,7 +701,7 @@ class _ReconciliationBody extends StatelessWidget {
 
   final DispensrTokens tokens;
   final ReconciliationSnapshot snapshot;
-  final ManagerShiftRecord? live;
+  final OperatorShiftRecord? live;
   final double? variance;
   final Color varianceColor;
   final TextEditingController actualController;
@@ -679,9 +715,9 @@ class _ReconciliationBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ManagerShiftRecord shift = snapshot.shift;
+    final OperatorShiftRecord shift = snapshot.shift;
     final ShiftWindowMetrics metrics = snapshot.metrics;
-    final ManagerShiftRecord? liveShift = live;
+    final OperatorShiftRecord? liveShift = live;
     final double? varianceAmount = variance;
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
@@ -720,7 +756,7 @@ class _ReconciliationBody extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${shift.shiftId} · ${shift.managerName} · frozen',
+                      '${shift.shiftId} · ${shift.operatorName} · frozen',
                       style: TextStyle(
                         fontFamily: 'Roboto',
                         fontWeight: FontWeight.w400,
@@ -756,7 +792,7 @@ class _ReconciliationBody extends StatelessWidget {
                   child: Text(
                     liveShift == null
                         ? 'This table is frozen. New sales will not appear here.'
-                        : 'Live ops: ${liveShift.shiftId} · ${liveShift.managerName}. This tally will not receive those sales.',
+                        : 'Live ops: ${liveShift.shiftId} · ${liveShift.operatorName}. This tally will not receive those sales.',
                     style: TextStyle(
                       fontFamily: 'Roboto',
                       fontWeight: FontWeight.w500,
@@ -791,27 +827,14 @@ class _ReconciliationBody extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: _MiniKpi(
-                  label: 'Account payments',
-                  value: formatPkr(metrics.accountSales),
-                  icon: Icons.account_balance_outlined,
-                  tint: tokens.inkMuted,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: _MiniKpi(
-                  label: 'Udhaar recovery',
-                  value: formatPkr(metrics.udhaarRecoveryTotal),
-                  icon: Icons.replay_outlined,
-                  tint: tokens.warn,
-                ),
-              ),
-            ],
+          _MiniKpi(
+            label: 'Account payments',
+            value: formatPkr(metrics.accountSales),
+            icon: Icons.account_balance_outlined,
+            tint: tokens.inkMuted,
           ),
+          const SizedBox(height: 6),
+          _UdhaarRecoveryMini(metrics: metrics),
           const SizedBox(height: 6),
           Container(
             padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
@@ -976,7 +999,7 @@ class _ReconciliationBody extends StatelessWidget {
                 ),
                 child: metrics.sales.isEmpty
                     ? const ShiftEmptyHint(
-                        message: 'No fuel sales tagged to this manager shift.',
+                        message: 'No fuel sales tagged to this operator shift.',
                       )
                     : ShiftSalesTable(
                         rows: metrics.sales,
@@ -1007,6 +1030,61 @@ class _ReconciliationBody extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UdhaarRecoveryMini extends StatelessWidget {
+  const _UdhaarRecoveryMini({required this.metrics});
+
+  final ShiftWindowMetrics metrics;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: tokens.canvas,
+        borderRadius: BorderRadius.circular(tokens.radius12),
+        border: Border.all(color: tokens.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'Udhaar recovery',
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w500,
+              fontSize: 10,
+              color: tokens.inkMuted,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            formatPkr(metrics.udhaarRecoveryCombined),
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w700,
+              fontSize: 16,
+              height: 1.1,
+              color: tokens.ink,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            formatUdhaarRecoverySplit(metrics),
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontWeight: FontWeight.w600,
+              fontSize: 11,
+              color: tokens.inkMuted,
+            ),
           ),
         ],
       ),
@@ -1086,14 +1164,14 @@ class _MiniKpi extends StatelessWidget {
   }
 }
 
-class _IncomingManagerCard extends StatelessWidget {
-  const _IncomingManagerCard({
-    required this.manager,
+class _IncomingOperatorCard extends StatelessWidget {
+  const _IncomingOperatorCard({
+    required this.operator,
     required this.selected,
     required this.onTap,
   });
 
-  final ManagerProfile manager;
+  final OperatorProfile operator;
   final bool selected;
   final VoidCallback onTap;
 
@@ -1124,7 +1202,7 @@ class _IncomingManagerCard extends StatelessWidget {
                     ? tokens.coral.withValues(alpha: 0.22)
                     : tokens.line,
                 child: Text(
-                  manager.initials,
+                  operator.initials,
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w700,
@@ -1140,7 +1218,7 @@ class _IncomingManagerCard extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
                     Text(
-                      manager.name,
+                      operator.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -1152,7 +1230,7 @@ class _IncomingManagerCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     DsStatusPill(
-                      label: managerRoleLabel(manager.role),
+                      label: operatorRoleLabel(operator.role),
                       foreground: tokens.coralPressed,
                       background: tokens.coral.withValues(alpha: 0.12),
                       border: tokens.coral.withValues(alpha: 0.35),

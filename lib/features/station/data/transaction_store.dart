@@ -71,6 +71,9 @@ class SalesLedgerSnapshot {
     }
     return total;
   }
+
+  /// Test fills inside [physicalVolumeLiters]. Real volume is [totalVolumeLiters].
+  double get testVolumeLiters => physicalVolumeLiters - totalVolumeLiters;
 }
 
 class PurchaseLedgerSnapshot {

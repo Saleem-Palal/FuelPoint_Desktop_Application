@@ -12,21 +12,21 @@ class TokenSystemWidget extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final DispensrTokens tokens = DispensrTokens.of(context);
-    final DispenserBay bay = ref.watch(selectedBayProvider);
+    final DispenserUnit unit = ref.watch(selectedUnitProvider);
     final int tokenId = ref.watch(currentTokenIdProvider);
 
     final String statusLabel;
     final Color statusFg;
     final Color statusBg;
-    if (bay.isOffline) {
+    if (unit.isOffline) {
       statusLabel = 'Offline';
       statusFg = tokens.inkMuted;
       statusBg = tokens.line.withValues(alpha: 0.7);
-    } else if (bay.isDispensing) {
+    } else if (unit.isDispensing) {
       statusLabel = 'Dispensing';
       statusFg = tokens.coralPressed;
       statusBg = tokens.coral.withValues(alpha: 0.12);
-    } else if (bay.isCycleComplete) {
+    } else if (unit.isCycleComplete) {
       statusLabel = 'Awaiting Payment';
       statusFg = tokens.good;
       statusBg = tokens.good.withValues(alpha: 0.12);
@@ -69,7 +69,7 @@ class TokenSystemWidget extends ConsumerWidget {
               children: <Widget>[
                 Expanded(
                   child: Text(
-                    '${bay.name} — ${bay.productLabel}',
+                    '${unit.name} — ${unit.productLabel}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -127,24 +127,24 @@ class TokenSystemWidget extends ConsumerWidget {
               children: <Widget>[
                 _TelemetryLine(
                   label: 'Liters',
-                  value: formatLiters(bay.volumeLiters),
+                  value: formatLiters(unit.volumeLiters),
                 ),
                 const SizedBox(height: 6),
-                _TelemetryLine(label: 'Rate', value: formatRate(bay.rate)),
+                _TelemetryLine(label: 'Rate', value: formatRate(unit.rate)),
                 const SizedBox(height: 6),
                 _TelemetryLine(
                   label: 'Amount',
-                  value: formatDispenserPkr(bay.amountPkr),
+                  value: formatDispenserPkr(unit.amountPkr),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 10),
           DsPillButton(
-            label: bay.keypadLocked ? 'Unlock Keypad' : 'Lock Keypad',
+            label: unit.keypadLocked ? 'Unlock Keypad' : 'Lock Keypad',
             variant: DsPillVariant.outline,
             onPressed: () {
-              unawaitedLock(ref, !bay.keypadLocked);
+              unawaitedLock(ref, !unit.keypadLocked);
             },
             compact: true,
           ),

@@ -237,6 +237,17 @@ class DispenserSocketManager {
     onWire?.call(frame);
   }
 
+  Future<void> resetFdx(int unitId) async {
+    await sendCommand(
+      unitId: unitId,
+      payload: <String, Object>{
+        'cmd': 'FDX_RESET',
+        'unit': unitId,
+        'gpio': 21,
+      },
+    );
+  }
+
   Future<void> setKeypadRelay({required int unitId, required bool lock}) async {
     await sendCommand(
       unitId: unitId,
@@ -249,7 +260,7 @@ class DispenserSocketManager {
     );
   }
 
-  Future<void> confirmBay(int unitId, {int? token}) async {
+  Future<void> confirmUnit(int unitId, {int? token}) async {
     final Map<String, Object> payload = <String, Object>{
       'cmd': 'CONFIRM',
       'unit': unitId,
@@ -319,7 +330,7 @@ class DispenserSocketManager {
     );
   }
 
-  Future<void> connectBay({
+  Future<void> connectUnit({
     required int unitId,
     required String host,
     required int port,
@@ -342,7 +353,7 @@ class DispenserSocketManager {
     await link.reset();
   }
 
-  Future<void> disconnectBay(int unitId) async {
+  Future<void> disconnectUnit(int unitId) async {
     final _UnitLink? link = _links[unitId];
     if (link == null) {
       return;
@@ -351,7 +362,7 @@ class DispenserSocketManager {
     await link.hangUp();
   }
 
-  Future<void> rescanBayWifi(int unitId) async {
+  Future<void> rescanUnitWifi(int unitId) async {
     await pingUnit(unitId: unitId);
   }
 

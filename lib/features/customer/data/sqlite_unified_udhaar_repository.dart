@@ -41,10 +41,18 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
     required double amountPkr,
     required SettlementPaymentMode paymentMode,
     required String shiftId,
+    double cashAmountPkr = 0,
+    double accountAmountPkr = 0,
     String notes = '',
     DateTime? timestamp,
   }) async {
     final int receiptSeq = await nextReceiptSeq();
+    final double cash = cashAmountPkr > 0 || accountAmountPkr > 0
+        ? cashAmountPkr
+        : (paymentMode.isAccount ? 0 : amountPkr);
+    final double account = cashAmountPkr > 0 || accountAmountPkr > 0
+        ? accountAmountPkr
+        : (paymentMode.isAccount ? amountPkr : 0);
     final Map<String, Object?> row = await _db.insertUnifiedUdhaarEntry(
       type: UnifiedUdhaarType.settlement.storage,
       shiftId: shiftId,
@@ -55,6 +63,8 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
       description: encodeSettlementDescription(
         receiptNo: formatSettlementReceiptNo(receiptSeq),
         paymentMode: paymentMode,
+        cashAmountPkr: cash,
+        accountAmountPkr: account,
         notes: notes,
       ),
     );

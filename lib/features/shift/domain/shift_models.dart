@@ -2,17 +2,17 @@ import 'package:flutter/material.dart';
 
 import '../../station/domain/dispenser_models.dart';
 
-enum ShiftWorkspaceTab { managers, helpers }
+enum ShiftWorkspaceTab { operators, helpers }
 
-enum ManagerTallyPane { todaySales, historical }
+enum OperatorTallyPane { todaySales, historical }
 
-enum ManagerRole { manager, owner }
+enum OperatorRole { operator, owner }
 
-enum ManagerProfileStatus { active, inactive }
+enum OperatorProfileStatus { active, inactive }
 
 enum HelperDutyStatus { onDuty, offDuty, inactive }
 
-enum ManagerShiftStatus { open, pendingReconciliation, closed, forceClosed }
+enum OperatorShiftStatus { open, pendingReconciliation, closed, forceClosed }
 
 enum HelperRangePreset { today, thisMonth, custom }
 
@@ -22,43 +22,43 @@ enum HandoverOutcome {
   handedOff,
   invalidPin,
   noActiveShift,
-  unknownManager,
-  sameManager,
+  unknownOperator,
+  sameOperator,
   alreadyPending,
-  baysDispensing,
+  unitsDispensing,
   pendingAccount,
 }
 
 /// Default attendant reward until a station setting is persisted.
 const double kDefaultHelperRewardPerTx = 5;
 
-/// Mock PIN used for newly added managers until SQLite credentials exist.
-const String kDefaultManagerPin = '0000';
+/// Mock PIN used for newly added operators until SQLite credentials exist.
+const String kDefaultOperatorPin = '0000';
 
-class ManagerProfile {
-  const ManagerProfile({
+class OperatorProfile {
+  const OperatorProfile({
     required this.id,
     required this.name,
     required this.role,
     required this.status,
-    this.pin = kDefaultManagerPin,
+    this.pin = kDefaultOperatorPin,
   });
 
   final String id;
   final String name;
-  final ManagerRole role;
-  final ManagerProfileStatus status;
+  final OperatorRole role;
+  final OperatorProfileStatus status;
   final String pin;
 
   String get initials => initialsFromName(name);
 
-  ManagerProfile copyWith({
+  OperatorProfile copyWith({
     String? name,
-    ManagerRole? role,
-    ManagerProfileStatus? status,
+    OperatorRole? role,
+    OperatorProfileStatus? status,
     String? pin,
   }) {
-    return ManagerProfile(
+    return OperatorProfile(
       id: id,
       name: name ?? this.name,
       role: role ?? this.role,
@@ -68,7 +68,7 @@ class ManagerProfile {
   }
 }
 
-/// Master helper row (`helpers` table). Duty is derived from bay assignment.
+/// Master helper row (`helpers` table). Duty is derived from unit assignment.
 class HelperProfile {
   HelperProfile({
     required this.id,
@@ -182,11 +182,11 @@ class HelperDutySession {
   }
 }
 
-class ManagerShiftRecord {
-  const ManagerShiftRecord({
+class OperatorShiftRecord {
+  const OperatorShiftRecord({
     required this.shiftId,
-    required this.managerId,
-    required this.managerName,
+    required this.operatorId,
+    required this.operatorName,
     required this.role,
     required this.startTime,
     required this.expectedCash,
@@ -200,15 +200,15 @@ class ManagerShiftRecord {
   });
 
   final String shiftId;
-  final String managerId;
-  final String managerName;
-  final ManagerRole role;
+  final String operatorId;
+  final String operatorName;
+  final OperatorRole role;
   final DateTime startTime;
   final DateTime? endTime;
   final double expectedCash;
   final double? actualCash;
   final String notes;
-  final ManagerShiftStatus status;
+  final OperatorShiftStatus status;
   final double udhaarRecoveryTotal;
   final Map<int, double> openingMeters;
   final Map<int, double> closingMeters;
@@ -221,25 +221,25 @@ class ManagerShiftRecord {
     return actual - expectedCash;
   }
 
-  bool get isOpen => status == ManagerShiftStatus.open;
+  bool get isOpen => status == OperatorShiftStatus.open;
 
   bool get isPendingReconciliation =>
-      status == ManagerShiftStatus.pendingReconciliation;
+      status == OperatorShiftStatus.pendingReconciliation;
 
-  ManagerShiftRecord copyWith({
+  OperatorShiftRecord copyWith({
     DateTime? endTime,
     double? expectedCash,
     double? actualCash,
     String? notes,
-    ManagerShiftStatus? status,
+    OperatorShiftStatus? status,
     double? udhaarRecoveryTotal,
     Map<int, double>? openingMeters,
     Map<int, double>? closingMeters,
   }) {
-    return ManagerShiftRecord(
+    return OperatorShiftRecord(
       shiftId: shiftId,
-      managerId: managerId,
-      managerName: managerName,
+      operatorId: operatorId,
+      operatorName: operatorName,
       role: role,
       startTime: startTime,
       endTime: endTime ?? this.endTime,
@@ -268,7 +268,7 @@ class HelperSaleRecord {
     this.payment = PaymentMethod.cash,
     this.shiftId = '',
     this.cashierName = '',
-    this.managerId = '',
+    this.operatorId = '',
     this.cashAmount = 0,
     this.accountAmount = 0,
     this.pendingAccountAmount = 0,
@@ -276,12 +276,13 @@ class HelperSaleRecord {
     this.closingMeter = 0,
     this.customerName = '',
     this.vehicleNo = '',
-    this.managerStaffId = '',
+    this.operatorStaffId = '',
     this.helperStaffId = '',
     this.actions = '',
     this.espTxId = '',
     this.edited = false,
     this.isTest = false,
+    this.drumQty = 0,
   });
 
   final int tokenNo;
@@ -296,7 +297,7 @@ class HelperSaleRecord {
   final PaymentMethod payment;
   final String shiftId;
   final String cashierName;
-  final String managerId;
+  final String operatorId;
   final double cashAmount;
   final double accountAmount;
   final double pendingAccountAmount;
@@ -304,12 +305,13 @@ class HelperSaleRecord {
   final double closingMeter;
   final String customerName;
   final String vehicleNo;
-  final String managerStaffId;
+  final String operatorStaffId;
   final String helperStaffId;
   final String actions;
   final String espTxId;
   final bool edited;
   final bool isTest;
+  final int drumQty;
 
   /// Cash column only. Never [amountPkr] (that would double-count the ticket).
   double get cashTender {
@@ -355,7 +357,7 @@ class HelperSaleRecord {
     PaymentMethod? payment,
     String? shiftId,
     String? cashierName,
-    String? managerId,
+    String? operatorId,
     double? cashAmount,
     double? accountAmount,
     double? pendingAccountAmount,
@@ -363,12 +365,13 @@ class HelperSaleRecord {
     double? closingMeter,
     String? customerName,
     String? vehicleNo,
-    String? managerStaffId,
+    String? operatorStaffId,
     String? helperStaffId,
     String? actions,
     String? espTxId,
     bool? edited,
     bool? isTest,
+    int? drumQty,
   }) {
     return HelperSaleRecord(
       tokenNo: tokenNo ?? this.tokenNo,
@@ -383,7 +386,7 @@ class HelperSaleRecord {
       payment: payment ?? this.payment,
       shiftId: shiftId ?? this.shiftId,
       cashierName: cashierName ?? this.cashierName,
-      managerId: managerId ?? this.managerId,
+      operatorId: operatorId ?? this.operatorId,
       cashAmount: cashAmount ?? this.cashAmount,
       accountAmount: accountAmount ?? this.accountAmount,
       pendingAccountAmount: pendingAccountAmount ?? this.pendingAccountAmount,
@@ -391,12 +394,13 @@ class HelperSaleRecord {
       closingMeter: closingMeter ?? this.closingMeter,
       customerName: customerName ?? this.customerName,
       vehicleNo: vehicleNo ?? this.vehicleNo,
-      managerStaffId: managerStaffId ?? this.managerStaffId,
+      operatorStaffId: operatorStaffId ?? this.operatorStaffId,
       helperStaffId: helperStaffId ?? this.helperStaffId,
       actions: actions ?? this.actions,
       espTxId: espTxId ?? this.espTxId,
       edited: edited ?? this.edited,
       isTest: isTest ?? this.isTest,
+      drumQty: drumQty ?? this.drumQty,
     );
   }
 }
@@ -445,9 +449,7 @@ HelperPerformanceSnapshot helperPerformanceSnapshot(
     double sum,
     HelperSaleRecord row,
   ) {
-    return row.isTest || isDirectSaleUnit(row.unitId)
-        ? sum
-        : sum + row.volumeLiters;
+    return isDirectSaleUnit(row.unitId) ? sum : sum + row.volumeLiters;
   });
   DateTime? firstSale;
   DateTime? lastSale;
@@ -487,16 +489,25 @@ class ShiftWindowMetrics {
     required this.accountSales,
     required this.udhaarRecoveryTotal,
     required this.totalLiters,
+    this.udhaarRecoveryAccountTotal = 0,
+    this.udhaarRecoveryPartialTotal = 0,
+    this.directSales = const <HelperSaleRecord>[],
     this.firstToken,
     this.lastToken,
   });
 
-  /// Visible tickets including tagged test fills. KPIs below exclude tests.
+  /// Visible tickets including tagged test fills. Money KPIs exclude tests.
+  /// [totalLiters] includes test fills.
   final List<HelperSaleRecord> sales;
+
+  /// Direct-sale stock tickets. Never rolled into shift cash KPIs.
+  final List<HelperSaleRecord> directSales;
   final double fuelCashSales;
   final double udhaarSales;
   final double accountSales;
   final double udhaarRecoveryTotal;
+  final double udhaarRecoveryAccountTotal;
+  final double udhaarRecoveryPartialTotal;
   final double totalLiters;
   final int? firstToken;
   final int? lastToken;
@@ -514,7 +525,11 @@ class ShiftWindowMetrics {
   /// Cash (incl. Cash Now) + Account remainder + Udhaar issued.
   double get totalSale => fuelCashSales + accountSales + udhaarSales;
 
-  /// Cash sales + Cash Now on Account + Udhaar recovery. Purchases are not shift cash.
+  /// Cash recoveries + Bank/EasyPaisa recoveries.
+  double get udhaarRecoveryCombined =>
+      udhaarRecoveryTotal + udhaarRecoveryAccountTotal;
+
+  /// Cash sales + Cash Now on Account + cash udhaar recovery. Purchases are not shift cash.
   double get expectedCashInHand => fuelCashSales + udhaarRecoveryTotal;
 
   static const ShiftWindowMetrics empty = ShiftWindowMetrics(
@@ -531,7 +546,8 @@ class ShiftWindowMetrics {
   static const String expectedCashFormula =
       'Cash Sales + Cash Now + Udhaar Recovery (Cash)';
   static const String udhaarIssuedHint = 'Credit sales this shift';
-  static const String udhaarRecoveryHint = 'Cash settlements this shift';
+  static const String udhaarRecoveryHint =
+      'Cash + Account recoveries this shift';
   static const String accountPaymentsHint =
       'Bank / EasyPaisa remainder (not Cash Now)';
 }
@@ -540,7 +556,7 @@ class ShiftWindowMetrics {
 class ShiftSummary {
   const ShiftSummary({required this.shift, required this.metrics});
 
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
   final ShiftWindowMetrics metrics;
 
   Duration get duration {
@@ -556,14 +572,14 @@ class ShiftHandoverResult {
     this.pending,
     this.opened,
     this.closed,
-    this.blockedBayId,
+    this.blockedUnitId,
   });
 
   final HandoverOutcome outcome;
   final ReconciliationSnapshot? pending;
-  final ManagerShiftRecord? opened;
-  final ManagerShiftRecord? closed;
-  final int? blockedBayId;
+  final OperatorShiftRecord? opened;
+  final OperatorShiftRecord? closed;
+  final int? blockedUnitId;
 
   bool get isSuccess => outcome == HandoverOutcome.handedOff;
 }
@@ -572,7 +588,7 @@ class ShiftHandoverResult {
 class ReconciliationSnapshot {
   const ReconciliationSnapshot({required this.shift, required this.metrics});
 
-  final ManagerShiftRecord shift;
+  final OperatorShiftRecord shift;
   final ShiftWindowMetrics metrics;
 
   Duration get duration {
@@ -598,20 +614,20 @@ String initialsFromName(String name) {
   return '${parts[0].substring(0, 1)}${parts[1].substring(0, 1)}'.toUpperCase();
 }
 
-String managerRoleLabel(ManagerRole role) {
+String operatorRoleLabel(OperatorRole role) {
   switch (role) {
-    case ManagerRole.manager:
-      return 'Manager';
-    case ManagerRole.owner:
+    case OperatorRole.operator:
+      return 'Operator';
+    case OperatorRole.owner:
       return 'Owner';
   }
 }
 
-String managerStatusLabel(ManagerProfileStatus status) {
+String operatorStatusLabel(OperatorProfileStatus status) {
   switch (status) {
-    case ManagerProfileStatus.active:
+    case OperatorProfileStatus.active:
       return 'Active';
-    case ManagerProfileStatus.inactive:
+    case OperatorProfileStatus.inactive:
       return 'Inactive';
   }
 }
@@ -630,15 +646,15 @@ String helperDutyLabel(HelperProfile helper) {
   }
 }
 
-String shiftStatusLabel(ManagerShiftStatus status) {
+String shiftStatusLabel(OperatorShiftStatus status) {
   switch (status) {
-    case ManagerShiftStatus.open:
+    case OperatorShiftStatus.open:
       return 'Live';
-    case ManagerShiftStatus.pendingReconciliation:
+    case OperatorShiftStatus.pendingReconciliation:
       return 'Pending tally';
-    case ManagerShiftStatus.closed:
+    case OperatorShiftStatus.closed:
       return 'Closed';
-    case ManagerShiftStatus.forceClosed:
+    case OperatorShiftStatus.forceClosed:
       return 'Force closed';
   }
 }
@@ -701,6 +717,8 @@ bool isInShiftWindow(DateTime value, DateTime start, {DateTime? end}) {
 ShiftWindowMetrics metricsForSales(
   List<HelperSaleRecord> rows, {
   double udhaarRecoveryTotal = 0,
+  double udhaarRecoveryAccountTotal = 0,
+  double udhaarRecoveryPartialTotal = 0,
 }) {
   final List<HelperSaleRecord> sorted = List<HelperSaleRecord>.from(rows)
     ..sort(
@@ -714,7 +732,11 @@ ShiftWindowMetrics metricsForSales(
   int? firstToken;
   int? lastToken;
   for (final HelperSaleRecord row in sorted) {
-    if (row.isTest || isDirectSaleUnit(row.unitId)) {
+    if (isDirectSaleUnit(row.unitId)) {
+      continue;
+    }
+    liters += row.volumeLiters;
+    if (row.isTest) {
       continue;
     }
     switch (row.payment) {
@@ -727,7 +749,6 @@ ShiftWindowMetrics metricsForSales(
         cash += row.cashTender;
         account += row.accountTender;
     }
-    liters += row.volumeLiters;
     if (firstToken == null || row.tokenNo < firstToken) {
       firstToken = row.tokenNo;
     }
@@ -739,10 +760,15 @@ ShiftWindowMetrics metricsForSales(
     sales: sorted.reversed
         .where((HelperSaleRecord row) => !isDirectSaleUnit(row.unitId))
         .toList(),
+    directSales: sorted
+        .where((HelperSaleRecord row) => isDirectSaleUnit(row.unitId))
+        .toList(),
     fuelCashSales: cash,
     udhaarSales: udhaar,
     accountSales: account,
     udhaarRecoveryTotal: udhaarRecoveryTotal,
+    udhaarRecoveryAccountTotal: udhaarRecoveryAccountTotal,
+    udhaarRecoveryPartialTotal: udhaarRecoveryPartialTotal,
     totalLiters: liters,
     firstToken: firstToken,
     lastToken: lastToken,
@@ -751,29 +777,29 @@ ShiftWindowMetrics metricsForSales(
 
 List<HelperSaleRecord> salesInShiftWindow(
   List<HelperSaleRecord> sales,
-  ManagerShiftRecord shift,
+  OperatorShiftRecord shift,
 ) {
   return sales.where((HelperSaleRecord row) {
     return isInShiftWindow(row.timestamp, shift.startTime, end: shift.endTime);
   }).toList();
 }
 
-/// Itemized rows for an outgoing manager: tagged `shiftId`, else manager + window.
-List<HelperSaleRecord> salesForOutgoingManager(
+/// Itemized rows for an outgoing operator: tagged `shiftId`, else operator + window.
+List<HelperSaleRecord> salesForOutgoingOperator(
   List<HelperSaleRecord> sales,
-  ManagerShiftRecord shift,
+  OperatorShiftRecord shift,
 ) {
   return sales.where((HelperSaleRecord row) {
     if (row.shiftId.isNotEmpty) {
       return row.shiftId == shift.shiftId;
     }
-    if (row.managerId.isNotEmpty) {
-      return row.managerId == shift.managerId &&
+    if (row.operatorId.isNotEmpty) {
+      return row.operatorId == shift.operatorId &&
           isInShiftWindow(row.timestamp, shift.startTime, end: shift.endTime);
     }
     final bool matchesCashier = row.cashierName.isEmpty
         ? true
-        : row.cashierName == shift.managerName;
+        : row.cashierName == shift.operatorName;
     return matchesCashier &&
         isInShiftWindow(row.timestamp, shift.startTime, end: shift.endTime);
   }).toList();
@@ -800,7 +826,7 @@ HelperProfile? helperOnUnit(List<HelperProfile> helpers, int unitId) {
   return null;
 }
 
-/// Current helper id per dispenser bay. Null means the bay is unassigned.
+/// Current helper id per dispenser unit. Null means the unit is unassigned.
 Map<int, String?> unitHelperAssignmentsOf(List<HelperProfile> helpers) {
   return <int, String?>{
     for (final int unitId in dispenserUnitIds)

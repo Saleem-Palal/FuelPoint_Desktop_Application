@@ -3,15 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../customer/presentation/customer_providers.dart';
 import '../../shift/domain/shift_models.dart';
 import '../../shift/presentation/shift_providers.dart';
-import '../../../providers/managers_provider.dart';
+import '../../../providers/operators_provider.dart';
 import '../domain/dashboard_models.dart';
 import 'station_providers.dart';
 
-final dashboardBayRangeProvider = StateProvider<DashboardRangePreset>(
+final dashboardUnitRangeProvider = StateProvider<DashboardRangePreset>(
   (Ref ref) => DashboardRangePreset.today,
 );
 
-final dashboardManagerRangeProvider = StateProvider<DashboardRangePreset>(
+final dashboardOperatorRangeProvider = StateProvider<DashboardRangePreset>(
   (Ref ref) => DashboardRangePreset.today,
 );
 
@@ -19,21 +19,21 @@ final dashboardHelperRangeProvider = StateProvider<DashboardRangePreset>(
   (Ref ref) => DashboardRangePreset.today,
 );
 
-List<DashboardStaffMember> _managerRoster(Ref ref) {
-  final List<ManagerProfile> shiftManagers = ref.watch(
+List<DashboardStaffMember> _operatorRoster(Ref ref) {
+  final List<OperatorProfile> shiftOperators = ref.watch(
     shiftWorkspaceProvider.select(
-      (ShiftWorkspaceState state) => state.managers,
+      (ShiftWorkspaceState state) => state.operators,
     ),
   );
-  if (shiftManagers.isNotEmpty) {
+  if (shiftOperators.isNotEmpty) {
     return <DashboardStaffMember>[
-      for (final ManagerProfile manager in shiftManagers)
-        DashboardStaffMember(id: manager.id, name: manager.name),
+      for (final OperatorProfile operator in shiftOperators)
+        DashboardStaffMember(id: operator.id, name: operator.name),
     ];
   }
   return <DashboardStaffMember>[
-    for (final StationManager manager in ref.watch(managersProvider).managers)
-      DashboardStaffMember(id: manager.id, name: manager.name),
+    for (final StationOperator operator in ref.watch(operatorsProvider).operators)
+      DashboardStaffMember(id: operator.id, name: operator.name),
   ];
 }
 
@@ -53,10 +53,10 @@ final dashboardSnapshotProvider = Provider<DashboardSnapshot>((Ref ref) {
     sales: ref.watch(committedSalesProvider),
     accounts: ref.watch(customerAccountsProvider),
     now: DateTime.now(),
-    bayRange: ref.watch(dashboardBayRangeProvider),
-    managerRange: ref.watch(dashboardManagerRangeProvider),
+    unitRange: ref.watch(dashboardUnitRangeProvider),
+    operatorRange: ref.watch(dashboardOperatorRangeProvider),
     helperRange: ref.watch(dashboardHelperRangeProvider),
-    managers: _managerRoster(ref),
+    operators: _operatorRoster(ref),
     helpers: _helperRoster(ref),
   );
 });

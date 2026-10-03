@@ -73,10 +73,6 @@ bool isDieselSale(SaleTransaction row) {
   return row.fuelType.trim().toLowerCase() == kDieselFuelType.toLowerCase();
 }
 
-String formatBayLabel(int unitId) {
-  return 'Bay ${unitId.toString().padLeft(2, '0')}';
-}
-
 String formatDashboardHour(int hour) {
   final int safe = hour % 24;
   final int display = safe % 12 == 0 ? 12 : safe % 12;
@@ -110,8 +106,8 @@ class DashboardKpis {
   final int activeDebtAccounts;
 }
 
-class DashboardBayPerformance {
-  const DashboardBayPerformance({
+class DashboardUnitPerformance {
+  const DashboardUnitPerformance({
     required this.unitId,
     required this.volumeLiters,
     required this.revenuePkr,
@@ -127,7 +123,7 @@ class DashboardBayPerformance {
   final double shareOfPeak;
   final bool isPeakLane;
 
-  String get label => formatBayLabel(unitId);
+  String get label => formatUnitLabel(unitId);
 }
 
 class DashboardStaffMember {
@@ -208,8 +204,8 @@ class DashboardSnapshot {
   const DashboardSnapshot({
     required this.asOf,
     required this.kpis,
-    required this.bays,
-    required this.managers,
+    required this.units,
+    required this.operators,
     required this.helpers,
     required this.morningPeak,
     required this.eveningPeak,
@@ -221,8 +217,8 @@ class DashboardSnapshot {
 
   final DateTime asOf;
   final DashboardKpis kpis;
-  final List<DashboardBayPerformance> bays;
-  final List<DashboardStaffPerformance> managers;
+  final List<DashboardUnitPerformance> units;
+  final List<DashboardStaffPerformance> operators;
   final List<DashboardStaffPerformance> helpers;
   final DashboardPeakWindow morningPeak;
   final DashboardPeakWindow eveningPeak;
@@ -237,19 +233,22 @@ DashboardSnapshot assembleDashboardSnapshot({
   required List<SaleTransaction> sales,
   required List<CustomerAccount> accounts,
   required DateTime now,
-  DashboardRangePreset bayRange = DashboardRangePreset.today,
-  DashboardRangePreset managerRange = DashboardRangePreset.today,
+  DashboardRangePreset unitRange = DashboardRangePreset.today,
+  DashboardRangePreset operatorRange = DashboardRangePreset.today,
   DashboardRangePreset helperRange = DashboardRangePreset.today,
-  List<DashboardStaffMember> managers = const <DashboardStaffMember>[],
+  List<DashboardStaffMember> operators = const <DashboardStaffMember>[],
   List<DashboardStaffMember> helpers = const <DashboardStaffMember>[],
   int watchlistLimit = 8,
 }) {
   final DateTime todayStart = startOfLocalDay(now);
   final DateTime last24h = now.subtract(const Duration(hours: 24));
   final DateTime weekStart = todayStart.subtract(const Duration(days: 6));
-  final DashboardDateSpan baySpan = spanForDashboardPreset(bayRange, now: now);
-  final DashboardDateSpan managerSpan = spanForDashboardPreset(
-    managerRange,
+  final DashboardDateSpan unitSpan = spanForDashboardPreset(
+    unitRange,
+    now: now,
+  );
+  final DashboardDateSpan operatorSpan = spanForDashboardPreset(
+    operatorRange,
     now: now,
   );
   final DashboardDateSpan helperSpan = spanForDashboardPreset(
@@ -264,7 +263,7 @@ DashboardSnapshot assembleDashboardSnapshot({
   double udhaarPkrToday = 0;
   int udhaarCountToday = 0;
 
-  final Map<int, _MetricAcc> bayAcc = <int, _MetricAcc>{
+  final Map<int, _MetricAcc> unitAcc = <int, _MetricAcc>{
     for (final int unitId in dispenserUnitIds) unitId: _MetricAcc(),
   };
   final List<double> hourlyLiters = List<double>.filled(24, 0);
@@ -275,7 +274,7 @@ DashboardSnapshot assembleDashboardSnapshot({
   );
 
   for (final SaleTransaction row in sales) {
-    if (row.isTest || isDirectSaleUnit(row.unitId) || !isDieselSale(row)) {
+    if (isDirectSaleUnit(row.unitId) || !isDieselSale(row)) {
       continue;
     }
     final bool in24h =
@@ -287,18 +286,22 @@ DashboardSnapshot assembleDashboardSnapshot({
 
     if (in24h) {
       dieselLiters24h += row.volumeLiters;
-      dieselCount24h += 1;
-    }
-    if (isInDashboardRange(row.timestamp, baySpan) &&
-        !row.timestamp.isAfter(now)) {
-      final _MetricAcc? bay = bayAcc[row.unitId];
-      if (bay != null) {
-        bay.volume += row.volumeLiters;
-        bay.revenue += row.amountPkr;
-        bay.count += 1;
+      if (!row.isTest) {
+        dieselCount24h += 1;
       }
     }
-    if (inToday) {
+    if (isInDashboardRange(row.timestamp, unitSpan) &&
+        !row.timestamp.isAfter(now)) {
+      final _MetricAcc? unit = unitAcc[row.unitId];
+      if (unit != null) {
+        unit.volume += row.volumeLiters;
+        if (!row.isTest) {
+          unit.revenue += row.amountPkr;
+          unit.count += 1;
+        }
+      }
+    }
+    if (inToday && !row.isTest) {
       if (row.payment == PaymentMethod.cash) {
         cashPkrToday += row.amountPkr;
         cashCountToday += 1;
@@ -310,7 +313,9 @@ DashboardSnapshot assembleDashboardSnapshot({
     if (inWeek) {
       final int hour = row.timestamp.hour;
       hourlyLiters[hour] += row.volumeLiters;
-      hourlyCount[hour] += 1;
+      if (!row.isTest) {
+        hourlyCount[hour] += 1;
+      }
       weekdayHourLiters[row.timestamp.weekday - 1][hour] += row.volumeLiters;
     }
   }
@@ -319,8 +324,8 @@ DashboardSnapshot assembleDashboardSnapshot({
   double peakVolume = 0;
   double peakRevenue = 0;
   for (final int unitId in dispenserUnitIds) {
-    final double volume = bayAcc[unitId]?.volume ?? 0;
-    final double revenue = bayAcc[unitId]?.revenue ?? 0;
+    final double volume = unitAcc[unitId]?.volume ?? 0;
+    final double revenue = unitAcc[unitId]?.revenue ?? 0;
     if (volume <= 0) {
       continue;
     }
@@ -337,25 +342,25 @@ DashboardSnapshot assembleDashboardSnapshot({
     }
   }
 
-  final List<DashboardBayPerformance> bays = <DashboardBayPerformance>[
+  final List<DashboardUnitPerformance> units = <DashboardUnitPerformance>[
     for (final int unitId in dispenserUnitIds)
-      DashboardBayPerformance(
+      DashboardUnitPerformance(
         unitId: unitId,
-        volumeLiters: bayAcc[unitId]?.volume ?? 0,
-        revenuePkr: bayAcc[unitId]?.revenue ?? 0,
-        txnCount: bayAcc[unitId]?.count ?? 0,
+        volumeLiters: unitAcc[unitId]?.volume ?? 0,
+        revenuePkr: unitAcc[unitId]?.revenue ?? 0,
+        txnCount: unitAcc[unitId]?.count ?? 0,
         shareOfPeak: peakVolume <= 0
             ? 0
-            : ((bayAcc[unitId]?.volume ?? 0) / peakVolume).clamp(0, 1),
+            : ((unitAcc[unitId]?.volume ?? 0) / peakVolume).clamp(0, 1),
         isPeakLane: unitId == peakUnitId,
       ),
   ];
 
-  final List<DashboardStaffPerformance> managerCards = _assembleStaff(
-    roster: managers,
+  final List<DashboardStaffPerformance> operatorCards = _assembleStaff(
+    roster: operators,
     sales: sales,
     now: now,
-    range: managerSpan,
+    range: operatorSpan,
     nameOf: (SaleTransaction row) => row.cashierName,
   );
   final List<DashboardStaffPerformance> helperCards = _assembleStaff(
@@ -438,8 +443,8 @@ DashboardSnapshot assembleDashboardSnapshot({
       totalOutstandingPkr: totalOutstanding,
       activeDebtAccounts: activeDebt,
     ),
-    bays: bays,
-    managers: managerCards,
+    units: units,
+    operators: operatorCards,
     helpers: helperCards,
     morningPeak: morningPeak,
     eveningPeak: eveningPeak,
@@ -470,7 +475,7 @@ List<DashboardStaffPerformance> _assembleStaff({
     for (final DashboardStaffMember member in roster) member.id: _MetricAcc(),
   };
   for (final SaleTransaction row in sales) {
-    if (row.isTest || isDirectSaleUnit(row.unitId) || !isDieselSale(row)) {
+    if (isDirectSaleUnit(row.unitId) || !isDieselSale(row)) {
       continue;
     }
     if (!isInDashboardRange(row.timestamp, range) ||
@@ -490,8 +495,10 @@ List<DashboardStaffPerformance> _assembleStaff({
         break;
       }
       acc.volume += row.volumeLiters;
-      acc.revenue += row.amountPkr;
-      acc.count += 1;
+      if (!row.isTest) {
+        acc.revenue += row.amountPkr;
+        acc.count += 1;
+      }
       break;
     }
   }

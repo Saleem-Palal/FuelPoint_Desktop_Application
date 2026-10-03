@@ -17,8 +17,8 @@ const bool enableLoginInDebug = false;
 bool get shouldBypassLogin => kDebugMode && !enableLoginInDebug;
 
 @immutable
-class AuthManager {
-  const AuthManager({required this.id, required this.name});
+class AuthOperator {
+  const AuthOperator({required this.id, required this.name});
 
   final String id;
   final String name;
@@ -39,10 +39,10 @@ class AuthManager {
         .toUpperCase();
   }
 
-  static AuthManager fromRow(Map<String, dynamic> row) {
+  static AuthOperator fromRow(Map<String, dynamic> row) {
     final String id = '${row['manager_ID'] ?? ''}'.trim();
     final String name = '${row['Manager_name'] ?? ''}'.trim();
-    return AuthManager(id: id, name: name.isEmpty ? id : name);
+    return AuthOperator(id: id, name: name.isEmpty ? id : name);
   }
 }
 
@@ -52,10 +52,10 @@ class AuthState {
     required this.loading,
     required this.busy,
     required this.isAuthenticated,
-    required this.managers,
-    this.selectedManagerId,
-    this.activeManagerId,
-    this.activeManagerName = '',
+    required this.operators,
+    this.selectedOperatorId,
+    this.activeOperatorId,
+    this.activeOperatorName = '',
     this.stationName = '',
     this.contactNo = '',
     this.openShift,
@@ -67,10 +67,10 @@ class AuthState {
   final bool loading;
   final bool busy;
   final bool isAuthenticated;
-  final List<AuthManager> managers;
-  final String? selectedManagerId;
-  final String? activeManagerId;
-  final String activeManagerName;
+  final List<AuthOperator> operators;
+  final String? selectedOperatorId;
+  final String? activeOperatorId;
+  final String activeOperatorName;
   final String stationName;
   final String contactNo;
   final Map<String, dynamic>? openShift;
@@ -80,14 +80,14 @@ class AuthState {
   /// In-memory owner elevation. Default locked; never persisted across restart.
   final bool isOwnerElevated;
 
-  AuthManager? get selectedManager {
-    final String? id = selectedManagerId;
+  AuthOperator? get selectedOperator {
+    final String? id = selectedOperatorId;
     if (id == null) {
       return null;
     }
-    for (final AuthManager manager in managers) {
-      if (manager.id == id) {
-        return manager;
+    for (final AuthOperator operator in operators) {
+      if (operator.id == id) {
+        return operator;
       }
     }
     return null;
@@ -99,12 +99,12 @@ class AuthState {
     bool? loading,
     bool? busy,
     bool? isAuthenticated,
-    List<AuthManager>? managers,
-    String? selectedManagerId,
+    List<AuthOperator>? operators,
+    String? selectedOperatorId,
     bool clearSelected = false,
-    String? activeManagerId,
-    bool clearActiveManager = false,
-    String? activeManagerName,
+    String? activeOperatorId,
+    bool clearActiveOperator = false,
+    String? activeOperatorName,
     String? stationName,
     String? contactNo,
     Map<String, dynamic>? openShift,
@@ -118,16 +118,16 @@ class AuthState {
       loading: loading ?? this.loading,
       busy: busy ?? this.busy,
       isAuthenticated: isAuthenticated ?? this.isAuthenticated,
-      managers: managers ?? this.managers,
-      selectedManagerId: clearSelected
+      operators: operators ?? this.operators,
+      selectedOperatorId: clearSelected
           ? null
-          : (selectedManagerId ?? this.selectedManagerId),
-      activeManagerId: clearActiveManager
+          : (selectedOperatorId ?? this.selectedOperatorId),
+      activeOperatorId: clearActiveOperator
           ? null
-          : (activeManagerId ?? this.activeManagerId),
-      activeManagerName: clearActiveManager
+          : (activeOperatorId ?? this.activeOperatorId),
+      activeOperatorName: clearActiveOperator
           ? ''
-          : (activeManagerName ?? this.activeManagerName),
+          : (activeOperatorName ?? this.activeOperatorName),
       stationName: stationName ?? this.stationName,
       contactNo: contactNo ?? this.contactNo,
       openShift: clearOpenShift ? null : (openShift ?? this.openShift),
@@ -142,7 +142,7 @@ class AuthState {
       loading: true,
       busy: false,
       isAuthenticated: false,
-      managers: <AuthManager>[],
+      operators: <AuthOperator>[],
     );
   }
 }
@@ -164,7 +164,7 @@ class AuthNotifier extends Notifier<AuthState> {
   Future<void> _runBootstrap() async {
     try {
       await _loadStationIdentity();
-      await loadManagers();
+      await loadOperators();
       if (shouldBypassLogin && !state.isAuthenticated) {
         await _establishDebugSession();
       } else {
@@ -192,10 +192,10 @@ class AuthNotifier extends Notifier<AuthState> {
     }
   }
 
-  /// Queries available station managers from SQLite.
-  Future<List<Map<String, dynamic>>> loadManagers() async {
+  /// Queries available station operators from SQLite.
+  Future<List<Map<String, dynamic>>> loadOperators() async {
     try {
-      final List<Map<String, Object?>> rows = await _db.queryManagers();
+      final List<Map<String, Object?>> rows = await _db.queryOperators();
       final List<Map<String, dynamic>> mapped = rows
           .map(
             (Map<String, Object?> row) => <String, dynamic>{
@@ -208,47 +208,47 @@ class AuthNotifier extends Notifier<AuthState> {
                 '${row['manager_ID']}'.trim().isNotEmpty,
           )
           .toList();
-      final List<AuthManager> managers = mapped
-          .map(AuthManager.fromRow)
+      final List<AuthOperator> operators = mapped
+          .map(AuthOperator.fromRow)
           .toList();
-      String? selected = state.selectedManagerId;
+      String? selected = state.selectedOperatorId;
       if (selected != null &&
-          !managers.any((AuthManager manager) => manager.id == selected)) {
+          !operators.any((AuthOperator operator) => operator.id == selected)) {
         selected = null;
       }
-      selected ??= managers.isEmpty ? null : managers.first.id;
+      selected ??= operators.isEmpty ? null : operators.first.id;
       state = state.copyWith(
-        managers: managers,
-        selectedManagerId: selected,
+        operators: operators,
+        selectedOperatorId: selected,
         clearSelected: selected == null,
       );
-      debugPrint('Auth: loaded ${managers.length} manager(s)');
+      debugPrint('Auth: loaded ${operators.length} operator(s)');
       return mapped;
     } catch (error, stack) {
-      debugPrint('AuthNotifier.loadManagers failed: $error\n$stack');
+      debugPrint('AuthNotifier.loadOperators failed: $error\n$stack');
       state = state.copyWith(
-        errorMessage: 'Could not load managers. $error',
-        managers: const <AuthManager>[],
+        errorMessage: 'Could not load operators. $error',
+        operators: const <AuthOperator>[],
       );
       return const <Map<String, dynamic>>[];
     }
   }
 
-  void selectManager(String managerId) {
+  void selectOperator(String operatorId) {
     state = state.copyWith(
-      selectedManagerId: managerId.trim(),
+      selectedOperatorId: operatorId.trim(),
       clearError: true,
       failedAttempts: 0,
     );
   }
 
-  /// Hashes [rawPin] with SHA-256 and validates against `managers.pin`.
-  Future<bool> authenticateManager(String managerId, String rawPin) async {
-    final String id = managerId.trim();
+  /// Hashes [rawPin] with SHA-256 and validates against `operators.pin`.
+  Future<bool> authenticateOperator(String operatorId, String rawPin) async {
+    final String id = operatorId.trim();
     final String pin = rawPin.trim();
     if (id.isEmpty) {
       state = state.copyWith(
-        errorMessage: 'Select a manager before unlocking.',
+        errorMessage: 'Select a operator before unlocking.',
       );
       return false;
     }
@@ -262,13 +262,13 @@ class AuthNotifier extends Notifier<AuthState> {
 
     state = state.copyWith(busy: true, clearError: true);
     try {
-      final Map<String, Object?>? row = await _db.queryManagerById(id);
+      final Map<String, Object?>? row = await _db.queryOperatorById(id);
       if (row == null) {
-        debugPrint('Auth: no manager row for $id');
+        debugPrint('Auth: no operator row for $id');
         state = state.copyWith(
           busy: false,
           failedAttempts: state.failedAttempts + 1,
-          errorMessage: 'Manager $id was not found.',
+          errorMessage: 'Operator $id was not found.',
         );
         return false;
       }
@@ -296,9 +296,9 @@ class AuthNotifier extends Notifier<AuthState> {
         busy: false,
         loading: false,
         isAuthenticated: true,
-        selectedManagerId: id,
-        activeManagerId: id,
-        activeManagerName: name,
+        selectedOperatorId: id,
+        activeOperatorId: id,
+        activeOperatorName: name,
         openShift: open,
         clearOpenShift: open == null,
         failedAttempts: 0,
@@ -309,10 +309,58 @@ class AuthNotifier extends Notifier<AuthState> {
       );
       return true;
     } catch (error, stack) {
-      debugPrint('AuthNotifier.authenticateManager failed: $error\n$stack');
+      debugPrint('AuthNotifier.authenticateOperator failed: $error\n$stack');
       state = state.copyWith(
         busy: false,
         errorMessage: 'Could not verify PIN. $error',
+      );
+      return false;
+    }
+  }
+
+  /// Unlocks after the reader already matched this operator's fingerprint.
+  Future<bool> authenticateOperatorByFingerprint(String operatorId) async {
+    final String id = operatorId.trim();
+    if (id.isEmpty) {
+      state = state.copyWith(
+        errorMessage: 'Select an operator before unlocking.',
+      );
+      return false;
+    }
+    state = state.copyWith(busy: true, clearError: true);
+    try {
+      final Map<String, Object?>? row = await _db.queryOperatorById(id);
+      final String stored = (row?['fingerprint_fmd'] as String?)?.trim() ?? '';
+      if (row == null || stored.isEmpty) {
+        state = state.copyWith(
+          busy: false,
+          errorMessage: 'No fingerprint is enrolled for this operator.',
+        );
+        return false;
+      }
+      final String rawName = '${row['Manager_name'] ?? ''}'.trim();
+      final String name = rawName.isEmpty ? id : rawName;
+      final Map<String, dynamic>? open = await checkOpenShift();
+      state = state.copyWith(
+        busy: false,
+        loading: false,
+        isAuthenticated: true,
+        selectedOperatorId: id,
+        activeOperatorId: id,
+        activeOperatorName: name,
+        openShift: open,
+        clearOpenShift: open == null,
+        failedAttempts: 0,
+      );
+      debugPrint('Auth: unlocked $id ($name) by fingerprint');
+      return true;
+    } catch (error, stack) {
+      debugPrint(
+        'AuthNotifier.authenticateOperatorByFingerprint failed: $error\n$stack',
+      );
+      state = state.copyWith(
+        busy: false,
+        errorMessage: 'Could not unlock with fingerprint. $error',
       );
       return false;
     }
@@ -328,7 +376,7 @@ class AuthNotifier extends Notifier<AuthState> {
       }
       final Map<String, dynamic> shift = Map<String, dynamic>.from(rows.first);
       debugPrint(
-        'Auth: OPEN shift ${shift['SHIFT_ID']} manager=${shift['MANAGER']}',
+        'Auth: OPEN shift ${shift['SHIFT_ID']} operator=${shift['MANAGER']}',
       );
       return shift;
     } catch (error, stack) {
@@ -338,12 +386,12 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 
   Future<void> signOut() async {
-    debugPrint('Auth: signed out ${state.activeManagerId}');
+    debugPrint('Auth: signed out ${state.activeOperatorId}');
     state = state.copyWith(
       busy: false,
       loading: false,
       isAuthenticated: false,
-      clearActiveManager: true,
+      clearActiveOperator: true,
       clearOpenShift: true,
       clearError: true,
       failedAttempts: 0,
@@ -365,29 +413,29 @@ class AuthNotifier extends Notifier<AuthState> {
         'Auth: debug bypass (enableLoginInDebug=$enableLoginInDebug) — '
         'skipping PIN',
       );
-      await loadManagers();
+      await loadOperators();
       final Map<String, dynamic>? open = await checkOpenShift();
       final String openId = '${open?['MANAGER'] ?? ''}'.trim();
-      AuthManager? chosen;
+      AuthOperator? chosen;
       if (openId.isNotEmpty) {
-        for (final AuthManager manager in state.managers) {
-          if (manager.id == openId) {
-            chosen = manager;
+        for (final AuthOperator operator in state.operators) {
+          if (operator.id == openId) {
+            chosen = operator;
             break;
           }
         }
       }
-      chosen ??= state.managers.isEmpty ? null : state.managers.first;
-      chosen ??= const AuthManager(id: 'mgr-dev', name: 'Debug Manager');
+      chosen ??= state.operators.isEmpty ? null : state.operators.first;
+      chosen ??= const AuthOperator(id: 'mgr-dev', name: 'Debug Operator');
 
       state = state.copyWith(
         loading: false,
         busy: false,
         isAuthenticated: true,
         isOwnerElevated: true,
-        selectedManagerId: chosen.id,
-        activeManagerId: chosen.id,
-        activeManagerName: chosen.name,
+        selectedOperatorId: chosen.id,
+        activeOperatorId: chosen.id,
+        activeOperatorName: chosen.name,
         openShift: open,
         clearOpenShift: open == null,
       );
@@ -398,9 +446,9 @@ class AuthNotifier extends Notifier<AuthState> {
         loading: false,
         isAuthenticated: true,
         isOwnerElevated: true,
-        activeManagerId: 'mgr-dev',
-        activeManagerName: 'Debug Manager',
-        selectedManagerId: 'mgr-dev',
+        activeOperatorId: 'mgr-dev',
+        activeOperatorName: 'Debug Operator',
+        selectedOperatorId: 'mgr-dev',
       );
     }
   }

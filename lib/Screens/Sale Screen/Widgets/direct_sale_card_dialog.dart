@@ -90,8 +90,8 @@ class _DirectSaleCardDialogState extends ConsumerState<DirectSaleCardDialog> {
       timestamp: DateTime.now(),
       customerName: name.isEmpty ? 'Walk-in' : name,
       payment: PaymentMethod.cash,
-      cashierName: ref.read(shiftWorkspaceProvider).activeShift?.managerName ??
-          'Cashier',
+      cashierName: ref.read(shiftWorkspaceProvider).activeShift?.operatorName ??
+          'Operator',
       cashAmount: _amountPkr.toDouble(),
     );
   }

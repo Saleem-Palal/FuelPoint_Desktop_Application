@@ -9,6 +9,9 @@
  *   GND      ->  header GND
  * Putting GPIO 16 on the pin labelled TX hears pump RX — UART STALL forever.
  * Relay IN: GPIO 4  LOCK = LOW, UNLOCK = HIGH (active-LOW module).
+ * FDX reset relay IN: GPIO 21. Active-LOW. LOW holds the reset button for 3 s.
+ *   HIGH at boot so a restart cannot hold the FDX board in reset.
+ *   Refused only while Type-33 status is '5' (dispensing).
  * Power relay VCC from 3.3 V, not 5 V, or the green IN LED never turns off.
  * Buzzer+: GPIO 5   Buzzer-: GND  (chirp while waiting for Confirm; solid if live-shift comms lost)
  *
@@ -42,6 +45,8 @@ static const int UART2_RX_PIN = 16;
 static const int UART2_TX_PIN = 17;
 static const int RELAY_PIN = 4;
 static const int BUZZER_PIN = 5;
+static const int FDX_RESET_PIN = 21;
+static const uint32_t FDX_RESET_HOLD_MS = 3000;
 // true  = IN LOW  locks keypad (most Songle "low-level trigger" boards)
 // false = IN HIGH locks keypad (jumper set to H)
 static const bool RELAY_ACTIVE_LOW = true;
@@ -75,6 +80,9 @@ long lastPumpingVolumeCents = 0;
 
 char productLabel[16] = "-";
 char statusLabel[24] = "-";
+char fdxStatusCode = 0;
+bool fdxResetActive = false;
+uint32_t fdxResetStartedMs = 0;
 char macId[18] = "ESP";
 char lastTxId[48] = "";
 double totalAmount = 0;
@@ -153,6 +161,7 @@ static void setProduct(char code) {
 }
 
 static void setStatus(char code) {
+  fdxStatusCode = code;
   switch (code) {
     case '5':
       strncpy(statusLabel, "Active / Pumping", sizeof(statusLabel) - 1);
@@ -241,6 +250,36 @@ static void setKeypadLocked(bool locked) {
 }
 
 static void applySessionLock() { setKeypadLocked(keypadShouldLock()); }
+
+static bool fdxIsDispensing() { return fdxStatusCode == '5'; }
+
+static void fdxResetRelease() {
+  digitalWrite(FDX_RESET_PIN, HIGH);
+  fdxResetActive = false;
+}
+
+static void fdxResetBegin() {
+  if (fdxResetActive || fdxIsDispensing()) {
+    return;
+  }
+  digitalWrite(FDX_RESET_PIN, LOW);
+  fdxResetActive = true;
+  fdxResetStartedMs = millis();
+  Serial.println("GPIO21 reset hold start");
+}
+
+static void serviceFdxReset() {
+  if (!fdxResetActive) {
+    return;
+  }
+  if (fdxIsDispensing() ||
+      (millis() - fdxResetStartedMs) >= FDX_RESET_HOLD_MS) {
+    const bool stoppedEarly = fdxIsDispensing();
+    fdxResetRelease();
+    Serial.println(stoppedEarly ? "GPIO21 reset released dispensing"
+                                 : "GPIO21 reset hold end");
+  }
+}
 
 static void relaySelfTest() {
   Serial.println("GPIO4 relay self-test: LED should blink twice");
@@ -833,6 +872,15 @@ static void handleCommand(const String &raw) {
     }
     applySessionLock();
     broadcastJson(buildTelemetryJson("TELEMETRY", lastTxId));
+    return;
+  }
+  if (t.indexOf("\"cmd\":\"FDX_RESET\"") >= 0 ||
+      t.indexOf("\"cmd\": \"FDX_RESET\"") >= 0) {
+    if (fdxIsDispensing()) {
+      Serial.println("GPIO21 reset refused dispensing");
+      return;
+    }
+    fdxResetBegin();
   }
 }
 
@@ -943,6 +991,8 @@ static void ensureWifi() {
 }
 
 void setup() {
+  pinMode(FDX_RESET_PIN, OUTPUT);
+  digitalWrite(FDX_RESET_PIN, HIGH);
   pinMode(RELAY_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   writeBuzzer(false);
@@ -991,6 +1041,7 @@ void loop() {
 
   esp_task_wdt_reset();
   readUart2();
+  serviceFdxReset();
   if (wsListening) {
     webSocket.loop();
   }

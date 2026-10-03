@@ -12,7 +12,7 @@ import '../features/shift/domain/shift_models.dart';
 /// fires outside a widget rebuild.
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
-typedef ActiveShiftReader = ManagerShiftRecord? Function();
+typedef ActiveShiftReader = OperatorShiftRecord? Function();
 typedef ActiveShiftFlag = bool Function();
 typedef ShiftEndHandler = Future<void> Function();
 typedef CleanShutdownHandler = Future<void> Function();
@@ -22,7 +22,7 @@ typedef CleanShutdownHandler = Future<void> Function();
 class WindowLifecycleService with WindowListener {
   WindowLifecycleService({
     required this.hasActiveShift,
-    required this.activeManagerName,
+    required this.activeOperatorName,
     required this.onProceedToEndShift,
     this.onCleanShutdown,
     GlobalKey<NavigatorState>? navigatorKey,
@@ -30,7 +30,7 @@ class WindowLifecycleService with WindowListener {
 
   final GlobalKey<NavigatorState> navigatorKey;
   final ActiveShiftFlag hasActiveShift;
-  final String Function() activeManagerName;
+  final String Function() activeOperatorName;
   final ShiftEndHandler onProceedToEndShift;
   final CleanShutdownHandler? onCleanShutdown;
 
@@ -132,7 +132,7 @@ class WindowLifecycleService with WindowListener {
     try {
       final ShiftCloseWarningAction? action = await showShiftCloseWarningDialog(
         context,
-        managerName: activeManagerName(),
+        operatorName: activeOperatorName(),
       );
       if (action == null || action == ShiftCloseWarningAction.stay) {
         return;

@@ -12,6 +12,7 @@ class GatewayHeaderCard extends StatelessWidget {
     required this.station,
     required this.monitor,
     required this.onOfficeLan,
+    required this.showManualKeypadUnlock,
     required this.anyKeypadLocked,
     required this.onGlobalLock,
   });
@@ -19,6 +20,7 @@ class GatewayHeaderCard extends StatelessWidget {
   final StationState station;
   final DispenserMonitorState monitor;
   final bool onOfficeLan;
+  final bool showManualKeypadUnlock;
   final bool anyKeypadLocked;
   final VoidCallback onGlobalLock;
 
@@ -89,7 +91,7 @@ class GatewayHeaderCard extends StatelessWidget {
                         const SizedBox(height: 8),
                         _MetricChip(
                           icon: Icons.dns_outlined,
-                          label: 'Bay sockets',
+                          label: 'Unit sockets',
                           value:
                               '$active / $kHardwareDispenserUnitCount Connected',
                           good: active > 0,
@@ -122,7 +124,7 @@ class GatewayHeaderCard extends StatelessWidget {
                         Expanded(
                           child: _MetricChip(
                             icon: Icons.dns_outlined,
-                            label: 'Bay sockets',
+                            label: 'Unit sockets',
                             value:
                                 '$active / $kHardwareDispenserUnitCount Connected',
                             good: active > 0,
@@ -141,16 +143,20 @@ class GatewayHeaderCard extends StatelessWidget {
                         ),
                       ],
                     );
-              final Widget lock = DsPillButton(
-                label: anyKeypadLocked
-                    ? 'GLOBAL KEYPAD UNLOCK'
-                    : 'GLOBAL KEYPAD LOCK',
-                icon: anyKeypadLocked ? Icons.lock_open : Icons.lock_outline,
-                variant: anyKeypadLocked
-                    ? DsPillVariant.good
-                    : DsPillVariant.danger,
-                onPressed: onGlobalLock,
-              );
+              final Widget? lock = showManualKeypadUnlock
+                  ? DsPillButton(
+                      label: anyKeypadLocked
+                          ? 'GLOBAL KEYPAD UNLOCK'
+                          : 'GLOBAL KEYPAD LOCK',
+                      icon: anyKeypadLocked
+                          ? Icons.lock_open
+                          : Icons.lock_outline,
+                      variant: anyKeypadLocked
+                          ? DsPillVariant.good
+                          : DsPillVariant.danger,
+                      onPressed: onGlobalLock,
+                    )
+                  : null;
               if (compact) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -158,8 +164,10 @@ class GatewayHeaderCard extends StatelessWidget {
                     mux,
                     const SizedBox(height: 10),
                     metrics,
-                    const SizedBox(height: 10),
-                    lock,
+                    if (lock != null) ...<Widget>[
+                      const SizedBox(height: 10),
+                      lock,
+                    ],
                   ],
                 );
               }
@@ -168,8 +176,10 @@ class GatewayHeaderCard extends StatelessWidget {
                   Expanded(flex: 3, child: mux),
                   const SizedBox(width: 12),
                   Expanded(flex: 2, child: metrics),
-                  const SizedBox(width: 12),
-                  Flexible(child: lock),
+                  if (lock != null) ...<Widget>[
+                    const SizedBox(width: 12),
+                    Flexible(child: lock),
+                  ],
                 ],
               );
             },

@@ -23,23 +23,32 @@
  * before Wi-Fi or the web server start, so a power-up or ESP reboot cannot hold the
  * FDX processor in reset.
  *
- * Wi-Fi AP: SSID FDX_Reset_AP  password Password123  http://192.168.4.1/
+ * Wi-Fi AP: SSID Change1  password 3840005Nad@  http://192.168.4.1/
+ * The network name starts visible. The page can show or hide it; the choice is stored.
  */
 
+#include <EEPROM.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 
 static const int RELAY_PIN = 0;
-static const uint32_t RESET_PULSE_MS = 500;
+static const uint32_t RESET_PULSE_MS = 3000;
 static const uint32_t USB_BAUD = 115200;
 
-static const char *AP_SSID = "FDX_Reset_AP";
-static const char *AP_PASS = "Password123";
+static const char *AP_SSID = "Change1";
+static const char *AP_PASS = "3840005Nad@";
 static const IPAddress AP_IP(192, 168, 4, 1);
 static const IPAddress AP_GATEWAY(192, 168, 4, 1);
 static const IPAddress AP_SUBNET(255, 255, 255, 0);
 
 ESP8266WebServer server(80);
+
+static const int HIDDEN_EEPROM_ADDR = 0;
+static const int HIDDEN_VERSION_ADDR = 1;
+static const uint8_t HIDDEN_VERSION = 2;
+static bool apHidden = false;
+static bool apRestartPending = false;
+static uint32_t apRestartAt = 0;
 
 static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -47,7 +56,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>FDX Hardware Reset</title>
+<title>Service</title>
 <style>
   :root {
     --bg: #121212;
@@ -182,22 +191,51 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     transition: opacity 0.15s linear;
   }
   .warn.show { opacity: 1; }
+  .name-row {
+    margin-top: 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  .name-state {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  button.name-toggle {
+    border: 0;
+    border-radius: 999px;
+    background: #2a2a2a;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 10px 16px;
+  }
+  button.name-toggle:disabled { opacity: 0.6; }
 </style>
 </head>
 <body>
   <main class="card">
-    <p class="kicker">FDX PROCESSOR</p>
-    <h1>FDX BOARD HARDWARE RESET</h1>
+    <p class="kicker">SERVICE</p>
+    <h1>PANEL</h1>
     <div class="status" id="status"><span class="dot"></span><span id="statusText">SYSTEM READY</span></div>
     <div class="hold" id="hold">
       <svg class="ring" viewBox="0 0 240 240" aria-hidden="true">
         <circle class="track" cx="120" cy="120" r="100"></circle>
         <circle class="fill" id="ring" cx="120" cy="120" r="100"></circle>
       </svg>
-      <button class="reset" id="resetBtn" type="button">RESET</button>
+      <button class="reset" id="resetBtn" type="button">HOLD</button>
     </div>
-    <p class="caption" id="caption">HOLD FOR 3 SECONDS TO RESET FDX</p>
-    <p class="warn" id="warn">Reset Cancelled</p>
+    <p class="caption" id="caption">HOLD FOR 3 SECONDS TO CONTINUE</p>
+    <p class="warn" id="warn">Cancelled</p>
+    <div class="name-row">
+      <p class="name-state" id="nameState">Network name is visible</p>
+      <button class="name-toggle" id="nameBtn" type="button">Hide name</button>
+    </div>
   </main>
 <script>
 (function () {
@@ -230,12 +268,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     button.disabled = false;
     status.className = 'status';
     statusText.textContent = 'SYSTEM READY';
-    caption.textContent = 'HOLD FOR 3 SECONDS TO RESET FDX';
+    caption.textContent = 'HOLD FOR 3 SECONDS TO CONTINUE';
     setRing(0);
   }
 
   function flashCancelled() {
-    warn.textContent = 'Reset Cancelled';
+    warn.textContent = 'Cancelled';
     warn.className = 'warn show';
     clearTimeout(warnTimer);
     warnTimer = setTimeout(function () {
@@ -283,7 +321,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     setRing(0);
     status.className = 'status';
     statusText.textContent = 'SYSTEM READY';
-    caption.textContent = 'HOLD FOR 3 SECONDS TO RESET FDX';
+    caption.textContent = 'HOLD FOR 3 SECONDS TO CONTINUE';
     flashCancelled();
   }
 
@@ -292,7 +330,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     button.disabled = true;
     status.className = 'status hot';
     statusText.textContent = 'PULSE SENT';
-    caption.textContent = 'RESTARTING FDX BOARD...';
+    caption.textContent = 'PLEASE WAIT...';
     fetch('/api/reset', { method: 'POST' })
       .then(function (response) {
         if (!response.ok) throw new Error('reset failed');
@@ -302,12 +340,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         setTimeout(setReady, 2000);
       })
       .catch(function () {
-        caption.textContent = 'RESET REQUEST FAILED';
+        caption.textContent = 'REQUEST FAILED';
         warn.textContent = 'No response from ESP-01';
         warn.className = 'warn show';
         clearTimeout(warnTimer);
         warnTimer = setTimeout(function () {
-          warn.textContent = 'Reset Cancelled';
+          warn.textContent = 'Cancelled';
           warn.className = 'warn';
         }, 1600);
         setTimeout(setReady, 1600);
@@ -323,6 +361,36 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   hold.addEventListener('mousedown', onDown);
   window.addEventListener('mouseup', onUp);
   hold.addEventListener('contextmenu', function (event) { event.preventDefault(); });
+
+  var nameState = document.getElementById('nameState');
+  var nameBtn = document.getElementById('nameBtn');
+
+  function renderName(hidden) {
+    nameState.textContent = hidden ? 'Network name is hidden' : 'Network name is visible';
+    nameBtn.textContent = hidden ? 'Show name' : 'Hide name';
+  }
+
+  nameBtn.addEventListener('click', function () {
+    if (busy) return;
+    nameBtn.disabled = true;
+    fetch('/api/ssid', { method: 'POST' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('name failed');
+        return response.json();
+      })
+      .then(function (data) {
+        renderName(!!data.hidden);
+        nameBtn.disabled = false;
+      })
+      .catch(function () {
+        nameBtn.disabled = false;
+      });
+  });
+
+  fetch('/api/ssid')
+    .then(function (response) { return response.json(); })
+    .then(function (data) { renderName(!!data.hidden); })
+    .catch(function () {});
 })();
 </script>
 </body>
@@ -331,6 +399,46 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
 void releaseRelay() {
   digitalWrite(RELAY_PIN, HIGH);
+}
+
+void loadHiddenFlag() {
+  EEPROM.begin(8);
+  uint8_t version = EEPROM.read(HIDDEN_VERSION_ADDR);
+  uint8_t stored = EEPROM.read(HIDDEN_EEPROM_ADDR);
+  if (version != HIDDEN_VERSION) {
+    apHidden = false;
+    EEPROM.write(HIDDEN_EEPROM_ADDR, 0);
+    EEPROM.write(HIDDEN_VERSION_ADDR, HIDDEN_VERSION);
+    EEPROM.commit();
+    return;
+  }
+  apHidden = stored == 1;
+}
+
+void startAccessPoint() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
+  if (!WiFi.softAP(AP_SSID, AP_PASS, 1, apHidden ? 1 : 0, 4)) {
+    Serial.println("softAP failed");
+  }
+}
+
+void sendHiddenState() {
+  server.send(200, "application/json", apHidden ? "{\"hidden\":true}" : "{\"hidden\":false}");
+}
+
+void handleSsidGet() {
+  sendHiddenState();
+}
+
+void handleSsidPost() {
+  apHidden = !apHidden;
+  EEPROM.write(HIDDEN_EEPROM_ADDR, apHidden ? 1 : 0);
+  EEPROM.commit();
+  sendHiddenState();
+  apRestartPending = true;
+  apRestartAt = millis();
+  Serial.println(apHidden ? "network name hidden" : "network name visible");
 }
 
 void handleRoot() {
@@ -360,15 +468,14 @@ void setup() {
   Serial.println("FDX reset ESP-01");
   Serial.println("GPIO0 HIGH — relay off");
 
+  loadHiddenFlag();
   WiFi.persistent(false);
-  WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
-  if (!WiFi.softAP(AP_SSID, AP_PASS)) {
-    Serial.println("softAP failed");
-  }
+  startAccessPoint();
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/reset", HTTP_POST, handleReset);
+  server.on("/api/ssid", HTTP_GET, handleSsidGet);
+  server.on("/api/ssid", HTTP_POST, handleSsidPost);
   server.onNotFound(handleNotFound);
   server.begin();
 
@@ -380,7 +487,13 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  // The 500 ms pulse finishes inside the POST handler before loop resumes.
+  if (apRestartPending && (millis() - apRestartAt) > 400) {
+    apRestartPending = false;
+    WiFi.softAPdisconnect(true);
+    delay(50);
+    startAccessPoint();
+  }
+  // The 3 s contact closure finishes inside the POST handler before loop resumes.
   // Re-assert GPIO0 HIGH so a missed release cannot hold the FDX reset line.
   releaseRelay();
 }

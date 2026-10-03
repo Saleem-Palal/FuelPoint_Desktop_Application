@@ -41,7 +41,7 @@
 //           value: ticket.vehicleDisplay,
 //         ),
 //         ThermalReceiptDetail(label: 'Payment', value: ticket.paymentLabel),
-//         ThermalReceiptDetail(label: 'Manager', value: ticket.cashierName),
+//         ThermalReceiptDetail(label: 'Operator', value: ticket.cashierName),
 //         ThermalReceiptDetail(label: 'Helper', value: ticket.helperDisplay),
 //       ],
 //     );

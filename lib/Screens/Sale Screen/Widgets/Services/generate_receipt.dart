@@ -66,12 +66,17 @@ class ReceiptCopy {
   static const String stationCopyBanner = 'COPY 2: STATION RECORD';
   static const String secondCopyBanner = 'SECOND COPY';
   static const String editedCopyBanner = 'EDITED COPY';
+  static const String recoveredBanner = 'RECOVERED TRANSACTION';
 
   static String? bannerFor({
     required PaymentMethod payment,
     required bool stationCopy,
     ReceiptPrintKind kind = ReceiptPrintKind.live,
+    bool recovered = false,
   }) {
+    if (recovered) {
+      return recoveredBanner;
+    }
     switch (kind) {
       case ReceiptPrintKind.secondCopy:
         return secondCopyBanner;
@@ -119,23 +124,23 @@ class ReceiptTicket {
     this.accountAmount = 0,
   });
 
-  factory ReceiptTicket.fromBay({
-    required DispenserBay bay,
+  factory ReceiptTicket.fromUnit({
+    required DispenserUnit unit,
     required int tokenNo,
     required DateTime issuedAt,
   }) {
     return ReceiptTicket(
       issuedAt: issuedAt,
-      unitId: bay.unitId,
-      fuelType: bay.fuelType,
+      unitId: unit.unitId,
+      fuelType: unit.fuelType,
       tokenNo: tokenNo,
-      liters: _lcdDigits(bay.lastLiters),
-      rate: FuelFormatter.lcdAverageRate(bay.rate),
-      amount: _lcdDigits(bay.lastRupees),
-      cashierName: bay.lastCashier,
-      customerName: bay.lastCustomer,
-      vehicleNo: bay.lastVehicleNo,
-      payment: bay.lastPayment,
+      liters: _lcdDigits(unit.lastLiters),
+      rate: FuelFormatter.lcdAverageRate(unit.rate),
+      amount: _lcdDigits(unit.lastRupees),
+      cashierName: unit.lastCashier,
+      customerName: unit.lastCustomer,
+      vehicleNo: unit.lastVehicleNo,
+      payment: unit.lastPayment,
     );
   }
 

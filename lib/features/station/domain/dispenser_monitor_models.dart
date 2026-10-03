@@ -64,8 +64,8 @@ class DispenserWireFrame {
   }
 }
 
-class BayDiagnosticSnapshot {
-  const BayDiagnosticSnapshot({
+class UnitDiagnosticSnapshot {
+  const UnitDiagnosticSnapshot({
     this.rssiDbm,
     this.latencyMs,
     this.lastPingAt,
@@ -85,7 +85,7 @@ class BayDiagnosticSnapshot {
   final bool? espToBoardLink;
   final int? pendingTxCount;
 
-  BayDiagnosticSnapshot copyWith({
+  UnitDiagnosticSnapshot copyWith({
     int? rssiDbm,
     int? latencyMs,
     DateTime? lastPingAt,
@@ -96,7 +96,7 @@ class BayDiagnosticSnapshot {
     int? pendingTxCount,
     bool clearSocketOpened = false,
   }) {
-    return BayDiagnosticSnapshot(
+    return UnitDiagnosticSnapshot(
       rssiDbm: rssiDbm ?? this.rssiDbm,
       latencyMs: latencyMs ?? this.latencyMs,
       lastPingAt: lastPingAt ?? this.lastPingAt,
@@ -111,8 +111,8 @@ class BayDiagnosticSnapshot {
   }
 }
 
-class BayLinkHealth {
-  const BayLinkHealth({
+class UnitLinkHealth {
+  const UnitLinkHealth({
     required this.rssiDbm,
     required this.fdxWifiUp,
     required this.fdxWifiDrop,
@@ -138,9 +138,9 @@ class BayLinkHealth {
 
   static const Duration _lamp = Duration(milliseconds: 450);
 
-  static BayLinkHealth evaluate({
+  static UnitLinkHealth evaluate({
     required UnitEndpoint endpoint,
-    required BayDiagnosticSnapshot snapshot,
+    required UnitDiagnosticSnapshot snapshot,
     required DateTime now,
   }) {
     final int rssi = snapshot.rssiDbm ?? -95;
@@ -158,7 +158,7 @@ class BayLinkHealth {
     final bool rxHot =
         snapshot.lastRxAt != null && now.difference(snapshot.lastRxAt!) < _lamp;
 
-    return BayLinkHealth(
+    return UnitLinkHealth(
       rssiDbm: rssi,
       fdxWifiUp: fdxWifiUp,
       fdxWifiDrop: fdxWifiDrop,
@@ -185,7 +185,7 @@ class DispenserMonitorState {
 
   final List<DispenserWireFrame> frames;
   final bool paused;
-  final Map<int, BayDiagnosticSnapshot> diagnostics;
+  final Map<int, UnitDiagnosticSnapshot> diagnostics;
   final DateTime clock;
   final int? unitFilter;
   final DispenserWireKind? kindFilter;
@@ -195,7 +195,7 @@ class DispenserMonitorState {
     return DispenserMonitorState(
       frames: const <DispenserWireFrame>[],
       paused: false,
-      diagnostics: const <int, BayDiagnosticSnapshot>{},
+      diagnostics: const <int, UnitDiagnosticSnapshot>{},
       clock: DateTime.now(),
     );
   }
@@ -214,14 +214,14 @@ class DispenserMonitorState {
     }).toList();
   }
 
-  BayDiagnosticSnapshot diagnosticFor(int unitId) {
-    return diagnostics[unitId] ?? const BayDiagnosticSnapshot();
+  UnitDiagnosticSnapshot diagnosticFor(int unitId) {
+    return diagnostics[unitId] ?? const UnitDiagnosticSnapshot();
   }
 
   DispenserMonitorState copyWith({
     List<DispenserWireFrame>? frames,
     bool? paused,
-    Map<int, BayDiagnosticSnapshot>? diagnostics,
+    Map<int, UnitDiagnosticSnapshot>? diagnostics,
     DateTime? clock,
     int? unitFilter,
     DispenserWireKind? kindFilter,
@@ -241,31 +241,31 @@ class DispenserMonitorState {
   }
 }
 
-enum MonitorBayStatus { online, dispensing, keypadLocked, offline }
+enum MonitorUnitStatus { online, dispensing, keypadLocked, offline }
 
-MonitorBayStatus monitorStatusFor(DispenserBay bay, {bool linkOnline = true}) {
-  if (!linkOnline || bay.isOffline) {
-    return MonitorBayStatus.offline;
+MonitorUnitStatus monitorStatusFor(DispenserUnit unit, {bool linkOnline = true}) {
+  if (!linkOnline || unit.isOffline) {
+    return MonitorUnitStatus.offline;
   }
-  if (bay.isDispensing) {
-    return MonitorBayStatus.dispensing;
+  if (unit.isDispensing) {
+    return MonitorUnitStatus.dispensing;
   }
-  if (bay.keypadLocked) {
-    return MonitorBayStatus.keypadLocked;
+  if (unit.keypadLocked) {
+    return MonitorUnitStatus.keypadLocked;
   }
-  return MonitorBayStatus.online;
+  return MonitorUnitStatus.online;
 }
 
-extension MonitorBayStatusX on MonitorBayStatus {
+extension MonitorUnitStatusX on MonitorUnitStatus {
   String get label {
     switch (this) {
-      case MonitorBayStatus.online:
+      case MonitorUnitStatus.online:
         return 'ONLINE';
-      case MonitorBayStatus.dispensing:
+      case MonitorUnitStatus.dispensing:
         return 'DISPENSING';
-      case MonitorBayStatus.keypadLocked:
+      case MonitorUnitStatus.keypadLocked:
         return 'KEYPAD_LOCKED';
-      case MonitorBayStatus.offline:
+      case MonitorUnitStatus.offline:
         return 'OFFLINE';
     }
   }

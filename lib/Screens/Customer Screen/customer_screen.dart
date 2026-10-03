@@ -124,6 +124,9 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
           .settleBill(
             customer: account.profile,
             amountPkr: draft.amountPkr,
+            paymentMode: draft.paymentMode,
+            cashAmountPkr: draft.cashAmountPkr,
+            accountAmountPkr: draft.accountAmountPkr,
             notes: draft.notes,
           );
       if (!mounted) {

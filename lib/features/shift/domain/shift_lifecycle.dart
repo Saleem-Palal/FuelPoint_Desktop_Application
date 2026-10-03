@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'shift_models.dart';
 
-/// SQLite `shifts.STATUS` strings. Dart still uses [ManagerShiftStatus.open]
+/// SQLite `shifts.STATUS` strings. Dart still uses [OperatorShiftStatus.open]
 /// for a live cashier window; storage is `LIVE` (legacy `OPEN` still reads).
 class ShiftStatusStorage {
   ShiftStatusStorage._();
@@ -19,31 +19,31 @@ class ShiftStatusStorage {
   static const String blockingSql =
       "UPPER(TRIM(STATUS)) IN ('LIVE', 'OPEN', 'PENDING_RECONCILIATION')";
 
-  static String toStorage(ManagerShiftStatus status) {
+  static String toStorage(OperatorShiftStatus status) {
     switch (status) {
-      case ManagerShiftStatus.open:
+      case OperatorShiftStatus.open:
         return live;
-      case ManagerShiftStatus.pendingReconciliation:
+      case OperatorShiftStatus.pendingReconciliation:
         return pending;
-      case ManagerShiftStatus.closed:
+      case OperatorShiftStatus.closed:
         return closed;
-      case ManagerShiftStatus.forceClosed:
+      case OperatorShiftStatus.forceClosed:
         return forceClosed;
     }
   }
 
-  static ManagerShiftStatus fromStorage(String raw) {
+  static OperatorShiftStatus fromStorage(String raw) {
     switch (raw.trim().toUpperCase()) {
       case pending:
-        return ManagerShiftStatus.pendingReconciliation;
+        return OperatorShiftStatus.pendingReconciliation;
       case closed:
-        return ManagerShiftStatus.closed;
+        return OperatorShiftStatus.closed;
       case forceClosed:
-        return ManagerShiftStatus.forceClosed;
+        return OperatorShiftStatus.forceClosed;
       case live:
       case openLegacy:
       default:
-        return ManagerShiftStatus.open;
+        return OperatorShiftStatus.open;
     }
   }
 
@@ -55,7 +55,7 @@ class ShiftStatusStorage {
 
 int elevatedByOwnerFlag(bool elevated) => elevated ? 1 : 0;
 
-/// Bay totalizer snapshot keyed by dispenser unit id.
+/// Unit totalizer snapshot keyed by dispenser unit id.
 class ShiftMeterSnapshot {
   ShiftMeterSnapshot._();
 
@@ -96,7 +96,7 @@ class ShiftMeterSnapshot {
   }
 }
 
-/// Persisted helper-to-bay duty. JSON array of unit ids, e.g. `[1,3]`.
+/// Persisted helper-to-unit duty. JSON array of unit ids, e.g. `[1,3]`.
 class HelperUnitAssignmentSnapshot {
   HelperUnitAssignmentSnapshot._();
 
@@ -156,18 +156,18 @@ class AppSessionSnapshot {
 class ShiftLifecycleGuard {
   ShiftLifecycleGuard._();
 
-  static int? firstDispensingBay(Iterable<int> dispensingUnitIds) {
+  static int? firstDispensingUnit(Iterable<int> dispensingUnitIds) {
     final List<int> ids = dispensingUnitIds.toList()..sort();
     return ids.isEmpty ? null : ids.first;
   }
 
-  static String handoverBlockedMessage(int bayId) {
-    return 'Handover Blocked: Bay #$bayId is actively dispensing. '
+  static String handoverBlockedMessage(int unitId) {
+    return 'Handover Blocked: Unit #$unitId is actively dispensing. '
         'Wait for nozzle stowage.';
   }
 
-  static String endBlockedMessage(int bayId) {
-    return 'End Shift Blocked: Bay #$bayId is actively dispensing. '
+  static String endBlockedMessage(int unitId) {
+    return 'End Shift Blocked: Unit #$unitId is actively dispensing. '
         'Wait for nozzle stowage.';
   }
 

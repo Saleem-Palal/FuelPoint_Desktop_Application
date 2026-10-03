@@ -74,9 +74,9 @@ class PurchaseController extends ChangeNotifier {
     required double purchasedLiters,
     required double purchaseRate,
     required double totalAmountPkr,
-    required String managerId,
-    required String managerName,
-    required String managerPin,
+    required String operatorId,
+    required String operatorName,
+    required String operatorPin,
     String tafseel = '',
   }) async {
     await _repository.commitPurchase(
@@ -86,9 +86,9 @@ class PurchaseController extends ChangeNotifier {
       rate: purchaseRate,
       amount: totalAmountPkr,
       tafseel: tafseel,
-      managerId: managerId,
-      managerName: managerName,
-      managerPin: managerPin,
+      operatorId: operatorId,
+      operatorName: operatorName,
+      operatorPin: operatorPin,
     );
     await reload();
     unawaited(
@@ -97,7 +97,7 @@ class PurchaseController extends ChangeNotifier {
         details:
             'Purchase $tafseel qty=$purchasedLiters rate=$purchaseRate '
             'amount=$totalAmountPkr',
-        managerId: managerId,
+        operatorId: operatorId,
         elevatedByOwner: true,
       ),
     );
@@ -110,7 +110,7 @@ class PurchaseController extends ChangeNotifier {
     required double purchaseRate,
     required double totalAmountPkr,
     String tafseel = '',
-    String managerId = '',
+    String operatorId = '',
   }) async {
     await _repository.updatePurchase(
       invNo: invNo,
@@ -126,7 +126,7 @@ class PurchaseController extends ChangeNotifier {
         details:
             'Edit $invNo qty=$purchasedLiters rate=$purchaseRate '
             'amount=$totalAmountPkr',
-        managerId: managerId,
+        operatorId: operatorId,
         elevatedByOwner: true,
       ),
     );

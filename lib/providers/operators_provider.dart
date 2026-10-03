@@ -7,18 +7,20 @@ import '../features/shift/presentation/shift_providers.dart';
 import '../services/database_helper.dart';
 
 @immutable
-class StationManager {
-  const StationManager({
+class StationOperator {
+  const StationOperator({
     required this.id,
     required this.name,
     required this.pinStored,
     this.openShiftId,
+    this.fingerprintEnrolled = false,
   });
 
   final String id;
   final String name;
   final String pinStored;
   final int? openShiftId;
+  final bool fingerprintEnrolled;
 
   bool get hasOpenShift {
     final int? shiftId = openShiftId;
@@ -37,21 +39,23 @@ class StationManager {
     return 'Shift #$shiftId Active';
   }
 
-  StationManager copyWith({
+  StationOperator copyWith({
     String? name,
     String? pinStored,
     int? openShiftId,
     bool clearOpenShift = false,
+    bool? fingerprintEnrolled,
   }) {
-    return StationManager(
+    return StationOperator(
       id: id,
       name: name ?? this.name,
       pinStored: pinStored ?? this.pinStored,
       openShiftId: clearOpenShift ? null : (openShiftId ?? this.openShiftId),
+      fingerprintEnrolled: fingerprintEnrolled ?? this.fingerprintEnrolled,
     );
   }
 
-  static StationManager fromRow(Map<String, Object?> row) {
+  static StationOperator fromRow(Map<String, Object?> row) {
     final Object? open = row['open_shift_id'];
     int? shiftId;
     if (open is int) {
@@ -61,16 +65,28 @@ class StationManager {
     } else if (open != null) {
       shiftId = int.tryParse('$open');
     }
-    return StationManager(
+    return StationOperator(
       id: '${row['manager_ID'] ?? ''}'.trim(),
       name: (row['Manager_name'] as String?)?.trim() ?? '',
       pinStored: (row['pin'] as String?)?.trim() ?? '',
       openShiftId: (shiftId != null && shiftId > 0) ? shiftId : null,
+      fingerprintEnrolled: _fingerprintFlag(row['fingerprint_enrolled']),
     );
+  }
+
+  static bool _fingerprintFlag(Object? value) {
+    if (value is bool) {
+      return value;
+    }
+    if (value is num) {
+      return value != 0;
+    }
+    final String text = '${value ?? ''}'.trim().toLowerCase();
+    return text == '1' || text == 'true';
   }
 }
 
-enum ManagerMutationOutcome {
+enum OperatorMutationOutcome {
   created,
   updated,
   deleted,
@@ -85,32 +101,32 @@ enum ManagerMutationOutcome {
 }
 
 @immutable
-class ManagerMutationResult {
-  const ManagerMutationResult({
+class OperatorMutationResult {
+  const OperatorMutationResult({
     required this.outcome,
     this.message = '',
-    this.managerName = '',
+    this.operatorName = '',
     this.shiftId,
   });
 
-  final ManagerMutationOutcome outcome;
+  final OperatorMutationOutcome outcome;
   final String message;
-  final String managerName;
+  final String operatorName;
   final int? shiftId;
 
   bool get isSuccess =>
-      outcome == ManagerMutationOutcome.created ||
-      outcome == ManagerMutationOutcome.updated ||
-      outcome == ManagerMutationOutcome.deleted;
+      outcome == OperatorMutationOutcome.created ||
+      outcome == OperatorMutationOutcome.updated ||
+      outcome == OperatorMutationOutcome.deleted;
 
   bool get isOpenShiftBlock =>
-      outcome == ManagerMutationOutcome.openShiftBlocked;
+      outcome == OperatorMutationOutcome.openShiftBlocked;
 }
 
 @immutable
-class ManagersState {
-  const ManagersState({
-    required this.managers,
+class OperatorsState {
+  const OperatorsState({
+    required this.operators,
     this.search = '',
     this.selectedId,
     this.nextId = 'mgr-1',
@@ -119,7 +135,7 @@ class ManagersState {
     this.errorMessage,
   });
 
-  final List<StationManager> managers;
+  final List<StationOperator> operators;
   final String search;
   final String? selectedId;
   final String nextId;
@@ -129,44 +145,44 @@ class ManagersState {
 
   bool get isCreateMode => selectedId == null;
 
-  StationManager? get selected {
+  StationOperator? get selected {
     final String? id = selectedId;
     if (id == null) {
       return null;
     }
-    for (final StationManager manager in managers) {
-      if (manager.id == id) {
-        return manager;
+    for (final StationOperator operator in operators) {
+      if (operator.id == id) {
+        return operator;
       }
     }
     return null;
   }
 
-  List<StationManager> get filtered {
+  List<StationOperator> get filtered {
     final String query = search.trim().toLowerCase();
     if (query.isEmpty) {
-      return managers;
+      return operators;
     }
-    return managers.where((StationManager manager) {
-      return manager.name.toLowerCase().contains(query) ||
-          manager.id.toLowerCase().contains(query);
+    return operators.where((StationOperator operator) {
+      return operator.name.toLowerCase().contains(query) ||
+          operator.id.toLowerCase().contains(query);
     }).toList();
   }
 
   int get onShiftCount {
     int count = 0;
-    for (final StationManager manager in managers) {
-      if (manager.hasOpenShift) {
+    for (final StationOperator operator in operators) {
+      if (operator.hasOpenShift) {
         count += 1;
       }
     }
     return count;
   }
 
-  int get idleCount => managers.length - onShiftCount;
+  int get idleCount => operators.length - onShiftCount;
 
-  ManagersState copyWith({
-    List<StationManager>? managers,
+  OperatorsState copyWith({
+    List<StationOperator>? operators,
     String? search,
     String? selectedId,
     bool clearSelected = false,
@@ -176,8 +192,8 @@ class ManagersState {
     String? errorMessage,
     bool clearError = false,
   }) {
-    return ManagersState(
-      managers: managers ?? this.managers,
+    return OperatorsState(
+      operators: operators ?? this.operators,
       search: search ?? this.search,
       selectedId: clearSelected ? null : (selectedId ?? this.selectedId),
       nextId: nextId ?? this.nextId,
@@ -187,18 +203,18 @@ class ManagersState {
     );
   }
 
-  static ManagersState empty() {
-    return const ManagersState(managers: <StationManager>[]);
+  static OperatorsState empty() {
+    return const OperatorsState(operators: <StationOperator>[]);
   }
 }
 
-class ManagersNotifier extends Notifier<ManagersState> {
+class OperatorsNotifier extends Notifier<OperatorsState> {
   final DatabaseHelper _db = DatabaseHelper.instance;
 
   @override
-  ManagersState build() {
+  OperatorsState build() {
     Future<void>.microtask(reload);
-    return ManagersState.empty();
+    return OperatorsState.empty();
   }
 
   void setSearch(String value) {
@@ -214,29 +230,29 @@ class ManagersNotifier extends Notifier<ManagersState> {
   }
 
   Future<void> reload() async {
-    final bool initial = state.managers.isEmpty;
+    final bool initial = state.operators.isEmpty;
     if (initial) {
       state = state.copyWith(loading: true, clearError: true);
     }
     try {
       final List<Map<String, Object?>> rows = await _db
-          .queryManagersWithOpenShifts();
-      final List<StationManager> managers = rows
-          .map(StationManager.fromRow)
-          .where((StationManager row) => row.id.isNotEmpty)
+          .queryOperatorsWithOpenShifts();
+      final List<StationOperator> operators = rows
+          .map(StationOperator.fromRow)
+          .where((StationOperator row) => row.id.isNotEmpty)
           .toList();
-      final String nextId = await _db.nextManagerId();
+      final String nextId = await _db.nextOperatorId();
       String? selectedId = state.selectedId;
       if (selectedId != null) {
-        final bool stillExists = managers.any(
-          (StationManager row) => row.id == selectedId,
+        final bool stillExists = operators.any(
+          (StationOperator row) => row.id == selectedId,
         );
         if (!stillExists) {
           selectedId = null;
         }
       }
       state = state.copyWith(
-        managers: managers,
+        operators: operators,
         nextId: nextId,
         selectedId: selectedId,
         clearSelected: selectedId == null,
@@ -244,55 +260,55 @@ class ManagersNotifier extends Notifier<ManagersState> {
         busy: false,
       );
     } catch (error, stack) {
-      debugPrint('ManagersNotifier.reload failed: $error\n$stack');
+      debugPrint('OperatorsNotifier.reload failed: $error\n$stack');
       state = state.copyWith(
         loading: false,
         busy: false,
-        errorMessage: 'Could not load managers. $error',
+        errorMessage: 'Could not load operators. $error',
       );
     }
   }
 
-  Future<ManagerMutationResult> save({
-    required String managerId,
-    required String managerName,
+  Future<OperatorMutationResult> save({
+    required String operatorId,
+    required String operatorName,
     required String pin,
   }) async {
-    final String id = managerId.trim();
-    final String name = managerName.trim();
+    final String id = operatorId.trim();
+    final String name = operatorName.trim();
     final String resolvedPin = pin.trim();
     if (id.isEmpty) {
-      return const ManagerMutationResult(
-        outcome: ManagerMutationOutcome.invalidId,
-        message: 'Manager ID is required.',
+      return const OperatorMutationResult(
+        outcome: OperatorMutationOutcome.invalidId,
+        message: 'Operator ID is required.',
       );
     }
     if (name.isEmpty) {
-      return const ManagerMutationResult(
-        outcome: ManagerMutationOutcome.invalidName,
-        message: 'Manager name is required.',
+      return const OperatorMutationResult(
+        outcome: OperatorMutationOutcome.invalidName,
+        message: 'Operator name is required.',
       );
     }
 
     final bool creating = state.isCreateMode;
     if (creating) {
       if (!PinHasher.isValidPlainPin(resolvedPin)) {
-        return const ManagerMutationResult(
-          outcome: ManagerMutationOutcome.invalidPin,
+        return const OperatorMutationResult(
+          outcome: OperatorMutationOutcome.invalidPin,
           message: 'PIN must be 4–6 digits.',
         );
       }
-      final Map<String, Object?>? existing = await _db.queryManagerById(id);
+      final Map<String, Object?>? existing = await _db.queryOperatorById(id);
       if (existing != null) {
-        return ManagerMutationResult(
-          outcome: ManagerMutationOutcome.duplicateId,
-          message: 'Manager ID $id already exists.',
+        return OperatorMutationResult(
+          outcome: OperatorMutationOutcome.duplicateId,
+          message: 'Operator ID $id already exists.',
         );
       }
     } else if (resolvedPin.isNotEmpty &&
         !PinHasher.isValidPlainPin(resolvedPin)) {
-      return const ManagerMutationResult(
-        outcome: ManagerMutationOutcome.invalidPin,
+      return const OperatorMutationResult(
+        outcome: OperatorMutationOutcome.invalidPin,
         message:
             'PIN must be 4–6 digits, or leave blank to keep the current PIN.',
       );
@@ -301,91 +317,91 @@ class ManagersNotifier extends Notifier<ManagersState> {
     state = state.copyWith(busy: true, clearError: true);
     try {
       if (creating) {
-        await _db.upsertManager(
-          managerId: id,
-          managerName: name,
+        await _db.upsertOperator(
+          operatorId: id,
+          operatorName: name,
           pin: resolvedPin,
         );
       } else {
-        await _db.updateManager(
-          managerId: id,
-          managerName: name,
+        await _db.updateOperator(
+          operatorId: id,
+          operatorName: name,
           pin: resolvedPin.isEmpty ? null : resolvedPin,
         );
       }
       await _syncDownstream();
       state = state.copyWith(busy: false, selectedId: id);
-      return ManagerMutationResult(
+      return OperatorMutationResult(
         outcome: creating
-            ? ManagerMutationOutcome.created
-            : ManagerMutationOutcome.updated,
-        managerName: name,
+            ? OperatorMutationOutcome.created
+            : OperatorMutationOutcome.updated,
+        operatorName: name,
       );
     } catch (error, stack) {
-      debugPrint('ManagersNotifier.save failed: $error\n$stack');
+      debugPrint('OperatorsNotifier.save failed: $error\n$stack');
       state = state.copyWith(busy: false, errorMessage: '$error');
-      return ManagerMutationResult(
-        outcome: ManagerMutationOutcome.failed,
+      return OperatorMutationResult(
+        outcome: OperatorMutationOutcome.failed,
         message: '$error',
       );
     }
   }
 
-  /// Blocks deletion (and inactivation) while the manager holds an OPEN shift.
-  Future<ManagerMutationResult> delete(String managerId) async {
-    final String id = managerId.trim();
-    StationManager? profile;
-    for (final StationManager manager in state.managers) {
-      if (manager.id == id) {
-        profile = manager;
+  /// Blocks deletion (and inactivation) while the operator holds an OPEN shift.
+  Future<OperatorMutationResult> delete(String operatorId) async {
+    final String id = operatorId.trim();
+    StationOperator? profile;
+    for (final StationOperator operator in state.operators) {
+      if (operator.id == id) {
+        profile = operator;
         break;
       }
     }
     if (profile == null) {
-      return const ManagerMutationResult(
-        outcome: ManagerMutationOutcome.notFound,
-        message: 'Manager was not found.',
+      return const OperatorMutationResult(
+        outcome: OperatorMutationOutcome.notFound,
+        message: 'Operator was not found.',
       );
     }
     if (profile.hasOpenShift) {
-      return ManagerMutationResult(
-        outcome: ManagerMutationOutcome.openShiftBlocked,
-        managerName: profile.name,
+      return OperatorMutationResult(
+        outcome: OperatorMutationOutcome.openShiftBlocked,
+        operatorName: profile.name,
         shiftId: profile.openShiftId,
         message:
             '${profile.name} currently holds Shift #${profile.openShiftId}. '
-            'Close that OPEN shift before removing or inactivating this manager.',
+            'Close that OPEN shift before removing or inactivating this operator.',
       );
     }
 
     state = state.copyWith(busy: true, clearError: true);
     try {
-      await _db.deleteManager(id);
+      await _db.deleteOperator(id);
       await _syncDownstream();
       state = state.copyWith(busy: false, clearSelected: true);
-      return ManagerMutationResult(
-        outcome: ManagerMutationOutcome.deleted,
-        managerName: profile.name,
+      return OperatorMutationResult(
+        outcome: OperatorMutationOutcome.deleted,
+        operatorName: profile.name,
       );
-    } on ManagerHasOpenShiftException catch (error) {
+    } on OperatorHasOpenShiftException catch (error) {
       state = state.copyWith(busy: false);
-      return ManagerMutationResult(
-        outcome: ManagerMutationOutcome.openShiftBlocked,
-        managerName: error.managerName,
+      return OperatorMutationResult(
+        outcome: OperatorMutationOutcome.openShiftBlocked,
+        operatorName: error.operatorName,
         shiftId: error.shiftId,
         message: error.toString(),
       );
-    } on ManagerInUseException catch (error) {
+    } on OperatorInUseException catch (error) {
       state = state.copyWith(busy: false);
-      return ManagerMutationResult(
-        outcome: ManagerMutationOutcome.inUse,
+      return OperatorMutationResult(
+        outcome: OperatorMutationOutcome.inUse,
         message: error.toString(),
       );
     } catch (error, stack) {
-      debugPrint('ManagersNotifier.delete failed: $error\n$stack');
+      debugPrint('OperatorsNotifier.delete failed: $error\n$stack');
       state = state.copyWith(busy: false, errorMessage: '$error');
-      return ManagerMutationResult(
-        outcome: ManagerMutationOutcome.failed,
+      return OperatorMutationResult(
+        outcome: OperatorMutationOutcome.failed,
         message: '$error',
       );
     }
@@ -396,11 +412,11 @@ class ManagersNotifier extends Notifier<ManagersState> {
     try {
       await ref.read(shiftWorkspaceProvider.notifier).reload();
     } catch (error, stack) {
-      debugPrint('ManagersNotifier shift reload failed: $error\n$stack');
+      debugPrint('OperatorsNotifier shift reload failed: $error\n$stack');
     }
   }
 }
 
-final managersProvider = NotifierProvider<ManagersNotifier, ManagersState>(
-  ManagersNotifier.new,
+final operatorsProvider = NotifierProvider<OperatorsNotifier, OperatorsState>(
+  OperatorsNotifier.new,
 );

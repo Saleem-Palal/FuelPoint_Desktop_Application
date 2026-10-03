@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../core/widgets/fuel_point_stat_card.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/domain/shift_report_layout.dart';
 import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/money_format.dart';
 
@@ -54,6 +55,90 @@ class ShiftKpiCard extends StatelessWidget {
       icon: icon,
       badgeBackgroundColor: tint.withValues(alpha: 0.12),
       badgeIconColor: tint,
+    );
+  }
+}
+
+String formatUdhaarRecoverySplit(ShiftWindowMetrics metrics) {
+  return 'Cash: ${formatPkr(metrics.udhaarRecoveryTotal)}  |  Account: ${formatPkr(metrics.udhaarRecoveryAccountTotal)}';
+}
+class ShiftUdhaarRecoveryCard extends StatelessWidget {
+  const ShiftUdhaarRecoveryCard({super.key, required this.metrics});
+
+  final ShiftWindowMetrics metrics;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: tokens.card,
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        border: Border.all(color: tokens.line),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: tokens.coral.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.handshake_outlined,
+              color: tokens.coral,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  'UDHAAR RECOVERY',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 9,
+                    letterSpacing: 0.8,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  formatPkr(metrics.udhaarRecoveryCombined),
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 20,
+                    height: 1.15,
+                    color: colors.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  formatUdhaarRecoverySplit(metrics),
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w600,
+                    fontSize: 11,
+                    color: tokens.inkMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -182,45 +267,52 @@ class ShiftSalesTable extends StatelessWidget {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final double liters = rows.fold<double>(
       0,
-      (double sum, HelperSaleRecord row) =>
-          row.isTest ? sum : sum + row.volumeLiters,
+      (double sum, HelperSaleRecord row) => sum + row.volumeLiters,
     );
     final int commercialCount = rows.where((HelperSaleRecord row) {
       return !row.isTest;
     }).length;
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double floor = compact ? 420 : (showPayment ? 1480 : 1100);
-        final double minWidth = constraints.maxWidth < floor
+        final double floor = compact ? 860 : (showPayment ? 1480 : 1100);
+        final double minWidth = compact
             ? floor
-            : constraints.maxWidth;
+            : (constraints.maxWidth < floor ? floor : constraints.maxWidth);
         final Widget table = ShiftTwoAxisScroll(
           minWidth: minWidth,
           child: DataTable(
-            headingRowHeight: compact ? 24 : 32,
-            dataRowMinHeight: compact ? 28 : 44,
-            dataRowMaxHeight: compact ? 30 : 52,
-            horizontalMargin: compact ? 8 : 14,
-            columnSpacing: compact ? 10 : 14,
+            headingRowHeight: compact ? 28 : 32,
+            dataRowMinHeight: compact ? 32 : 44,
+            dataRowMaxHeight: compact ? 42 : 52,
+            horizontalMargin: compact ? 6 : 14,
+            columnSpacing: compact ? 8 : 14,
             headingTextStyle: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w700,
-              fontSize: 10,
-              letterSpacing: 0.9,
+              fontSize: compact ? 11 : 10,
+              letterSpacing: 0.6,
               color: tokens.inkMuted,
             ),
             dataTextStyle: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w500,
-              fontSize: 12,
+              fontSize: compact ? 13 : 12,
               color: tokens.ink,
             ),
             columns: compact
                 ? const <DataColumn>[
-                    DataColumn(label: Text('TOKEN #')),
-                    DataColumn(label: Text('DATE & TIME')),
+                    DataColumn(label: Text('TKN')),
+                    DataColumn(label: Text('DATETIME')),
                     DataColumn(label: Text('UNIT')),
-                    DataColumn(label: Text('FUEL')),
+                    DataColumn(label: Text('LITERS'), numeric: true),
+                    DataColumn(label: Text('RATE'), numeric: true),
+                    DataColumn(label: Text('AMOUNT'), numeric: true),
+                    DataColumn(label: Text('OPENING'), numeric: true),
+                    DataColumn(label: Text('CLOSING'), numeric: true),
+                    DataColumn(label: Text('PM')),
+                    DataColumn(label: Text('CASH AMOUNT'), numeric: true),
+                    DataColumn(label: Text('ACCOUNT AMOUNT'), numeric: true),
+                    DataColumn(label: Text('CUSTOMER / VEHICLE')),
                   ]
                 : <DataColumn>[
                     const DataColumn(label: Text('TOKEN #')),
@@ -274,12 +366,38 @@ class ShiftSalesTable extends StatelessWidget {
                           ),
                           DataCell(
                             Text(
-                              formatDateTime(row.timestamp),
+                              formatShiftTableTime(row.timestamp),
                               style: TextStyle(color: tokens.inkMuted),
                             ),
                           ),
                           DataCell(Text(formatUnitLabel(row.unitId))),
-                          DataCell(Text(row.fuelType.toUpperCase())),
+                          DataCell(Text(formatTableLiters(row.volumeLiters))),
+                          DataCell(Text(formatTableRate(row.rate))),
+                          DataCell(
+                            Text(
+                              formatTablePkr(row.amountPkr),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          DataCell(Text(formatMeterReading(row.openingMeter))),
+                          DataCell(Text(formatMeterReading(row.closingMeter))),
+                          DataCell(
+                            Text(shiftSalePaymentLabel(row, short: true)),
+                          ),
+                          DataCell(Text(formatTableTenderPkr(row.cashTender))),
+                          DataCell(
+                            Text(
+                              formatTableTenderPkr(
+                                shiftSaleAccountColumn(
+                                  row,
+                                  tenderFallback: true,
+                                ),
+                              ),
+                            ),
+                          ),
+                          DataCell(_customerVehicle(row, tokens)),
                         ]
                       : <DataCell>[
                           DataCell(
@@ -327,16 +445,18 @@ class ShiftSalesTable extends StatelessWidget {
                             ),
                           ),
                           if (showPayment)
-                            DataCell(
-                              Text(row.isTest ? 'Test' : row.payment.label),
-                            ),
+                            DataCell(Text(shiftSalePaymentLabel(row))),
                           if (showPayment)
                             DataCell(
                               Text(formatTableTenderPkr(row.cashAmount)),
                             ),
                           if (showPayment)
                             DataCell(
-                              Text(formatTableTenderPkr(row.accountAmount)),
+                              Text(
+                                formatTableTenderPkr(
+                                  shiftSaleAccountColumn(row),
+                                ),
+                              ),
                             ),
                           DataCell(
                             Text(
@@ -394,4 +514,32 @@ class ShiftSalesTable extends StatelessWidget {
       },
     );
   }
+}
+
+Widget _customerVehicle(HelperSaleRecord row, DispensrTokens tokens) {
+  final String raw = row.customerName.trim();
+  final String customer = raw.isEmpty || raw.toLowerCase() == 'walk-in'
+      ? 'Walk-in'
+      : raw;
+  final String vehicle = displayVehicleNo(row.vehicleNo);
+  final bool hasVehicle = vehicle != '—' && vehicle.trim().isNotEmpty;
+  if (!hasVehicle) {
+    return Text(customer);
+  }
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: <Widget>[
+      Text(customer),
+      Text(
+        vehicle,
+        style: TextStyle(
+          fontFamily: 'Roboto',
+          fontWeight: FontWeight.w500,
+          fontSize: 10,
+          color: tokens.inkMuted,
+        ),
+      ),
+    ],
+  );
 }

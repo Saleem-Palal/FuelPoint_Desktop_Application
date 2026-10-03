@@ -106,8 +106,8 @@ Widget screenForRoute(String route) {
       return appShellAt(ShellDestinations.sale);
     case '/dashboard':
       return appShellAt(ShellDestinations.dashboard);
-    case '/managers':
-      return appShellAt(ShellDestinations.managers);
+    case '/operators':
+      return appShellAt(ShellDestinations.operators);
     default:
       return const AppShell();
   }

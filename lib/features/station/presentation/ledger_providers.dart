@@ -229,7 +229,7 @@ final shiftWiseLedgerProvider = Provider<AsyncValue<List<ShiftLedgerSummary>>>((
   final ShiftWorkspaceState workspace = ref.watch(shiftWorkspaceProvider);
   return remote.whenData((List<ShiftLedgerSummary> rows) {
     return overlayLiveShiftLedger(
-      attachManagerRoles(rows, workspace.managers),
+      attachOperatorRoles(rows, workspace.operators),
       sales,
       workspaceSales: workspace.sales,
     );

@@ -19,7 +19,7 @@ import '../providers/auth_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/shift_provider.dart';
 import '../services/window_lifecycle_service.dart';
-import '../Screens/managers_screen.dart';
+import '../Screens/operators_screen.dart';
 import '../core/constants.dart';
 import '../core/theme/dispensr_theme.dart';
 import '../core/widgets/app_screen_header.dart';
@@ -83,7 +83,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     ),
     _NavDestination(
       icon: Icons.manage_accounts_outlined,
-      label: 'Managers',
+      label: 'Operators',
       index: 9,
     ),
     _NavDestination(icon: Icons.badge_outlined, label: 'Shifts', index: 5),
@@ -147,7 +147,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       case 8:
         return const CustomerScreen();
       case 9:
-        return const ManagersScreen();
+        return const OperatorsScreen();
       case 6:
         return const DispenserScreen();
       case 7:
@@ -221,7 +221,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       }
       _lifecycle = WindowLifecycleService(
         hasActiveShift: () => ref.read(shiftProvider).hasActiveShift,
-        activeManagerName: () => ref.read(shiftProvider).liveManagerName,
+        activeOperatorName: () => ref.read(shiftProvider).liveOperatorName,
         onProceedToEndShift: () => promptManualEndShift(context, ref),
         onCleanShutdown: () {
           return ref
@@ -331,8 +331,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       return;
     }
     final int unitId = ref.read(selectedDispenserIndexProvider);
-    final DispenserBay bay = ref.read(stationControllerProvider).bay(unitId);
-    if (!bay.canConfirmPayment) {
+    final DispenserUnit unit = ref.read(stationControllerProvider).unit(unitId);
+    if (!unit.canConfirmPayment) {
       return;
     }
     openPaymentSheet(ref, unitId);
@@ -382,10 +382,10 @@ class _AppShellState extends ConsumerState<AppShell> {
     final bool ownerElevated = access.isOwnerElevated;
     final ShiftProvider shift = ref.watch(shiftProvider);
     final bool shiftLive = shift.activeShift?.isOpen == true;
-    final String liveManagerName = shift.activeShift?.managerName.trim() ?? '';
-    final String loggedInName = auth.activeManagerName.trim();
-    final String operatorName = shiftLive && liveManagerName.isNotEmpty
-        ? liveManagerName
+    final String liveOperatorName = shift.activeShift?.operatorName.trim() ?? '';
+    final String loggedInName = auth.activeOperatorName.trim();
+    final String operatorName = shiftLive && liveOperatorName.isNotEmpty
+        ? liveOperatorName
         : (auth.isAuthenticated && loggedInName.isNotEmpty
               ? loggedInName
               : 'Station Owner');

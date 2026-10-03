@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../providers/managers_provider.dart';
+import '../../../providers/operators_provider.dart';
 import '../../customer/presentation/customer_providers.dart';
 import '../../shift/presentation/shift_providers.dart';
 import 'purchase_providers.dart';
@@ -16,7 +16,7 @@ Future<void> _runRefresh(String label, Future<void> Function() job) async {
 }
 
 /// Reloads every SQLite-backed workspace cache (sales, customers, purchases,
-/// shifts, managers) so KPI cards and tables match the database.
+/// shifts, operators) so KPI cards and tables match the database.
 Future<void> refreshWorkspaceFromDatabase(WidgetRef ref) async {
   Object? firstError;
   Future<void> run(String label, Future<void> Function() job) async {
@@ -34,7 +34,7 @@ Future<void> refreshWorkspaceFromDatabase(WidgetRef ref) async {
   );
   await run('Purchases', () => ref.read(purchaseControllerProvider).reload());
   await run('Shifts', () => ref.read(shiftWorkspaceProvider.notifier).reload());
-  await run('Managers', () => ref.read(managersProvider.notifier).reload());
+  await run('Operators', () => ref.read(operatorsProvider.notifier).reload());
   bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
   final Object? error = firstError;
   if (error != null) {
@@ -69,10 +69,10 @@ Future<void> refreshLedgerFromDatabase(WidgetRef ref) async {
   await refreshShiftsFromDatabase(ref);
 }
 
-Future<void> refreshManagersFromDatabase(WidgetRef ref) {
+Future<void> refreshOperatorsFromDatabase(WidgetRef ref) {
   return _runRefresh(
-    'Managers',
-    () => ref.read(managersProvider.notifier).reload(),
+    'Operators',
+    () => ref.read(operatorsProvider.notifier).reload(),
   );
 }
 

@@ -20,9 +20,12 @@ ThermalReceiptView settlementThermalReceipt(
   final List<ThermalReceiptDetail> details = <ThermalReceiptDetail>[
     ThermalReceiptDetail(label: 'Customer ID', value: settlement.customerId),
     ThermalReceiptDetail(label: 'Customer', value: settlement.customerName),
-    ThermalReceiptDetail(label: 'Payment', value: settlement.paymentMode.label),
     ThermalReceiptDetail(
-      label: 'Cashier',
+      label: 'Payment',
+      value: settlement.receiptPaymentLabel,
+    ),
+    ThermalReceiptDetail(
+      label: 'Operator',
       value: '${settlement.cashierId} · ${settlement.cashierName}',
     ),
     ThermalReceiptDetail(
@@ -33,6 +36,16 @@ ThermalReceiptView settlementThermalReceipt(
       label: 'Amount Paid Now',
       value: formatPkrStatement(settlement.amountPkr),
     ),
+    if (settlement.cashAmountPkr > 0.004 && settlement.accountAmountPkr > 0.004)
+      ThermalReceiptDetail(
+        label: 'Cash Now',
+        value: formatPkrStatement(settlement.cashAmountPkr),
+      ),
+    if (settlement.accountAmountPkr > 0.004)
+      ThermalReceiptDetail(
+        label: settlement.paymentMode.label,
+        value: formatPkrStatement(settlement.accountAmountPkr),
+      ),
     ThermalReceiptDetail(
       label: 'Remaining Outstanding',
       value: formatPkrStatement(settlement.remainingBalance),
@@ -98,8 +111,8 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
       'Previous  ${formatPkrStatement(row.previousBalance)}',
       'Paid now  ${formatPkrStatement(row.amountPkr)}',
       'Remaining  ${formatPkrStatement(row.remainingBalance)}',
-      'Payment  ${row.paymentMode.label}',
-      'Cashier  ${row.cashierId} · ${row.cashierName}',
+      'Payment  ${row.receiptPaymentLabel}',
+      'Operator  ${row.cashierId} · ${row.cashierName}',
     ].join('\n');
   }
 

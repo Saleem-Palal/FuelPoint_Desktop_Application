@@ -61,8 +61,11 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
   Future<CustomerSettlement> settleBill({
     required CustomerProfile customer,
     required double amountPkr,
+    required SettlementPaymentMode paymentMode,
+    double cashAmountPkr = 0,
+    double accountAmountPkr = 0,
     String notes = '',
-    String cashierName = 'Cashier',
+    String cashierName = 'Operator',
     String cashierId = '',
   }) async {
     final UnifiedUdhaarRepository ledger = ref.read(
@@ -71,21 +74,36 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
     final String shiftId =
         ref.read(shiftWorkspaceProvider).activeShift?.shiftId ??
         kUnknownShiftId;
+    final double cash = cashAmountPkr > 0 || accountAmountPkr > 0
+        ? cashAmountPkr
+        : (paymentMode.isAccount ? 0 : amountPkr);
+    final double account = cashAmountPkr > 0 || accountAmountPkr > 0
+        ? accountAmountPkr
+        : (paymentMode.isAccount ? amountPkr : 0);
     final UnifiedUdhaarRow row = await ledger.insertSettlement(
       customerId: customer.id,
       customerName: customer.name,
       amountPkr: amountPkr,
-      paymentMode: SettlementPaymentMode.cash,
+      paymentMode: paymentMode,
       shiftId: shiftId,
+      cashAmountPkr: cash,
+      accountAmountPkr: account,
       notes: notes,
     );
-    ref.read(shiftWorkspaceProvider.notifier).addUdhaarRecovery(amountPkr);
-    await reloadCustomerPersistence(ref);
-    return settlementFromLedgerRow(
+    final CustomerSettlement settlement = settlementFromLedgerRow(
       row,
       cashierName: cashierName,
       cashierId: cashierId,
     );
+    ref
+        .read(shiftWorkspaceProvider.notifier)
+        .addUdhaarRecovery(
+          cashAmount: settlement.cashAmountPkr,
+          accountAmount: settlement.accountAmountPkr,
+          partial: settlement.isPartial,
+        );
+    await reloadCustomerPersistence(ref);
+    return settlement;
   }
 
   Future<UnifiedUdhaarRow> postPreviousUdhaar({
@@ -165,7 +183,7 @@ CustomerAccount _accountFor({
       );
       final String note = settlement.notes.trim();
       final String desc = note.isEmpty
-          ? '${settlement.paymentMode.label} recovery'
+          ? '${settlement.receiptPaymentLabel} recovery'
           : note;
       ledger.add(
         CustomerLedgerLine(

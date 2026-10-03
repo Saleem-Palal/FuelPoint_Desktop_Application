@@ -29,6 +29,8 @@ abstract class UnifiedUdhaarRepository {
     required double amountPkr,
     required SettlementPaymentMode paymentMode,
     required String shiftId,
+    double cashAmountPkr = 0,
+    double accountAmountPkr = 0,
     String notes = '',
     DateTime? timestamp,
   });

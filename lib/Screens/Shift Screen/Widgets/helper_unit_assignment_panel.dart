@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/domain/shift_models.dart';
-import '../../../features/station/domain/dashboard_models.dart';
 import '../../../features/station/domain/dispenser_models.dart';
 
-/// Per-bay helper picker. Shows who is already on each unit so a manager
+/// Per-unit helper picker. Shows who is already on each unit so an operator
 /// can keep or reassign duty before a shift starts or hands over.
 class HelperUnitAssignmentPanel extends StatelessWidget {
   const HelperUnitAssignmentPanel({
@@ -127,7 +126,7 @@ class _UnitAssignmentRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  formatBayLabel(unitId),
+                  formatUnitLabel(unitId),
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     fontWeight: FontWeight.w700,

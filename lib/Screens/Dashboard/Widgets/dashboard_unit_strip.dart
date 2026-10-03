@@ -4,15 +4,15 @@ import '../../../core/widgets/responsive_layout.dart';
 import '../../../features/station/domain/dashboard_models.dart';
 import 'dashboard_ui_kit.dart';
 
-class DashboardBayStrip extends StatelessWidget {
-  const DashboardBayStrip({
+class DashboardUnitStrip extends StatelessWidget {
+  const DashboardUnitStrip({
     super.key,
-    required this.bays,
+    required this.units,
     required this.range,
     required this.onRangeChanged,
   });
 
-  final List<DashboardBayPerformance> bays;
+  final List<DashboardUnitPerformance> units;
   final DashboardRangePreset range;
   final ValueChanged<DashboardRangePreset> onRangeChanged;
 
@@ -35,15 +35,15 @@ class DashboardBayStrip extends StatelessWidget {
           ExtentWrap(
             maxCrossAxisExtent: 320,
             children: <Widget>[
-              for (final DashboardBayPerformance bay in bays)
+              for (final DashboardUnitPerformance unit in units)
                 DashboardVolumeCard(
-                  title: bay.label,
-                  volumeLiters: bay.volumeLiters,
-                  revenuePkr: bay.revenuePkr,
-                  txnCount: bay.txnCount,
-                  shareOfPeak: bay.shareOfPeak,
-                  emphasize: bay.isPeakLane,
-                  badge: bay.isPeakLane ? 'PEAK LANE' : null,
+                  title: unit.label,
+                  volumeLiters: unit.volumeLiters,
+                  revenuePkr: unit.revenuePkr,
+                  txnCount: unit.txnCount,
+                  shareOfPeak: unit.shareOfPeak,
+                  emphasize: unit.isPeakLane,
+                  badge: unit.isPeakLane ? 'PEAK LANE' : null,
                 ),
             ],
           ),

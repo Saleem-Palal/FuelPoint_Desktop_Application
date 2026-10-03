@@ -22,6 +22,7 @@ import '../domain/dispenser_monitor_models.dart';
 import '../domain/esp_token_log.dart';
 import '../domain/fuel_precision.dart';
 import '../domain/money_format.dart';
+import '../domain/sale_fulfillment.dart';
 import 'dispenser_monitor_providers.dart';
 
 final transactionStoreProvider = Provider<TransactionStore>((Ref ref) {
@@ -91,15 +92,15 @@ final currentTokenIdProvider = Provider<int>((Ref ref) {
   return tokenIdFor(unitId: unitId, sequence: sequence);
 });
 
-final selectedBayProvider = Provider<DispenserBay>((Ref ref) {
+final selectedUnitProvider = Provider<DispenserUnit>((Ref ref) {
   final int unitId = ref.watch(selectedDispenserIndexProvider);
-  return ref.watch(stationControllerProvider).bay(unitId);
+  return ref.watch(stationControllerProvider).unit(unitId);
 });
 
-/// Live LCD numbers for one bay. Ignores last-sale / sequence so the 30-row
+/// Live LCD numbers for one unit. Ignores last-sale / sequence so the 30-row
 /// table does not rebuild at telemetry rate.
-class LiveBayLcd {
-  const LiveBayLcd({
+class LiveUnitLcd {
+  const LiveUnitLcd({
     required this.amountPkr,
     required this.volumeLiters,
     required this.rate,
@@ -117,7 +118,7 @@ class LiveBayLcd {
 
   @override
   bool operator ==(Object other) {
-    return other is LiveBayLcd &&
+    return other is LiveUnitLcd &&
         other.amountPkr == amountPkr &&
         other.volumeLiters == volumeLiters &&
         other.rate == rate &&
@@ -131,23 +132,23 @@ class LiveBayLcd {
       Object.hash(amountPkr, volumeLiters, rate, meterCount, status, offline);
 }
 
-final liveBayLcdProvider = Provider.family<LiveBayLcd, int>((
+final liveUnitLcdProvider = Provider.family<LiveUnitLcd, int>((
   Ref ref,
   int unitId,
 ) {
   return ref.watch(
     stationControllerProvider.select((StationState station) {
-      final DispenserBay bay = station.bay(unitId);
-      return LiveBayLcd(
-        amountPkr: bay.amountPkr,
-        volumeLiters: bay.volumeLiters,
-        rate: bay.rate,
-        meterCount: bay.meterCount,
-        status: bay.status,
+      final DispenserUnit unit = station.unit(unitId);
+      return LiveUnitLcd(
+        amountPkr: unit.amountPkr,
+        volumeLiters: unit.volumeLiters,
+        rate: unit.rate,
+        meterCount: unit.meterCount,
+        status: unit.status,
         offline:
             shouldEnforceStationGuards &&
             !station.endpoint(unitId).connected &&
-            !bay.isCycleComplete,
+            !unit.isCycleComplete,
       );
     }),
   );
@@ -214,6 +215,10 @@ final receiptOverlayTxnsProvider = StateProvider<Map<int, SaleTransaction>>(
 
 final espRecoverOffersProvider = StateProvider<List<EspTokenLogRow>>(
   (Ref ref) => const <EspTokenLogRow>[],
+);
+
+final espLastTenByUnitProvider = StateProvider<Map<int, List<EspTokenLogRow>>>(
+  (Ref ref) => const <int, List<EspTokenLogRow>>{},
 );
 
 @immutable
@@ -314,7 +319,7 @@ void nudgeSelectedUnit(WidgetRef ref, int delta) {
 final stationControllerProvider =
     NotifierProvider<StationController, StationState>(StationController.new);
 
-/// Weighted-average diesel cost from Purchase. Not painted onto bay RATE LCDs.
+/// Weighted-average diesel cost from Purchase. Not painted onto unit RATE LCDs.
 final dieselAverageRateProvider = Provider<double>((Ref ref) {
   return ref.watch(
     stationControllerProvider.select(
@@ -457,7 +462,7 @@ class StationController extends Notifier<StationState> {
     }
   }
 
-  bool _liveTelemetryUnchanged(DispenserBay previous, DispenserBay next) {
+  bool _liveTelemetryUnchanged(DispenserUnit previous, DispenserUnit next) {
     return previous.status == next.status &&
         previous.amountPkr == next.amountPkr &&
         previous.volumeLiters == next.volumeLiters &&
@@ -471,27 +476,29 @@ class StationController extends Notifier<StationState> {
         previous.testCycle == next.testCycle;
   }
 
-  void _patchBay(int unitId, DispenserBay next) {
-    final DispenserBay previous = state.bay(unitId);
+  void _patchUnit(int unitId, DispenserUnit next) {
+    final DispenserUnit previous = state.unit(unitId);
     if (_liveTelemetryUnchanged(previous, next)) {
       return;
     }
-    final Map<int, DispenserBay> bays = Map<int, DispenserBay>.from(state.bays);
-    bays[unitId] = next;
-    state = state.copyWith(bays: bays);
+    final Map<int, DispenserUnit> units = Map<int, DispenserUnit>.from(
+      state.units,
+    );
+    units[unitId] = next;
+    state = state.copyWith(units: units);
     _syncBuzzer();
   }
 
-  DispenserBay _withSavedLastSale(DispenserBay bay, SaleTransaction? row) {
+  DispenserUnit _withSavedLastSale(DispenserUnit unit, SaleTransaction? row) {
     if (row == null) {
-      return bay.copyWith(
+      return unit.copyWith(
         lastRupees: '',
         lastLiters: '',
         lastTime: '',
         lastCashier: '',
       );
     }
-    return bay.copyWith(
+    return unit.copyWith(
       lastRupees: formatDispenserPkr(row.amountPkr),
       lastLiters: formatLiters(row.volumeLiters),
       lastTime: formatClock(row.timestamp),
@@ -510,29 +517,31 @@ class StationController extends Notifier<StationState> {
       }
       latest.putIfAbsent(row.unitId, () => row);
     }
-    final Map<int, DispenserBay> bays = Map<int, DispenserBay>.from(state.bays);
+    final Map<int, DispenserUnit> units = Map<int, DispenserUnit>.from(
+      state.units,
+    );
     bool changed = false;
     for (final int unitId in dispenserUnitIds) {
-      final DispenserBay bay = state.bay(unitId);
-      final DispenserBay next = _withSavedLastSale(bay, latest[unitId]);
-      if (next.lastRupees == bay.lastRupees &&
-          next.lastLiters == bay.lastLiters &&
-          next.lastTime == bay.lastTime &&
-          next.lastCashier == bay.lastCashier) {
+      final DispenserUnit unit = state.unit(unitId);
+      final DispenserUnit next = _withSavedLastSale(unit, latest[unitId]);
+      if (next.lastRupees == unit.lastRupees &&
+          next.lastLiters == unit.lastLiters &&
+          next.lastTime == unit.lastTime &&
+          next.lastCashier == unit.lastCashier) {
         continue;
       }
-      bays[unitId] = next;
+      units[unitId] = next;
       changed = true;
     }
     if (changed) {
-      state = state.copyWith(bays: bays);
+      state = state.copyWith(units: units);
     }
   }
 
   void _syncBuzzer() {
-    // PC speaker only while Confirm is actually enabled on a bay.
-    final bool waitingForConfirm = state.bays.values.any(
-      (DispenserBay bay) => bay.canConfirmPayment,
+    // PC speaker only while Confirm is actually enabled on a unit.
+    final bool waitingForConfirm = state.units.values.any(
+      (DispenserUnit unit) => unit.canConfirmPayment,
     );
     if (waitingForConfirm) {
       unawaited(_buzzer.start());
@@ -564,7 +573,7 @@ class StationController extends Notifier<StationState> {
     });
   }
 
-  /// Recalculated WAC from Purchase. Does not overwrite per-bay programmed rates.
+  /// Recalculated WAC from Purchase. Does not overwrite per-unit programmed rates.
   void setDieselAverageRate(double rate) {
     if (state.dieselAverageRate == rate) {
       return;
@@ -573,7 +582,7 @@ class StationController extends Notifier<StationState> {
   }
 
   void _onTelemetry(DispenserTelemetry packet) {
-    final DispenserBay previous = state.bay(packet.unitId);
+    final DispenserUnit previous = state.unit(packet.unitId);
     final String cmd = packet.cmd.toUpperCase();
     DispenserRunState nextStatus = packet.status;
     if (packet.status == DispenserRunState.dispensing) {
@@ -586,7 +595,7 @@ class StationController extends Notifier<StationState> {
     final double? pumped = _lastPumpingLiters[packet.unitId];
     final bool hadPump =
         previous.isDispensing ||
-        (pumped != null && pumped.abs() >= DispenserBay.zeroVolumeEpsilon);
+        (pumped != null && pumped.abs() >= DispenserUnit.zeroVolumeEpsilon);
     final bool dispensingToIdle =
         packet.status == DispenserRunState.idle &&
         hadPump &&
@@ -631,7 +640,7 @@ class StationController extends Notifier<StationState> {
         nextStatus == DispenserRunState.cycleComplete && !suppressConfirm;
     double amountPkr = packet.amountPkr;
     double volumeLiters = packet.volumeLiters;
-    if (holdComplete && volumeLiters.abs() < DispenserBay.zeroVolumeEpsilon) {
+    if (holdComplete && volumeLiters.abs() < DispenserUnit.zeroVolumeEpsilon) {
       volumeLiters = previous.volumeLiters;
       amountPkr = previous.amountPkr;
     }
@@ -644,7 +653,7 @@ class StationController extends Notifier<StationState> {
     double? cycleOpening = previous.cycleOpeningMeter;
     if (packet.status == DispenserRunState.dispensing && cycleOpening == null) {
       if (!previous.isDispensing ||
-          previous.volumeLiters.abs() < DispenserBay.zeroVolumeEpsilon) {
+          previous.volumeLiters.abs() < DispenserUnit.zeroVolumeEpsilon) {
         cycleOpening = previous.meterCount;
       }
     } else if (!suppressConfirm &&
@@ -656,7 +665,7 @@ class StationController extends Notifier<StationState> {
 
     final bool latchTest = previous.testMode || previous.testCycle;
 
-    _patchBay(
+    _patchUnit(
       packet.unitId,
       previous.copyWith(
         status: nextStatus,
@@ -690,8 +699,8 @@ class StationController extends Notifier<StationState> {
     DispenserTelemetry packet, {
     required bool showNotice,
   }) async {
-    final DispenserBay previous = state.bay(packet.unitId);
-    _patchBay(
+    final DispenserUnit previous = state.unit(packet.unitId);
+    _patchUnit(
       packet.unitId,
       previous.copyWith(
         status: DispenserRunState.idle,
@@ -726,14 +735,14 @@ class StationController extends Notifier<StationState> {
     _syncBuzzer();
     unawaited(_sockets.requestSyncLog(unitId));
     if (_suppressConfirmUntilReset.contains(unitId)) {
-      unawaited(_sockets.confirmBay(unitId));
+      unawaited(_sockets.confirmUnit(unitId));
     }
   }
 
   void _onOffline(int unitId) {
     final UnitEndpoint current = state.endpoint(unitId);
-    final DispenserBay bay = state.bay(unitId);
-    if (!current.connected && (bay.isOffline || bay.isCycleComplete)) {
+    final DispenserUnit unit = state.unit(unitId);
+    if (!current.connected && (unit.isOffline || unit.isCycleComplete)) {
       return;
     }
     final Map<int, UnitEndpoint> endpoints = Map<int, UnitEndpoint>.from(
@@ -741,9 +750,9 @@ class StationController extends Notifier<StationState> {
     );
     endpoints[unitId] = current.copyWith(connected: false);
     if (shouldEnforceStationGuards &&
-        !bay.isDispensing &&
-        !bay.isCycleComplete) {
-      _patchBay(unitId, bay.copyWith(status: DispenserRunState.offline));
+        !unit.isDispensing &&
+        !unit.isCycleComplete) {
+      _patchUnit(unitId, unit.copyWith(status: DispenserRunState.offline));
     }
     state = state.copyWith(endpoints: endpoints);
     ref.read(dispenserMonitorProvider.notifier).markSocketClosed(unitId);
@@ -765,6 +774,17 @@ class StationController extends Notifier<StationState> {
       final List<SaleTransaction> appRows = (await _salesDb.all(
         includeTest: true,
       )).where((SaleTransaction row) => row.unitId == unitId).toList();
+      final List<EspTokenLogRow> sorted = List<EspTokenLogRow>.from(unitRows)
+        ..sort((EspTokenLogRow a, EspTokenLogRow b) {
+          final DateTime aAt = a.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final DateTime bAt = b.at ?? DateTime.fromMillisecondsSinceEpoch(0);
+          return bAt.compareTo(aAt);
+        });
+      final Map<int, List<EspTokenLogRow>> logs = Map<int, List<EspTokenLogRow>>.from(
+        ref.read(espLastTenByUnitProvider),
+      );
+      logs[unitId] = sorted;
+      ref.read(espLastTenByUnitProvider.notifier).state = logs;
       final List<EspTokenLogRow> missing = missingEspTokenRows(
         espRows: unitRows,
         appRows: appRows,
@@ -811,11 +831,11 @@ class StationController extends Notifier<StationState> {
   }
 
   void _bindPendingSavedSale(int unitId, SaleTransaction saved) {
-    final DispenserBay latest = state.bay(unitId);
+    final DispenserUnit latest = state.unit(unitId);
     if (!latest.isCycleComplete || latest.pendingSavedToken != 0) {
       return;
     }
-    _patchBay(
+    _patchUnit(
       unitId,
       latest.copyWith(
         pendingSavedToken: saved.tokenNo,
@@ -835,46 +855,45 @@ class StationController extends Notifier<StationState> {
         const <EspTokenLogRow>[];
   }
 
-  Future<SaleTransaction?> recoverEspLogRow(EspTokenLogRow row) async {
-    if (state.bay(row.unitId).isTestRun) {
+  void requestEspSyncLog(int unitId) {
+    unawaited(_sockets.requestSyncLog(unitId));
+  }
+
+  Future<SaleTransaction?> recoverEspLogRow(
+    EspTokenLogRow row, {
+    PaymentMethod payment = PaymentMethod.cash,
+    String customerName = '',
+    String vehicleNo = '',
+    String customerId = '',
+    double cashNow = 0,
+  }) async {
+    if (state.unit(row.unitId).isTestRun) {
       return null;
     }
     final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-    final ManagerShiftRecord? activeShift = workspace.activeShift;
+    final OperatorShiftRecord? activeShift = workspace.activeShift;
     if (shouldEnforceStationGuards &&
         (activeShift == null || !activeShift.isOpen)) {
       return null;
     }
-    int tokenNo = row.token;
-    SaleTransaction? existing = await _salesDb.byToken(tokenNo);
-    if (existing != null) {
-      unawaited(_sockets.ackToken(unitId: row.unitId, token: row.token));
-      dismissEspRecoverOffer(row);
-      _bindPendingSavedSale(row.unitId, existing);
-      return existing;
-    }
     final int unitId = row.unitId;
-    final int sequence = state.sequences[unitId] ?? 1;
-    if (tokenNo < 1) {
-      tokenNo = tokenIdFor(unitId: unitId, sequence: sequence);
-    }
-    existing = await _salesDb.byToken(tokenNo);
-    if (existing != null) {
-      unawaited(_sockets.ackToken(unitId: unitId, token: row.token));
-      dismissEspRecoverOffer(row);
-      _bindPendingSavedSale(unitId, existing);
-      return existing;
-    }
-    final DispenserBay bay = state.bay(unitId);
+    final int tokenNo = await _allocateUnusedToken(unitId);
+    final DispenserUnit unit = state.unit(unitId);
     final HelperProfile? assigned = helperOnUnit(workspace.helpers, unitId);
     final double volumeLiters = parseFuel(row.volumeLiters).toDouble();
     final double rate = parseFuel(row.rate).toDouble();
     final double amountPkr = roundRupees(row.amountPkr).toDouble();
+    final ({PaymentMethod payment, double cashAmount, double accountAmount})
+    split = resolveAccountSplit(
+      payment: payment,
+      saleAmount: amountPkr,
+      cashNow: cashNow,
+    );
     final double opening = row.meterCount - volumeLiters;
     final SaleTransaction txn = SaleTransaction(
       tokenNo: tokenNo,
       unitId: unitId,
-      fuelType: bay.fuelType,
+      fuelType: unit.fuelType,
       amountPkr: amountPkr,
       volumeLiters: volumeLiters,
       rate: rate,
@@ -882,30 +901,42 @@ class StationController extends Notifier<StationState> {
       timestamp: row.at ?? DateTime.now(),
       openingMeter: opening < 0 ? 0 : opening,
       closingMeter: row.meterCount,
-      payment: PaymentMethod.cash,
-      cashierName: SalesTransactionRepository.managerNameFor(
+      customerName: customerName.trim().isEmpty ? 'Walk-in' : customerName.trim(),
+      vehicleNo: persistVehicleNo(vehicleNo),
+      payment: split.payment,
+      cashierName: SalesTransactionRepository.operatorNameFor(
         shift: activeShift,
-        fallbackName: activeShift?.managerName ?? 'Cashier',
+        fallbackName: activeShift?.operatorName ?? 'Operator',
       ),
       helperName: assigned?.name ?? '',
       shiftId: activeShift?.shiftId ?? '',
-      cashAmount: amountPkr,
-      espTxId: '',
+      cashAmount: split.cashAmount,
+      accountAmount: split.accountAmount,
+      pendingAccountAmount: split.payment == PaymentMethod.bankAccount ||
+              split.payment == PaymentMethod.easyPaisa
+          ? split.accountAmount
+          : 0,
+      notes: 'RECOVERED',
+      saleType: 'RECOVERED',
+      espTxId: row.token > 0 ? '${row.token}' : '',
     );
     try {
       await _salesDb.insertCommittedSale(
         txn: txn,
-        managerId: SalesTransactionRepository.managerIdFor(activeShift),
-        managerName: SalesTransactionRepository.managerNameFor(
+        operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
+        operatorName: SalesTransactionRepository.operatorNameFor(
           shift: activeShift,
           fallbackName: txn.cashierName,
         ),
-        managerPin: SalesTransactionRepository.managerPinFor(
-          managers: workspace.managers,
-          managerId: SalesTransactionRepository.managerIdFor(activeShift),
+        operatorPin: SalesTransactionRepository.operatorPinFor(
+          operators: workspace.operators,
+          operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
         ),
         helperId: assigned?.id,
         helperName: assigned?.name,
+        creditCustomerId: split.payment == PaymentMethod.udhaar
+            ? customerId.trim()
+            : null,
         creditShiftId: activeShift?.shiftId,
       );
     } catch (error, stack) {
@@ -916,12 +947,7 @@ class StationController extends Notifier<StationState> {
     if (saved == null) {
       return null;
     }
-    final int recoveredSeq = sequenceFromToken(saved.tokenNo, unitId);
-    if (recoveredSeq >= sequence) {
-      final Map<int, int> sequences = Map<int, int>.from(state.sequences);
-      sequences[unitId] = recoveredSeq + 1;
-      state = state.copyWith(sequences: sequences);
-    }
+    _advanceSequencePast(unitId, saved.tokenNo);
     await _refreshCommittedSales();
     bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
     unawaited(_sockets.ackToken(unitId: unitId, token: row.token));
@@ -929,24 +955,25 @@ class StationController extends Notifier<StationState> {
       unawaited(_sockets.ackToken(unitId: unitId, token: saved.tokenNo));
     }
     dismissEspRecoverOffer(row);
-    _bindPendingSavedSale(unitId, saved);
+    unawaited(ref.read(lowStockAlertProvider.notifier).sync());
     return saved;
   }
 
   SaleTransaction _draftSale({
     required int unitId,
-    required DispenserBay bay,
+    required DispenserUnit unit,
     required String customerName,
     required String vehicleNo,
     required PaymentMethod payment,
-    String cashierName = 'Cashier',
+    String cashierName = 'Operator',
     double cashAmount = 0,
     int? tokenNo,
+    String saleType = '',
   }) {
     final int resolvedToken =
         tokenNo ??
-        (bay.pendingSavedToken != 0
-            ? bay.pendingSavedToken
+        (unit.pendingSavedToken != 0
+            ? unit.pendingSavedToken
             : tokenIdFor(
                 unitId: unitId,
                 sequence: state.sequences[unitId] ?? 1,
@@ -956,29 +983,29 @@ class StationController extends Notifier<StationState> {
     final String resolvedCustomer = customerName.trim().isEmpty
         ? 'Walk-in'
         : customerName.trim();
-    final double openingMeter = bay.cycleOpeningMeter ?? 0;
-    final double closingMeter = bay.meterCount;
+    final double openingMeter = unit.cycleOpeningMeter ?? 0;
+    final double closingMeter = unit.meterCount;
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
     split = resolveAccountSplit(
       payment: payment,
-      saleAmount: bay.amountPkr,
+      saleAmount: unit.amountPkr,
       cashNow: cashAmount,
     );
     return SaleTransaction(
       tokenNo: resolvedToken,
       unitId: unitId,
-      fuelType: bay.fuelType,
-      amountPkr: bay.amountPkr,
-      volumeLiters: bay.volumeLiters,
-      rate: bay.rate,
+      fuelType: unit.fuelType,
+      amountPkr: unit.amountPkr,
+      volumeLiters: unit.volumeLiters,
+      rate: unit.rate,
       meterCount: closingMeter.truncate(),
       timestamp: DateTime.now(),
       openingMeter: openingMeter,
       closingMeter: closingMeter,
       customerName: resolvedCustomer,
-      vehicleNo: vehicleNo.trim(),
+      vehicleNo: persistVehicleNo(vehicleNo),
       payment: split.payment,
-      cashierName: SalesTransactionRepository.managerNameFor(
+      cashierName: SalesTransactionRepository.operatorNameFor(
         shift: workspace.activeShift,
         fallbackName: cashierName,
       ),
@@ -986,6 +1013,10 @@ class StationController extends Notifier<StationState> {
       shiftName: 'Morning',
       cashAmount: split.cashAmount,
       accountAmount: split.accountAmount,
+      drumQty: 0,
+      saleType: saleType.isEmpty
+          ? (isVehicleRegistrationValid(vehicleNo) ? 'VEHICLE' : '')
+          : saleType,
     );
   }
 
@@ -1034,45 +1065,45 @@ class StationController extends Notifier<StationState> {
   }
 
   Future<SaleTransaction?> _insertCashCompletedSale(int unitId) async {
-    DispenserBay bay = state.bay(unitId);
-    if (bay.isTestRun) {
+    DispenserUnit unit = state.unit(unitId);
+    if (unit.isTestRun) {
       return null;
     }
-    if (bay.pendingSavedToken != 0) {
-      return _salesDb.byToken(bay.pendingSavedToken);
+    if (unit.pendingSavedToken != 0) {
+      return _salesDb.byToken(unit.pendingSavedToken);
     }
     final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-    final ManagerShiftRecord? activeShift = workspace.activeShift;
+    final OperatorShiftRecord? activeShift = workspace.activeShift;
     if (shouldEnforceStationGuards &&
         (activeShift == null || !activeShift.isOpen)) {
       debugPrint('Cash auto-save blocked: no LIVE shift');
       return null;
     }
-    bay = state.bay(unitId);
+    unit = state.unit(unitId);
     final HelperProfile? assigned = helperOnUnit(workspace.helpers, unitId);
     final int tokenNo = await _allocateUnusedToken(unitId);
-    if (state.bay(unitId).isTestRun) {
+    if (state.unit(unitId).isTestRun) {
       return null;
     }
     final SaleTransaction txn = _draftSale(
       unitId: unitId,
-      bay: bay,
+      unit: unit,
       customerName: '',
       vehicleNo: '',
       payment: PaymentMethod.cash,
-      cashierName: activeShift?.managerName ?? 'Cashier',
+      cashierName: activeShift?.operatorName ?? 'Operator',
       tokenNo: tokenNo,
     ).copyWith(shiftId: activeShift?.shiftId ?? '', espTxId: '');
     await _salesDb.insertCommittedSale(
       txn: txn,
-      managerId: SalesTransactionRepository.managerIdFor(activeShift),
-      managerName: SalesTransactionRepository.managerNameFor(
+      operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
+      operatorName: SalesTransactionRepository.operatorNameFor(
         shift: activeShift,
-        fallbackName: activeShift?.managerName ?? txn.cashierName,
+        fallbackName: activeShift?.operatorName ?? txn.cashierName,
       ),
-      managerPin: SalesTransactionRepository.managerPinFor(
-        managers: workspace.managers,
-        managerId: SalesTransactionRepository.managerIdFor(activeShift),
+      operatorPin: SalesTransactionRepository.operatorPinFor(
+        operators: workspace.operators,
+        operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
       ),
       helperId: assigned?.id,
       helperName: assigned?.name,
@@ -1083,8 +1114,8 @@ class StationController extends Notifier<StationState> {
       return null;
     }
     _advanceSequencePast(unitId, saved.tokenNo);
-    final DispenserBay latest = state.bay(unitId);
-    _patchBay(
+    final DispenserUnit latest = state.unit(unitId);
+    _patchUnit(
       unitId,
       latest.copyWith(
         pendingSavedToken: saved.tokenNo,
@@ -1128,7 +1159,7 @@ class StationController extends Notifier<StationState> {
       return null;
     }
     final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-    final ManagerShiftRecord? activeShift = workspace.activeShift;
+    final OperatorShiftRecord? activeShift = workspace.activeShift;
     if (shouldEnforceStationGuards &&
         (activeShift == null || !activeShift.isOpen)) {
       debugPrint('Direct sale blocked: no LIVE shift');
@@ -1154,9 +1185,9 @@ class StationController extends Notifier<StationState> {
       customerName: name.isEmpty ? 'Walk-in' : name,
       vehicleNo: '',
       payment: PaymentMethod.cash,
-      cashierName: SalesTransactionRepository.managerNameFor(
+      cashierName: SalesTransactionRepository.operatorNameFor(
         shift: activeShift,
-        fallbackName: activeShift?.managerName ?? 'Cashier',
+        fallbackName: activeShift?.operatorName ?? 'Operator',
       ),
       shiftId: '',
       cashAmount: amountPkr.toDouble(),
@@ -1165,14 +1196,14 @@ class StationController extends Notifier<StationState> {
     );
     await _salesDb.insertCommittedSale(
       txn: txn,
-      managerId: SalesTransactionRepository.managerIdFor(activeShift),
-      managerName: SalesTransactionRepository.managerNameFor(
+      operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
+      operatorName: SalesTransactionRepository.operatorNameFor(
         shift: activeShift,
         fallbackName: txn.cashierName,
       ),
-      managerPin: SalesTransactionRepository.managerPinFor(
-        managers: workspace.managers,
-        managerId: SalesTransactionRepository.managerIdFor(activeShift),
+      operatorPin: SalesTransactionRepository.operatorPinFor(
+        operators: workspace.operators,
+        operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
       ),
       creditShiftId: null,
     );
@@ -1222,8 +1253,10 @@ class StationController extends Notifier<StationState> {
       return;
     }
     try {
-      final DispenserBay bay = state.bay(unitId);
-      if (bay.isTestRun || !bay.isCycleComplete || bay.pendingSavedToken != 0) {
+      final DispenserUnit unit = state.unit(unitId);
+      if (unit.isTestRun ||
+          !unit.isCycleComplete ||
+          unit.pendingSavedToken != 0) {
         return;
       }
       await _insertCashCompletedSale(unitId);
@@ -1235,34 +1268,43 @@ class StationController extends Notifier<StationState> {
   }
 
   /// Live preview from the unit card. Does not change payment in SQLite.
-  bool previewReceiptForBay({
+  bool previewReceiptForUnit({
     required int unitId,
     required String customerName,
     required String vehicleNo,
     required PaymentMethod payment,
     double cashNow = 0,
   }) {
-    final DispenserBay bay = state.bay(unitId);
-    if (!bay.canConfirmPayment) {
+    final DispenserUnit unit = state.unit(unitId);
+    if (!unit.canConfirmPayment) {
       return false;
     }
-    if (bay.isTestRun) {
+    if (!unit.isTestRun && !isVehicleRegistrationValid(vehicleNo)) {
       return false;
     }
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
     split = resolveAccountSplit(
       payment: payment,
-      saleAmount: bay.amountPkr,
+      saleAmount: unit.amountPkr,
       cashNow: cashNow,
     );
-    final SaleTransaction draft = _draftSale(
+    SaleTransaction draft = _draftSale(
       unitId: unitId,
-      bay: bay,
+      unit: unit,
       customerName: customerName,
       vehicleNo: vehicleNo,
       payment: split.payment,
       cashAmount: split.cashAmount,
     );
+    if (unit.isTestRun) {
+      draft = draft.copyWith(
+        isTest: true,
+        notes: 'TEST_METER',
+        cashAmount: 0,
+        accountAmount: 0,
+        pendingAccountAmount: 0,
+      );
+    }
     final Map<int, SaleTransaction> next = Map<int, SaleTransaction>.from(
       ref.read(receiptOverlayTxnsProvider),
     );
@@ -1271,31 +1313,44 @@ class StationController extends Notifier<StationState> {
     return true;
   }
 
-  SaleTransaction? receiptDraftForBay({
+  SaleTransaction? receiptDraftForUnit({
     required int unitId,
     required String customerName,
     required String vehicleNo,
     required PaymentMethod payment,
     double cashNow = 0,
   }) {
-    final DispenserBay bay = state.bay(unitId);
-    if (!bay.canConfirmPayment || bay.isTestRun) {
+    final DispenserUnit unit = state.unit(unitId);
+    if (!unit.canConfirmPayment) {
+      return null;
+    }
+    if (!unit.isTestRun && !isVehicleRegistrationValid(vehicleNo)) {
       return null;
     }
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
     split = resolveAccountSplit(
       payment: payment,
-      saleAmount: bay.amountPkr,
+      saleAmount: unit.amountPkr,
       cashNow: cashNow,
     );
-    return _draftSale(
+    SaleTransaction draft = _draftSale(
       unitId: unitId,
-      bay: bay,
+      unit: unit,
       customerName: customerName,
       vehicleNo: vehicleNo,
       payment: split.payment,
       cashAmount: split.cashAmount,
     );
+    if (unit.isTestRun) {
+      draft = draft.copyWith(
+        isTest: true,
+        notes: 'TEST_METER',
+        cashAmount: 0,
+        accountAmount: 0,
+        pendingAccountAmount: 0,
+      );
+    }
+    return draft;
   }
 
   void _dismissReceiptOverlay(int unitId) {
@@ -1310,35 +1365,40 @@ class StationController extends Notifier<StationState> {
   }
 
   void setUnitTestMode(int unitId, {required bool enabled}) {
-    final DispenserBay bay = state.bay(unitId);
-    if (!enabled && bay.isDispensing) {
+    final DispenserUnit unit = state.unit(unitId);
+    if (!enabled && unit.isDispensing) {
       return;
     }
-    _patchBay(
+    _patchUnit(
       unitId,
-      bay.copyWith(
+      unit.copyWith(
         testMode: enabled,
-        testCycle: enabled ? bay.testCycle : false,
+        testCycle: enabled ? unit.testCycle : false,
       ),
     );
   }
 
-  Future<SaleTransaction?> _confirmTestMeterCycle(int unitId) async {
+  Future<SaleTransaction?> _confirmTestMeterCycle(
+    int unitId, {
+    String vehicleNo = '',
+    int drumQty = 0,
+    String saleType = '',
+  }) async {
     if (_confirmInFlight.contains(unitId)) {
       return null;
     }
-    DispenserBay bay = state.bay(unitId);
-    if (!bay.canConfirmPayment) {
+    DispenserUnit unit = state.unit(unitId);
+    if (!unit.canConfirmPayment) {
       return null;
     }
     _confirmInFlight.add(unitId);
     _pendingConfirmUnits.remove(unitId);
     _suppressConfirmUntilReset.add(unitId);
-    _confirmedLiters[unitId] = bay.volumeLiters;
+    _confirmedLiters[unitId] = unit.volumeLiters;
     _buzzer.stop();
     try {
       final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-      final ManagerShiftRecord? activeShift = workspace.activeShift;
+      final OperatorShiftRecord? activeShift = workspace.activeShift;
       if (shouldEnforceStationGuards &&
           (activeShift == null || !activeShift.isOpen)) {
         debugPrint('Test meter save blocked: no LIVE shift');
@@ -1351,15 +1411,15 @@ class StationController extends Notifier<StationState> {
       while (_autoSaving.contains(unitId)) {
         await Future<void>.delayed(const Duration(milliseconds: 16));
       }
-      bay = state.bay(unitId);
-      final double closing = bay.meterCount;
+      unit = state.unit(unitId);
+      final double closing = unit.meterCount;
       final HelperProfile? assigned = helperOnUnit(workspace.helpers, unitId);
       final SaleTransaction txn;
-      if (bay.pendingSavedToken != 0) {
+      if (unit.pendingSavedToken != 0) {
         final SaleTransaction? converted = await _salesDb
             .convertCommittedSaleToTest(
-              tokenNo: bay.pendingSavedToken,
-              volumeLiters: bay.volumeLiters,
+              tokenNo: unit.pendingSavedToken,
+              volumeLiters: unit.volumeLiters,
             );
         if (converted == null) {
           _pendingConfirmUnits.add(unitId);
@@ -1375,18 +1435,34 @@ class StationController extends Notifier<StationState> {
           accountAmount: 0,
           pendingAccountAmount: 0,
           customerName: 'TEST',
+          vehicleNo: vehicleNo,
+          drumQty: drumQty,
+          saleType: saleType,
+        );
+        await _salesDb.updateMetadata(
+          tokenNo: txn.tokenNo,
+          customerName: 'TEST',
+          vehicleNo: vehicleNo,
+          payment: PaymentMethod.cash,
+          cashAmount: 0,
+          accountAmount: 0,
+          pendingAccountAmount: 0,
+          edited: false,
+          drumQty: drumQty,
+          saleType: saleType,
         );
       } else {
         final int tokenNo = await _allocateUnusedToken(unitId);
         txn =
             _draftSale(
               unitId: unitId,
-              bay: bay,
+              unit: unit,
               customerName: 'TEST',
-              vehicleNo: '',
+              vehicleNo: vehicleNo,
               payment: PaymentMethod.cash,
-              cashierName: activeShift?.managerName ?? 'Cashier',
+              cashierName: activeShift?.operatorName ?? 'Operator',
               tokenNo: tokenNo,
+              saleType: saleType,
             ).copyWith(
               timestamp: DateTime.now(),
               shiftId: activeShift?.shiftId ?? '',
@@ -1399,14 +1475,14 @@ class StationController extends Notifier<StationState> {
             );
         await _salesDb.insertCommittedSale(
           txn: txn,
-          managerId: SalesTransactionRepository.managerIdFor(activeShift),
-          managerName: SalesTransactionRepository.managerNameFor(
+          operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
+          operatorName: SalesTransactionRepository.operatorNameFor(
             shift: activeShift,
-            fallbackName: activeShift?.managerName ?? txn.cashierName,
+            fallbackName: activeShift?.operatorName ?? txn.cashierName,
           ),
-          managerPin: SalesTransactionRepository.managerPinFor(
-            managers: workspace.managers,
-            managerId: SalesTransactionRepository.managerIdFor(activeShift),
+          operatorPin: SalesTransactionRepository.operatorPinFor(
+            operators: workspace.operators,
+            operatorId: SalesTransactionRepository.operatorIdFor(activeShift),
           ),
           helperId: assigned?.id,
           helperName: assigned?.name,
@@ -1414,7 +1490,7 @@ class StationController extends Notifier<StationState> {
         );
         _advanceSequencePast(unitId, txn.tokenNo);
       }
-      unawaited(_sockets.confirmBay(unitId));
+      unawaited(_sockets.confirmUnit(unitId));
       if (assigned != null || activeShift != null) {
         ref
             .read(shiftWorkspaceProvider.notifier)
@@ -1430,9 +1506,9 @@ class StationController extends Notifier<StationState> {
                 rate: txn.rate,
                 amountPkr: txn.amountPkr,
                 payment: txn.payment,
-                managerId: activeShift?.managerId ?? '',
+                operatorId: activeShift?.operatorId ?? '',
                 shiftId: activeShift?.shiftId ?? '',
-                cashierName: activeShift?.managerName ?? txn.cashierName,
+                cashierName: activeShift?.operatorName ?? txn.cashierName,
                 cashAmount: 0,
                 accountAmount: 0,
                 pendingAccountAmount: 0,
@@ -1440,16 +1516,17 @@ class StationController extends Notifier<StationState> {
                 closingMeter: txn.closingMeter,
                 customerName: txn.customerName,
                 vehicleNo: txn.vehicleNo,
-                managerStaffId: activeShift?.managerId ?? '',
+                operatorStaffId: activeShift?.operatorId ?? '',
                 helperStaffId: assigned?.id ?? '',
                 actions: txn.notes,
                 isTest: true,
+                drumQty: txn.drumQty,
               ),
             );
       }
-      _patchBay(
+      _patchUnit(
         unitId,
-        bay.copyWith(
+        unit.copyWith(
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -1479,27 +1556,35 @@ class StationController extends Notifier<StationState> {
     }
   }
 
-  Future<SaleTransaction?> confirmAndClearBay({
+  Future<SaleTransaction?> confirmAndClearUnit({
     required int unitId,
     required String customerName,
     required String vehicleNo,
     required PaymentMethod payment,
-    String cashierName = 'Cashier',
+    String cashierName = 'Operator',
     String customerId = '',
     double cashNow = 0,
   }) async {
     if (_confirmInFlight.contains(unitId)) {
       return null;
     }
-    DispenserBay bay = state.bay(unitId);
-    if (!bay.canConfirmPayment) {
+    DispenserUnit unit = state.unit(unitId);
+    if (!unit.canConfirmPayment) {
       return null;
     }
-    if (vehicleNo.trim().isEmpty) {
+    final String persistVehicle = persistVehicleNo(vehicleNo);
+    if (!unit.isTestRun && persistVehicle.isEmpty) {
       return null;
     }
-    if (bay.isTestRun) {
-      return _confirmTestMeterCycle(unitId);
+    const int persistDrums = 0;
+    final String fulfillment = persistVehicle.isEmpty ? '' : 'VEHICLE';
+    if (unit.isTestRun) {
+      return _confirmTestMeterCycle(
+        unitId,
+        vehicleNo: persistVehicle,
+        drumQty: persistDrums,
+        saleType: fulfillment,
+      );
     }
     if (payment == PaymentMethod.udhaar && customerId.trim().isEmpty) {
       return null;
@@ -1507,7 +1592,7 @@ class StationController extends Notifier<StationState> {
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
     split = resolveAccountSplit(
       payment: payment,
-      saleAmount: bay.amountPkr,
+      saleAmount: unit.amountPkr,
       cashNow: cashNow,
     );
     final PaymentMethod tender = split.payment;
@@ -1525,7 +1610,7 @@ class StationController extends Notifier<StationState> {
     _buzzer.stop();
     try {
       final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-      final ManagerShiftRecord? activeShift = workspace.activeShift;
+      final OperatorShiftRecord? activeShift = workspace.activeShift;
       if (shouldEnforceStationGuards &&
           (activeShift == null || !activeShift.isOpen)) {
         debugPrint('Sale blocked: no LIVE shift');
@@ -1534,13 +1619,13 @@ class StationController extends Notifier<StationState> {
       }
       _pendingConfirmUnits.remove(unitId);
       _suppressConfirmUntilReset.add(unitId);
-      _confirmedLiters[unitId] = bay.volumeLiters;
+      _confirmedLiters[unitId] = unit.volumeLiters;
       SaleTransaction? txn;
-      if (bay.pendingSavedToken != 0) {
-        txn = await _salesDb.byToken(bay.pendingSavedToken);
+      if (unit.pendingSavedToken != 0) {
+        txn = await _salesDb.byToken(unit.pendingSavedToken);
       }
       txn ??= await _insertCashCompletedSale(unitId);
-      bay = state.bay(unitId);
+      unit = state.unit(unitId);
       if (txn == null) {
         _pendingConfirmUnits.add(unitId);
         _suppressConfirmUntilReset.remove(unitId);
@@ -1552,19 +1637,22 @@ class StationController extends Notifier<StationState> {
         saved: txn,
         payment: tender,
         customerName: customerName,
-        vehicleNo: vehicleNo,
+        vehicleNo: persistVehicle,
         cashAmount: held.cashAmount,
         accountAmount: held.accountAmount,
         pendingAccountAmount: held.pendingAccountAmount,
+        drumQty: persistDrums,
       )) {
         await _salesDb.applyConfirmTender(
           txn: txn,
           payment: tender,
           customerName: customerName,
-          vehicleNo: vehicleNo,
+          vehicleNo: persistVehicle,
           cashAmount: held.cashAmount,
           accountAmount: held.accountAmount,
           pendingAccountAmount: held.pendingAccountAmount,
+          drumQty: persistDrums,
+          saleType: fulfillment,
           creditCustomerId: tender == PaymentMethod.udhaar
               ? customerId.trim()
               : null,
@@ -1577,10 +1665,12 @@ class StationController extends Notifier<StationState> {
               customerName: customerName.trim().isEmpty
                   ? 'Walk-in'
                   : customerName.trim(),
-              vehicleNo: vehicleNo.trim(),
+              vehicleNo: persistVehicle,
               cashAmount: held.cashAmount,
               accountAmount: held.accountAmount,
               pendingAccountAmount: held.pendingAccountAmount,
+              drumQty: persistDrums,
+              saleType: fulfillment,
             );
       }
       final HelperProfile? assigned = helperOnUnit(workspace.helpers, unitId);
@@ -1599,9 +1689,9 @@ class StationController extends Notifier<StationState> {
                 rate: txn.rate,
                 amountPkr: txn.amountPkr,
                 payment: txn.payment,
-                managerId: activeShift?.managerId ?? '',
+                operatorId: activeShift?.operatorId ?? '',
                 shiftId: activeShift?.shiftId ?? '',
-                cashierName: activeShift?.managerName ?? txn.cashierName,
+                cashierName: activeShift?.operatorName ?? txn.cashierName,
                 cashAmount: txn.cashAmount,
                 accountAmount: txn.accountAmount,
                 pendingAccountAmount: txn.pendingAccountAmount,
@@ -1609,25 +1699,26 @@ class StationController extends Notifier<StationState> {
                 closingMeter: txn.closingMeter,
                 customerName: txn.customerName,
                 vehicleNo: txn.vehicleNo,
-                managerStaffId: activeShift?.managerId ?? '',
+                operatorStaffId: activeShift?.operatorId ?? '',
                 helperStaffId: assigned?.id ?? '',
                 actions: txn.notes,
                 espTxId: txn.espTxId,
                 edited: txn.edited,
                 isTest: txn.isTest,
+                drumQty: txn.drumQty,
               ),
             );
       }
       if (tender == PaymentMethod.udhaar) {
         _printer.enqueue(txn);
       }
-      unawaited(_sockets.confirmBay(unitId, token: txn.tokenNo));
+      unawaited(_sockets.confirmUnit(unitId, token: txn.tokenNo));
       unawaited(_sockets.ackToken(unitId: unitId, token: txn.tokenNo));
       _lastPumpingLiters.remove(unitId);
       final double closingMeter = txn.closingMeter;
-      _patchBay(
+      _patchUnit(
         unitId,
-        bay.copyWith(
+        unit.copyWith(
           status: DispenserRunState.idle,
           amountPkr: 0,
           volumeLiters: 0,
@@ -1674,13 +1765,13 @@ class StationController extends Notifier<StationState> {
     if (!kDebugMode) {
       return;
     }
-    final DispenserBay bay = state.bay(unitId);
+    final DispenserUnit unit = state.unit(unitId);
     final double liters = 5.0 + _demoLitersRandom.nextDouble() * 40.0;
     _simulator.simulateDispense(
       unitId: unitId,
       rate: MockTelemetrySimulator.demoSaleRate,
       targetLiters: liters,
-      meterCount: bay.meterCount,
+      meterCount: unit.meterCount,
       keypadLocked: false,
     );
   }
@@ -1689,12 +1780,12 @@ class StationController extends Notifier<StationState> {
     if (!kDebugMode) {
       return;
     }
-    final DispenserBay bay = state.bay(unitId);
+    final DispenserUnit unit = state.unit(unitId);
     _simulator.simulateZeroVolumeAbort(
       unitId: unitId,
       rate: MockTelemetrySimulator.demoSaleRate,
-      meterCount: bay.meterCount,
-      keypadLocked: bay.keypadLocked,
+      meterCount: unit.meterCount,
+      keypadLocked: unit.keypadLocked,
     );
   }
 
@@ -1709,7 +1800,7 @@ class StationController extends Notifier<StationState> {
     if (lock) {
       _monitorUnlockTimers.remove(unitId)?.cancel();
     }
-    _patchBay(unitId, state.bay(unitId).copyWith(keypadLocked: lock));
+    _patchUnit(unitId, state.unit(unitId).copyWith(keypadLocked: lock));
     unawaited(_sendKeypadRelay(unitId: unitId, lock: lock));
   }
 
@@ -1727,28 +1818,28 @@ class StationController extends Notifier<StationState> {
   }
 
   void toggleMonitorKeypad(int unitId) {
-    if (state.bay(unitId).keypadLocked) {
+    if (state.unit(unitId).keypadLocked) {
       unlockKeypadTimed(unitId: unitId);
       return;
     }
     unawaited(setKeypadLock(unitId: unitId, lock: true));
   }
 
-  /// Emergency lockout across all bays. Fire-and-forget so POS stays live.
+  /// Emergency lockout across all units. Fire-and-forget so POS stays live.
   void lockAllKeypads() {
-    for (final int unitId in _liveBayIds()) {
+    for (final int unitId in _liveUnitIds()) {
       unawaited(setKeypadLock(unitId: unitId, lock: true));
     }
   }
 
   void toggleAllMonitorKeypads() {
-    final List<int> ids = _liveBayIds();
+    final List<int> ids = _liveUnitIds();
     final bool anyLocked = ids.any(
-      (int unitId) => state.bay(unitId).keypadLocked,
+      (int unitId) => state.unit(unitId).keypadLocked,
     );
     if (anyLocked) {
       for (final int unitId in ids) {
-        if (state.bay(unitId).keypadLocked) {
+        if (state.unit(unitId).keypadLocked) {
           unlockKeypadTimed(unitId: unitId);
         }
       }
@@ -1758,7 +1849,7 @@ class StationController extends Notifier<StationState> {
   }
 
   void unlockAllKeypads() {
-    for (final int unitId in _liveBayIds()) {
+    for (final int unitId in _liveUnitIds()) {
       if (_pendingConfirmUnits.contains(unitId)) {
         continue;
       }
@@ -1766,7 +1857,7 @@ class StationController extends Notifier<StationState> {
     }
   }
 
-  List<int> _liveBayIds() {
+  List<int> _liveUnitIds() {
     return visibleDispenserUnitIds(
       showUnit5: ref.read(settingsProvider).showUnit5,
     );
@@ -1790,33 +1881,33 @@ class StationController extends Notifier<StationState> {
     lockAllKeypads();
   }
 
-  Map<int, double> bayMeterSnapshot() {
+  Map<int, double> unitMeterSnapshot() {
     return <int, double>{
-      for (final DispenserBay bay in state.bays.values)
-        bay.unitId: bay.meterCount.toDouble(),
+      for (final DispenserUnit unit in state.units.values)
+        unit.unitId: unit.meterCount.toDouble(),
     };
   }
 
-  void testBayBuzzer(int unitId) {
+  void testUnitBuzzer(int unitId) {
     unawaited(_sockets.pingUnit(unitId: unitId));
   }
 
-  void pingResetBay(int unitId) {
+  void pingResetUnit(int unitId) {
     ref.read(dispenserMonitorProvider.notifier).markPingSent(unitId);
     unawaited(_sockets.pingUnit(unitId: unitId));
     unawaited(_sockets.reconnectUnit(unitId));
   }
 
-  void rescanBayWifi(int unitId) {
-    unawaited(_sockets.rescanBayWifi(unitId));
+  void rescanUnitWifi(int unitId) {
+    unawaited(_sockets.rescanUnitWifi(unitId));
   }
 
   void flushUartBuffer(int unitId) {
     unawaited(_sockets.flushUartBuffer(unitId));
   }
 
-  void resetBaySocket(int unitId) {
-    pingResetBay(unitId);
+  void resetUnitSocket(int unitId) {
+    pingResetUnit(unitId);
   }
 
   Future<void> _sendKeypadRelay({
@@ -1848,15 +1939,22 @@ class StationController extends Notifier<StationState> {
     );
     if (endpoints[unitId]!.connected) {
       unawaited(
-        _sockets.connectBay(unitId: unitId, host: host.trim(), port: port),
+        _sockets.connectUnit(unitId: unitId, host: host.trim(), port: port),
       );
     }
+  }
+
+  void resetFdxBoard(int unitId) {
+    if (state.unit(unitId).isDispensing) {
+      return;
+    }
+    unawaited(_sockets.resetFdx(unitId));
   }
 
   void connectUnit(int unitId) {
     final UnitEndpoint endpoint = state.endpoint(unitId);
     unawaited(
-      _sockets.connectBay(
+      _sockets.connectUnit(
         unitId: unitId,
         host: endpoint.host,
         port: endpoint.port,
@@ -1879,6 +1977,10 @@ class StationController extends Notifier<StationState> {
     double cashNow = 0,
     double saleAmount = 0,
   }) async {
+    final SaleTransaction? current = await _salesDb.byToken(tokenNo);
+    if (current == null || current.isAccountPending) {
+      return null;
+    }
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
     split = resolveAccountSplit(
       payment: payment,
@@ -1902,64 +2004,35 @@ class StationController extends Notifier<StationState> {
 
   Future<SaleTransaction?> confirmPendingAccountTransfer({
     required int tokenNo,
-    required double receivedAmount,
-    double? cashAmount,
+    required double cashAmount,
   }) async {
     final SaleTransaction? current = await _salesDb.byToken(tokenNo);
     if (current == null || !current.isAccountPending) {
       return null;
     }
-    final int sale = roundRupees(current.amountPkr);
-    final int received = roundRupees(receivedAmount).clamp(0, sale);
-    final int cash = cashAmount == null
-        ? roundRupees(current.cashAmount)
-        : roundRupees(cashAmount).clamp(0, sale);
+    final ({PaymentMethod payment, double cashAmount, double accountAmount})
+    confirmed = resolvePendingAccountConfirm(
+      payment: current.payment,
+      saleAmount: current.amountPkr,
+      cashAmount: cashAmount,
+    );
     final SaleTransaction? updated = await _salesDb.confirmPendingAccount(
       tokenNo: tokenNo,
-      receivedAmount: received.toDouble(),
-      cashAmount: cash.toDouble(),
+      receivedAmount: confirmed.accountAmount,
+      cashAmount: confirmed.cashAmount,
+      payment: confirmed.payment,
     );
     await _refreshCommittedSales();
     bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
     if (updated != null) {
-      final ShiftWorkspaceState workspace = ref.read(shiftWorkspaceProvider);
-      final HelperProfile? assigned = helperOnUnit(
-        workspace.helpers,
-        updated.unitId,
-      );
       ref
           .read(shiftWorkspaceProvider.notifier)
-          .recordSale(
-            HelperSaleRecord(
-              tokenNo: updated.tokenNo,
-              timestamp: updated.timestamp,
-              helperId: assigned?.id ?? '',
-              helperName: assigned?.name ?? updated.helperName,
-              unitId: updated.unitId,
-              fuelType: updated.fuelType,
-              volumeLiters: updated.volumeLiters,
-              rate: updated.rate,
-              amountPkr: updated.amountPkr,
-              payment: updated.payment,
-              managerId: workspace.activeShift?.managerId ?? '',
-              shiftId: updated.shiftId.isNotEmpty
-                  ? updated.shiftId
-                  : (workspace.activeShift?.shiftId ?? ''),
-              cashierName: updated.cashierName,
-              cashAmount: updated.cashAmount,
-              accountAmount: updated.accountAmount,
-              pendingAccountAmount: updated.pendingAccountAmount,
-              openingMeter: updated.openingMeter,
-              closingMeter: updated.closingMeter,
-              customerName: updated.customerName,
-              vehicleNo: updated.vehicleNo,
-              managerStaffId: workspace.activeShift?.managerId ?? '',
-              helperStaffId: assigned?.id ?? '',
-              actions: updated.notes,
-              espTxId: updated.espTxId,
-              edited: updated.edited,
-              isTest: updated.isTest,
-            ),
+          .patchSaleTender(
+            tokenNo: updated.tokenNo,
+            payment: updated.payment,
+            cashAmount: updated.cashAmount,
+            accountAmount: updated.accountAmount,
+            pendingAccountAmount: updated.pendingAccountAmount,
           );
     }
     return updated;
@@ -1991,7 +2064,7 @@ class StationController extends Notifier<StationState> {
     endpoints[unitId] = state.endpoint(unitId).copyWith(connected: false);
     state = state.copyWith(endpoints: endpoints);
     ref.read(dispenserMonitorProvider.notifier).markSocketClosed(unitId);
-    unawaited(_sockets.disconnectBay(unitId));
+    unawaited(_sockets.disconnectUnit(unitId));
   }
 }
 
@@ -2016,7 +2089,7 @@ final hardwareOfflineProvider = Provider<bool>((Ref ref) {
     return false;
   }
   final bool anyPacket = ids.any(
-    (int id) => station.bay(id).lastPacketAt != null,
+    (int id) => station.unit(id).lastPacketAt != null,
   );
   if (!anyPacket) {
     return false;

@@ -33,17 +33,17 @@ SaleTransaction _sale({
 }
 
 ShiftLedgerSummary _summary({
-  required ManagerShiftStatus status,
+  required OperatorShiftStatus status,
   Map<int, double> openingMeters = const <int, double>{1: 80},
   Map<int, double> closingMeters = const <int, double>{1: 120},
 }) {
   return ShiftLedgerSummary(
     shiftId: 'SHF-1',
-    managerId: 'mgr-1',
-    managerName: 'Saleem',
-    role: ManagerRole.manager,
+    operatorId: 'mgr-1',
+    operatorName: 'Saleem',
+    role: OperatorRole.operator,
     startTime: DateTime(2026, 9, 8, 8),
-    endTime: status == ManagerShiftStatus.open
+    endTime: status == OperatorShiftStatus.open
         ? null
         : DateTime(2026, 9, 8, 20),
     status: status,
@@ -59,7 +59,7 @@ void main() {
   group('shift transaction audit', () {
     test('passes a clean chronological chain', () {
       final ShiftTransactionAudit audit = auditShiftTransactions(
-        summary: _summary(status: ManagerShiftStatus.closed),
+        summary: _summary(status: OperatorShiftStatus.closed),
         rows: <SaleTransaction>[
           _sale(
             tokenNo: 4,
@@ -100,7 +100,7 @@ void main() {
     test('flags liters that do not match closing minus opening', () {
       final ShiftTransactionAudit audit = auditShiftTransactions(
         summary: _summary(
-          status: ManagerShiftStatus.closed,
+          status: OperatorShiftStatus.closed,
           openingMeters: const <int, double>{1: 80},
           closingMeters: const <int, double>{1: 90},
         ),
@@ -119,7 +119,7 @@ void main() {
     test('flags a chain gap between consecutive sales', () {
       final ShiftTransactionAudit audit = auditShiftTransactions(
         summary: _summary(
-          status: ManagerShiftStatus.closed,
+          status: OperatorShiftStatus.closed,
           openingMeters: const <int, double>{1: 80},
           closingMeters: const <int, double>{1: 110},
         ),
@@ -175,7 +175,7 @@ void main() {
 
     test('does not compare shift volume while the shift is live', () {
       final ShiftLedgerSummary live = _summary(
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         closingMeters: const <int, double>{},
       );
       expect(shiftVolumeLitersFor(summary: live, unitId: 1), isNull);
@@ -200,7 +200,7 @@ void main() {
       'live closing uses the latest sale meter and still marks continued',
       () {
         final ShiftLedgerSummary live = _summary(
-          status: ManagerShiftStatus.open,
+          status: OperatorShiftStatus.open,
           closingMeters: const <int, double>{},
         );
         final List<SaleTransaction> sales = <SaleTransaction>[
@@ -235,7 +235,7 @@ void main() {
     test('keeps unit chains separate', () {
       final ShiftTransactionAudit audit = auditShiftTransactions(
         summary: _summary(
-          status: ManagerShiftStatus.closed,
+          status: OperatorShiftStatus.closed,
           openingMeters: const <int, double>{1: 80, 2: 200},
           closingMeters: const <int, double>{1: 90, 2: 210},
         ),
@@ -254,7 +254,7 @@ void main() {
       () {
         final ShiftTransactionAudit audit = auditShiftTransactions(
           summary: _summary(
-            status: ManagerShiftStatus.closed,
+            status: OperatorShiftStatus.closed,
             openingMeters: const <int, double>{1: 80},
             closingMeters: const <int, double>{1: 105},
           ),
@@ -299,7 +299,7 @@ void main() {
 
     test('live closing follows the latest test fill', () {
       final ShiftLedgerSummary live = _summary(
-        status: ManagerShiftStatus.open,
+        status: OperatorShiftStatus.open,
         closingMeters: const <int, double>{},
       );
       final List<SaleTransaction> sales = <SaleTransaction>[

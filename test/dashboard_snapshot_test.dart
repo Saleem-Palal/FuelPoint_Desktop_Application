@@ -92,13 +92,13 @@ void main() {
     expect(snapshot.kpis.totalOutstandingPkr, 3600);
     expect(snapshot.kpis.activeDebtAccounts, 2);
 
-    final DashboardBayPerformance peak = snapshot.bays.firstWhere(
-      (DashboardBayPerformance bay) => bay.isPeakLane,
+    final DashboardUnitPerformance peak = snapshot.units.firstWhere(
+      (DashboardUnitPerformance unit) => unit.isPeakLane,
     );
     expect(peak.unitId, 2);
     expect(peak.volumeLiters, 40);
     expect(
-      snapshot.bays.where((DashboardBayPerformance b) => b.isPeakLane).length,
+      snapshot.units.where((DashboardUnitPerformance b) => b.isPeakLane).length,
       1,
     );
 
@@ -108,7 +108,7 @@ void main() {
     expect(snapshot.morningPeak.startHour, isNonNegative);
   });
 
-  test('last week bay range includes the previous calendar days', () {
+  test('last week unit range includes the previous calendar days', () {
     final DateTime now = DateTime(2026, 9, 2, 16, 40);
     final DashboardSnapshot snapshot = assembleDashboardSnapshot(
       sales: <SaleTransaction>[
@@ -127,17 +127,17 @@ void main() {
       ],
       accounts: const <CustomerAccount>[],
       now: now,
-      bayRange: DashboardRangePreset.lastWeek,
+      unitRange: DashboardRangePreset.lastWeek,
     );
-    final DashboardBayPerformance bay2 = snapshot.bays.firstWhere(
-      (DashboardBayPerformance bay) => bay.unitId == 2,
+    final DashboardUnitPerformance unit2 = snapshot.units.firstWhere(
+      (DashboardUnitPerformance unit) => unit.unitId == 2,
     );
-    expect(bay2.volumeLiters, 139);
-    expect(bay2.revenuePkr, 27800);
-    expect(bay2.txnCount, 2);
+    expect(unit2.volumeLiters, 139);
+    expect(unit2.revenuePkr, 27800);
+    expect(unit2.txnCount, 2);
   });
 
-  test('manager and helper cards total amount, volume, and transactions', () {
+  test('operator and helper cards total amount, volume, and transactions', () {
     final DateTime now = DateTime(2026, 9, 2, 16, 40);
     final DashboardSnapshot snapshot = assembleDashboardSnapshot(
       sales: <SaleTransaction>[
@@ -168,9 +168,9 @@ void main() {
       ],
       accounts: const <CustomerAccount>[],
       now: now,
-      managerRange: DashboardRangePreset.today,
+      operatorRange: DashboardRangePreset.today,
       helperRange: DashboardRangePreset.thisMonth,
-      managers: const <DashboardStaffMember>[
+      operators: const <DashboardStaffMember>[
         DashboardStaffMember(id: 'mgr-1', name: 'Amir R.'),
         DashboardStaffMember(id: 'mgr-2', name: 'Usman'),
       ],
@@ -180,11 +180,11 @@ void main() {
       ],
     );
 
-    expect(snapshot.managers.length, 2);
-    expect(snapshot.managers.first.revenuePkr, 6000);
-    expect(snapshot.managers.first.volumeLiters, 30);
-    expect(snapshot.managers.first.txnCount, 2);
-    expect(snapshot.managers.last.txnCount, 0);
+    expect(snapshot.operators.length, 2);
+    expect(snapshot.operators.first.revenuePkr, 6000);
+    expect(snapshot.operators.first.volumeLiters, 30);
+    expect(snapshot.operators.first.txnCount, 2);
+    expect(snapshot.operators.last.txnCount, 0);
 
     expect(snapshot.helpers.first.volumeLiters, 10);
     expect(snapshot.helpers.first.revenuePkr, 2000);

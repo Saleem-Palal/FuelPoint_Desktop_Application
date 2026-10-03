@@ -46,12 +46,12 @@ class SalesLedgerRepository {
 
   static ShiftLedgerSummary _summaryFromRow(Map<String, Object?> row) {
     final int pk = _asInt(row['shift_id']);
-    final String managerName = (row['manager_name'] as String?)?.trim() ?? '';
+    final String operatorName = (row['manager_name'] as String?)?.trim() ?? '';
     return ShiftLedgerSummary(
       shiftId: formatShiftId(pk),
-      managerId: '${row['manager_id'] ?? ''}'.trim(),
-      managerName: managerName.isEmpty ? 'Manager' : managerName,
-      role: ManagerRole.manager,
+      operatorId: '${row['manager_id'] ?? ''}'.trim(),
+      operatorName: operatorName.isEmpty ? 'Operator' : operatorName,
+      role: OperatorRole.operator,
       startTime:
           DateTime.tryParse('${row['start_timestamp'] ?? ''}') ??
           DateTime.now(),

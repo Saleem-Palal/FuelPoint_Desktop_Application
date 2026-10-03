@@ -89,6 +89,31 @@ resolveAccountSplit({
   }
 }
 
+/// Confirm / Update on a waiting account sale. Cash above the ticket is cut
+/// down to the sale. A zero account remainder becomes a cash ticket.
+({PaymentMethod payment, double cashAmount, double accountAmount})
+resolvePendingAccountConfirm({
+  required PaymentMethod payment,
+  required double saleAmount,
+  required double cashAmount,
+}) {
+  final int sale = roundRupees(saleAmount);
+  final int cash = roundRupees(cashAmount).clamp(0, sale);
+  final int account = sale - cash;
+  if (account <= 0) {
+    return (
+      payment: PaymentMethod.cash,
+      cashAmount: sale.toDouble(),
+      accountAmount: 0,
+    );
+  }
+  return (
+    payment: payment,
+    cashAmount: cash.toDouble(),
+    accountAmount: account.toDouble(),
+  );
+}
+
 /// Account remainder stays uncredited until bank Confirm / Update.
 ({double cashAmount, double accountAmount, double pendingAccountAmount})
 accountPersistSplit({
@@ -129,6 +154,7 @@ bool saleTenderNeedsUpdate({
   required double cashAmount,
   required double accountAmount,
   double pendingAccountAmount = 0,
+  int drumQty = 0,
 }) {
   if (saved.payment != payment) {
     return true;
@@ -144,6 +170,9 @@ bool saleTenderNeedsUpdate({
     return true;
   }
   if (saved.vehicleNo.trim() != vehicleNo.trim()) {
+    return true;
+  }
+  if (saved.drumQty != drumQty) {
     return true;
   }
   return _tenderCustomerName(saved.customerName) !=
@@ -182,8 +211,8 @@ DispenserRunState dispenserStatusFromWire(String? raw) {
   }
 }
 
-class DispenserBay {
-  const DispenserBay({
+class DispenserUnit {
+  const DispenserUnit({
     required this.unitId,
     required this.name,
     required this.fuelType,
@@ -221,7 +250,7 @@ class DispenserBay {
   final String lastLiters;
   final String lastTime;
 
-  /// Manager on the latest `sales_transactions` row for this unit.
+  /// Operator on the latest `sales_transactions` row for this unit.
   final String lastCashier;
   final String lastCustomer;
   final String lastVehicleNo;
@@ -251,7 +280,7 @@ class DispenserBay {
 
   String get productLabel => fuelType.toUpperCase();
 
-  DispenserBay copyWith({
+  DispenserUnit copyWith({
     DispenserRunState? status,
     double? amountPkr,
     double? volumeLiters,
@@ -274,7 +303,7 @@ class DispenserBay {
     bool clearLastPacket = false,
     bool clearCycleOpeningMeter = false,
   }) {
-    return DispenserBay(
+    return DispenserUnit(
       unitId: unitId,
       name: name,
       fuelType: fuelType,
@@ -367,7 +396,7 @@ bool isNullHangupCycle({
         lastPumpingLiters: lastPumpingLiters,
         packetLiters: packetLiters,
       ).abs() <
-      DispenserBay.zeroVolumeEpsilon;
+      DispenserUnit.zeroVolumeEpsilon;
 }
 
 class PendingEspSale {
@@ -486,7 +515,7 @@ class SaleTransaction {
     this.customerName = 'Walk-in',
     this.vehicleNo = '',
     this.payment = PaymentMethod.cash,
-    this.cashierName = 'Cashier',
+    this.cashierName = 'Operator',
     this.helperName = '',
     this.shiftId = '',
     this.shiftName = 'Morning',
@@ -500,6 +529,8 @@ class SaleTransaction {
     this.pendingAccountAmount = 0,
     this.edited = false,
     this.isTest = false,
+    this.drumQty = 0,
+    this.saleType = '',
   });
 
   final int? id;
@@ -530,6 +561,13 @@ class SaleTransaction {
   final double pendingAccountAmount;
   final bool edited;
   final bool isTest;
+  final int drumQty;
+  final String saleType;
+
+  bool get isRecoveredSale {
+    return saleType.toUpperCase() == 'RECOVERED' ||
+        notes.toUpperCase().contains('RECOVERED');
+  }
 
   bool get isAccountPending {
     return !isTest && pendingAccountAmount > 0;
@@ -581,6 +619,8 @@ class SaleTransaction {
     double? pendingAccountAmount,
     bool? edited,
     bool? isTest,
+    int? drumQty,
+    String? saleType,
   }) {
     return SaleTransaction(
       id: id ?? this.id,
@@ -608,10 +648,11 @@ class SaleTransaction {
       espTxId: espTxId ?? this.espTxId,
       cashAmount: cashAmount ?? this.cashAmount,
       accountAmount: accountAmount ?? this.accountAmount,
-      pendingAccountAmount:
-          pendingAccountAmount ?? this.pendingAccountAmount,
+      pendingAccountAmount: pendingAccountAmount ?? this.pendingAccountAmount,
       edited: edited ?? this.edited,
       isTest: isTest ?? this.isTest,
+      drumQty: drumQty ?? this.drumQty,
+      saleType: saleType ?? this.saleType,
     );
   }
 }
@@ -665,16 +706,16 @@ class PurchaseTransaction {
   }
 }
 
-/// Active dispenser bays on the sale workspace (Unit 1 … Unit N).
+/// Active dispenser units on the sale workspace (Unit 1 … Unit N).
 const int kDispenserUnitCount = 5;
 
-/// Hardware bays on Tenda System (Unit 5 stays hidden unless Settings enables it).
+/// Hardware units on Tenda System (Unit 5 stays hidden unless Settings enables it).
 const int kHardwareDispenserUnitCount = 4;
 
-/// Optional extra bay. Hidden on the Sale screen unless enabled in Settings.
+/// Optional extra unit. Hidden on the Sale screen unless enabled in Settings.
 const int kOptionalDispenserUnitId = 5;
 
-/// Manual Direct Sale Card. Not a dispenser bay; `UNIT_NO` stays INTEGER.
+/// Manual Direct Sale Card. Not a dispenser unit; `UNIT_NO` stays INTEGER.
 const int kDirectSaleUnitId = 6;
 
 /// First Direct token (`TKN-DR-600000`). Same band as `tokenIdFor(6, 0)`.
@@ -728,7 +769,7 @@ const String kDieselFuelType = 'Diesel';
 
 class StationState {
   const StationState({
-    required this.bays,
+    required this.units,
     required this.sequences,
     required this.recentTransactions,
     required this.endpoints,
@@ -736,12 +777,12 @@ class StationState {
     this.abortNotices = const <int, String>{},
   });
 
-  final Map<int, DispenserBay> bays;
+  final Map<int, DispenserUnit> units;
   final Map<int, int> sequences;
   final List<SaleTransaction> recentTransactions;
   final Map<int, UnitEndpoint> endpoints;
 
-  /// Weighted-average diesel cost from Purchase. Independent of per-bay RATE.
+  /// Weighted-average diesel cost from Purchase. Independent of per-unit RATE.
   final double dieselAverageRate;
   final Map<int, String> abortNotices;
 
@@ -760,18 +801,18 @@ class StationState {
     return UnitEndpoint.seedFor(unitId);
   }
 
-  DispenserBay bay(int unitId) {
-    final DispenserBay? found = bays[unitId];
+  DispenserUnit unit(int unitId) {
+    final DispenserUnit? found = units[unitId];
     if (found != null) {
       return found;
     }
-    return StationState.seedBay(unitId);
+    return StationState.seedUnit(unitId);
   }
 
-  static DispenserBay seedBay(int unitId) {
+  static DispenserUnit seedUnit(int unitId) {
     switch (unitId) {
       case 2:
-        return const DispenserBay(
+        return const DispenserUnit(
           unitId: 2,
           name: 'Unit 2',
           fuelType: kDieselFuelType,
@@ -787,7 +828,7 @@ class StationState {
           lastCashier: '',
         );
       case 3:
-        return const DispenserBay(
+        return const DispenserUnit(
           unitId: 3,
           name: 'Unit 3',
           fuelType: kDieselFuelType,
@@ -803,7 +844,7 @@ class StationState {
           lastCashier: '',
         );
       case 4:
-        return const DispenserBay(
+        return const DispenserUnit(
           unitId: 4,
           name: 'Unit 4',
           fuelType: kDieselFuelType,
@@ -819,7 +860,7 @@ class StationState {
           lastCashier: '',
         );
       case 5:
-        return const DispenserBay(
+        return const DispenserUnit(
           unitId: 5,
           name: 'Unit 5',
           fuelType: kDieselFuelType,
@@ -836,7 +877,7 @@ class StationState {
         );
       case 1:
       default:
-        return const DispenserBay(
+        return const DispenserUnit(
           unitId: 1,
           name: 'Unit 1',
           fuelType: kDieselFuelType,
@@ -856,10 +897,17 @@ class StationState {
 
   static StationState seed() {
     return StationState(
-      bays: <int, DispenserBay>{
-        for (final int unitId in dispenserUnitIds) unitId: seedBay(unitId),
+      units: <int, DispenserUnit>{
+        for (final int unitId in dispenserUnitIds) unitId: seedUnit(unitId),
       },
-      sequences: <int, int>{1: 25, 2: 14, 3: 8, 4: 2, 5: 1, kDirectSaleUnitId: 0},
+      sequences: <int, int>{
+        1: 25,
+        2: 14,
+        3: 8,
+        4: 2,
+        5: 1,
+        kDirectSaleUnitId: 0,
+      },
       recentTransactions: const <SaleTransaction>[],
       endpoints: <int, UnitEndpoint>{
         for (final int unitId in dispenserUnitIds)
@@ -870,7 +918,7 @@ class StationState {
   }
 
   StationState copyWith({
-    Map<int, DispenserBay>? bays,
+    Map<int, DispenserUnit>? units,
     Map<int, int>? sequences,
     List<SaleTransaction>? recentTransactions,
     Map<int, UnitEndpoint>? endpoints,
@@ -878,7 +926,7 @@ class StationState {
     Map<int, String>? abortNotices,
   }) {
     return StationState(
-      bays: bays ?? this.bays,
+      units: units ?? this.units,
       sequences: sequences ?? this.sequences,
       recentTransactions: recentTransactions ?? this.recentTransactions,
       endpoints: endpoints ?? this.endpoints,
@@ -957,4 +1005,19 @@ String displayVehicleNo(String vehicleNo) {
     return '—';
   }
   return trimmed;
+}
+
+String displaySaleFulfillment({
+  required String vehicleNo,
+  required int drumQty,
+}) {
+  final String plate = displayVehicleNo(vehicleNo);
+  if (drumQty > 0) {
+    final String drums = '$drumQty ${drumQty == 1 ? 'drum' : 'drums'}';
+    if (plate == '—') {
+      return drums;
+    }
+    return '$plate · $drums';
+  }
+  return plate;
 }

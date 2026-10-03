@@ -7,28 +7,32 @@ import '../../../Shell/shell_navigation.dart';
 /// Release / MSIX builds always enforce these guards.
 bool get shouldEnforceStationGuards => !kDebugMode;
 
+/// Flip to `true` to exercise Owner Access lock (PIN + fingerprint) during
+/// `flutter run`. Release / MSIX always enforce the lock.
+const bool enableOwnerLockInDebug = true;
+
 /// Owner Master PIN gate, Lock Owner Access, and idle auto-lock.
 /// Always on in the release MSIX so client demos include the lock workflow.
-bool get shouldEnforceOwnerAccessLock => !kDebugMode;
+bool get shouldEnforceOwnerAccessLock => !kDebugMode || enableOwnerLockInDebug;
 
-/// Manager-first, owner-elevated destination policy.
+/// Operator-first, owner-elevated destination policy.
 ///
-/// Sale and Customers (Udhaar) stay unlocked for the on-duty manager.
+/// Sale and Customers (Udhaar) stay unlocked for the on-duty operator.
 /// Every other shell destination requires [isOwnerElevated].
 class AccessPolicy {
   AccessPolicy._();
 
-  static const Set<int> managerUnlockedDestinations = <int>{
+  static const Set<int> operatorUnlockedDestinations = <int>{
     ShellDestinations.sale,
     ShellDestinations.customers,
   };
 
-  static bool isManagerUnlockedDestination(int index) {
-    return managerUnlockedDestinations.contains(index);
+  static bool isOperatorUnlockedDestination(int index) {
+    return operatorUnlockedDestinations.contains(index);
   }
 
   static bool destinationRequiresOwner(int index) {
-    return !isManagerUnlockedDestination(index);
+    return !isOperatorUnlockedDestination(index);
   }
 }
 

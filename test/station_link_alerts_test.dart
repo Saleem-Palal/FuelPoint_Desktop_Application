@@ -48,15 +48,15 @@ void main() {
     });
   });
 
-  group('BayLinkHealth', () {
+  group('UnitLinkHealth', () {
     test('does not treat packet silence as ESP Wi-Fi loss', () {
-      final BayLinkHealth health = BayLinkHealth.evaluate(
+      final UnitLinkHealth health = UnitLinkHealth.evaluate(
         endpoint: const UnitEndpoint(
           host: '192.168.0.110',
           port: 81,
           connected: true,
         ),
-        snapshot: const BayDiagnosticSnapshot(espToBoardLink: false),
+        snapshot: const UnitDiagnosticSnapshot(espToBoardLink: false),
         now: DateTime.now(),
       );
       expect(health.muxSocketUp, isTrue);
@@ -67,9 +67,9 @@ void main() {
     });
 
     test('muxAlert is only a closed WebSocket', () {
-      final BayLinkHealth health = BayLinkHealth.evaluate(
+      final UnitLinkHealth health = UnitLinkHealth.evaluate(
         endpoint: UnitEndpoint.seedFor(1),
-        snapshot: const BayDiagnosticSnapshot(espToBoardLink: true),
+        snapshot: const UnitDiagnosticSnapshot(espToBoardLink: true),
         now: DateTime.now(),
       );
       expect(health.muxSocketUp, isFalse);
@@ -90,9 +90,9 @@ void main() {
       );
       final DispenserMonitorState monitor = DispenserMonitorState.empty()
           .copyWith(
-            diagnostics: <int, BayDiagnosticSnapshot>{
-              2: const BayDiagnosticSnapshot(espToBoardLink: false),
-              3: const BayDiagnosticSnapshot(espToBoardLink: true),
+            diagnostics: <int, UnitDiagnosticSnapshot>{
+              2: const UnitDiagnosticSnapshot(espToBoardLink: false),
+              3: const UnitDiagnosticSnapshot(espToBoardLink: true),
             },
           );
 
@@ -122,9 +122,9 @@ void main() {
       );
       final DispenserMonitorState monitor = DispenserMonitorState.empty()
           .copyWith(
-            diagnostics: <int, BayDiagnosticSnapshot>{
-              2: const BayDiagnosticSnapshot(espToBoardLink: false),
-              3: const BayDiagnosticSnapshot(espToBoardLink: true),
+            diagnostics: <int, UnitDiagnosticSnapshot>{
+              2: const UnitDiagnosticSnapshot(espToBoardLink: false),
+              3: const UnitDiagnosticSnapshot(espToBoardLink: true),
             },
           );
 
@@ -160,8 +160,8 @@ void main() {
       );
       final DispenserMonitorState monitor = DispenserMonitorState.empty()
           .copyWith(
-            diagnostics: <int, BayDiagnosticSnapshot>{
-              1: const BayDiagnosticSnapshot(espToBoardLink: false),
+            diagnostics: <int, UnitDiagnosticSnapshot>{
+              1: const UnitDiagnosticSnapshot(espToBoardLink: false),
             },
           );
 
@@ -179,8 +179,8 @@ void main() {
 
   group('DispenserUnitData link flags', () {
     test('FDX UART down looks Offline but Confirm stays enabled', () {
-      final DispenserUnitData data = DispenserUnitData.fromBay(
-        StationState.seedBay(
+      final DispenserUnitData data = DispenserUnitData.fromUnit(
+        StationState.seedUnit(
           1,
         ).copyWith(status: DispenserRunState.cycleComplete, volumeLiters: 12.5),
         espConnected: true,
@@ -193,8 +193,8 @@ void main() {
     });
 
     test('ESP socket down disables Confirm', () {
-      final DispenserUnitData data = DispenserUnitData.fromBay(
-        StationState.seedBay(
+      final DispenserUnitData data = DispenserUnitData.fromUnit(
+        StationState.seedUnit(
           1,
         ).copyWith(status: DispenserRunState.cycleComplete, volumeLiters: 12.5),
         espConnected: false,
@@ -210,9 +210,9 @@ void main() {
 StationState _station({required bool connected, DateTime? lastPacketAt}) {
   final StationState seed = StationState.seed();
   return seed.copyWith(
-    bays: <int, DispenserBay>{
-      ...seed.bays,
-      1: seed.bay(1).copyWith(lastPacketAt: lastPacketAt),
+    units: <int, DispenserUnit>{
+      ...seed.units,
+      1: seed.unit(1).copyWith(lastPacketAt: lastPacketAt),
     },
     endpoints: <int, UnitEndpoint>{
       ...seed.endpoints,
