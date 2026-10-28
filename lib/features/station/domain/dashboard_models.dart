@@ -306,8 +306,16 @@ DashboardSnapshot assembleDashboardSnapshot({
         cashPkrToday += row.amountPkr;
         cashCountToday += 1;
       } else if (row.payment == PaymentMethod.udhaar) {
-        udhaarPkrToday += row.amountPkr;
+        final int credit = udhaarCreditRupees(
+          saleAmount: row.amountPkr,
+          cashAmount: row.cashAmount,
+          accountAmount: row.accountAmount,
+        );
+        udhaarPkrToday += credit;
         udhaarCountToday += 1;
+        if (row.cashAmount > 0) {
+          cashPkrToday += row.cashAmount;
+        }
       }
     }
     if (inWeek) {

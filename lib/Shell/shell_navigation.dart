@@ -17,6 +17,9 @@ class ShellDestinations {
   static const int settings = 7;
   static const int customers = 8;
   static const int operators = 9;
+
+  /// Debug builds only. Release never shows this destination.
+  static const int intercomTest = 10;
 }
 
 final shellDestinationProvider = StateProvider<int>(

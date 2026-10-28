@@ -38,6 +38,7 @@ class SalesLedgerSnapshot {
     required this.udhaarAmountPkr,
     required this.udhaarCount,
     required this.totalAccountAmountPkr,
+    this.windowPhysicalVolumeLiters,
   });
 
   static const SalesLedgerSnapshot empty = SalesLedgerSnapshot(
@@ -63,8 +64,15 @@ class SalesLedgerSnapshot {
   final int udhaarCount;
   final double totalAccountAmountPkr;
 
+  /// Window physical volume from a SQL aggregate. When null, sum [meterRows].
+  final double? windowPhysicalVolumeLiters;
+
   /// Pump volume for the focused slice, including test fills.
   double get physicalVolumeLiters {
+    final double? window = windowPhysicalVolumeLiters;
+    if (window != null) {
+      return window;
+    }
     double total = 0;
     for (final SaleTransaction row in meterRows) {
       total += row.volumeLiters;

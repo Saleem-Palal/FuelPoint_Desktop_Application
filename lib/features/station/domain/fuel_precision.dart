@@ -70,6 +70,15 @@ bool metersMatchAtAuditScale(Object? left, Object? right) {
   return truncateMeterCheck(left) == truncateMeterCheck(right);
 }
 
+/// Shift Audit Report: a gap of 0.1 L or less is still a match.
+const double shiftAuditToleranceLiters = 0.1;
+
+bool volumesMatchForShiftAudit(Object? left, Object? right) {
+  final Decimal delta = (truncateMeterCheck(left) - truncateMeterCheck(right))
+      .abs();
+  return delta <= parseDecimal(shiftAuditToleranceLiters);
+}
+
 /// True when ESP liters and Closing − Opening agree at [meterMismatchScale].
 bool saleLitersMatchMeter({
   required Object? liters,

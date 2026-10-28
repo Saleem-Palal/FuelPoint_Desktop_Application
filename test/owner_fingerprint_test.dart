@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fuel_dispenser/features/access/domain/fingerprint_protocol.dart';
+import 'package:fuel_dispenser/features/access/domain/owner_fingerprint_gallery.dart';
 
 void main() {
   test('unlock allows a shifted finger press', () {
@@ -29,11 +30,25 @@ void main() {
     );
   });
 
-  test('parses helper READY line', () {
+  test('owner gallery keeps a legacy finger and later fingers', () {
+    expect(OwnerFingerprintGallery.parse(null), isEmpty);
+    expect(OwnerFingerprintGallery.parse('  '), isEmpty);
+    expect(OwnerFingerprintGallery.parse('QUJDRA=='), <String>['QUJDRA==']);
+    expect(OwnerFingerprintGallery.parse('["QUJDRA==","RUZH"]'), <String>[
+      'QUJDRA==',
+      'RUZH',
+    ]);
     expect(
-      FingerprintProtocol.parseReadyPort('READY 127.0.0.1:58311'),
-      58311,
+      OwnerFingerprintGallery.parse(
+        OwnerFingerprintGallery.encode(<String>['QUJDRA==', ' RUZH ']),
+      ),
+      <String>['QUJDRA==', 'RUZH'],
     );
+    expect(OwnerFingerprintGallery.maxFingers, 10);
+  });
+
+  test('parses helper READY line', () {
+    expect(FingerprintProtocol.parseReadyPort('READY 127.0.0.1:58311'), 58311);
     expect(FingerprintProtocol.parseReadyPort('HELPER_BUSY'), isNull);
     expect(FingerprintProtocol.parseReadyPort('READY 10.0.0.1:80'), isNull);
   });

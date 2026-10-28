@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../shift/domain/shift_models.dart';
 import '../../shift/presentation/shift_providers.dart';
 import '../../station/domain/dispenser_models.dart';
 import '../../station/presentation/station_providers.dart';
@@ -65,15 +66,25 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
     double cashAmountPkr = 0,
     double accountAmountPkr = 0,
     String notes = '',
+    String proofImagePath = '',
     String cashierName = 'Operator',
     String cashierId = '',
   }) async {
     final UnifiedUdhaarRepository ledger = ref.read(
       unifiedUdhaarRepositoryProvider,
     );
-    final String shiftId =
-        ref.read(shiftWorkspaceProvider).activeShift?.shiftId ??
-        kUnknownShiftId;
+    final OperatorShiftRecord? shift = ref
+        .read(shiftWorkspaceProvider)
+        .activeShift;
+    final String shiftId = shift?.shiftId ?? kUnknownShiftId;
+    final String fromShift = shift?.operatorName.trim() ?? '';
+    final String resolvedCashier =
+        cashierName.trim().isEmpty || cashierName.trim() == 'Operator'
+        ? (fromShift.isEmpty ? 'Operator' : fromShift)
+        : cashierName.trim();
+    final String resolvedCashierId = cashierId.trim().isEmpty
+        ? (shift?.operatorId.trim() ?? '')
+        : cashierId.trim();
     final double cash = cashAmountPkr > 0 || accountAmountPkr > 0
         ? cashAmountPkr
         : (paymentMode.isAccount ? 0 : amountPkr);
@@ -89,11 +100,13 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
       cashAmountPkr: cash,
       accountAmountPkr: account,
       notes: notes,
+      cashierName: resolvedCashier,
+      proofImagePath: proofImagePath,
     );
     final CustomerSettlement settlement = settlementFromLedgerRow(
       row,
-      cashierName: cashierName,
-      cashierId: cashierId,
+      cashierName: resolvedCashier,
+      cashierId: resolvedCashierId,
     );
     ref
         .read(shiftWorkspaceProvider.notifier)
@@ -104,6 +117,37 @@ class CustomerWorkspaceNotifier extends Notifier<CustomerWorkspaceQuery> {
         );
     await reloadCustomerPersistence(ref);
     return settlement;
+  }
+
+  Future<CustomerSettlement> updateSettlement({
+    required CustomerSettlement existing,
+    required double amountPkr,
+    required SettlementPaymentMode paymentMode,
+    double cashAmountPkr = 0,
+    double accountAmountPkr = 0,
+    String notes = '',
+    String proofImagePath = '',
+  }) async {
+    final UnifiedUdhaarRepository ledger = ref.read(
+      unifiedUdhaarRepositoryProvider,
+    );
+    final UnifiedUdhaarRow row = await ledger.updateSettlement(
+      ledgerId: existing.ledgerId,
+      amountPkr: amountPkr,
+      paymentMode: paymentMode,
+      cashAmountPkr: cashAmountPkr,
+      accountAmountPkr: accountAmountPkr,
+      notes: notes,
+      cashierName: existing.cashierName,
+      proofImagePath: proofImagePath,
+      receiptNo: existing.receiptNo,
+    );
+    await reloadCustomerPersistence(ref);
+    return settlementFromLedgerRow(
+      row,
+      cashierName: existing.cashierName,
+      cashierId: existing.cashierId,
+    );
   }
 
   Future<UnifiedUdhaarRow> postPreviousUdhaar({

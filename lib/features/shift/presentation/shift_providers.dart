@@ -12,6 +12,7 @@ import '../../station/domain/dispenser_models.dart';
 import '../data/sqlite_shift_repository.dart';
 import '../domain/shift_lifecycle.dart';
 import '../domain/shift_models.dart';
+import '../domain/shift_report_layout.dart';
 
 @immutable
 class ShiftWorkspaceState {
@@ -559,6 +560,8 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     required double cashAmount,
     required double accountAmount,
     required double pendingAccountAmount,
+    String? customerName,
+    bool? edited,
   }) {
     final int index = state.sales.indexWhere(
       (HelperSaleRecord row) => row.tokenNo == tokenNo,
@@ -574,6 +577,8 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       cashAmount: cashAmount,
       accountAmount: accountAmount,
       pendingAccountAmount: pendingAccountAmount,
+      customerName: customerName,
+      edited: edited,
     );
     state = state.copyWith(sales: next);
   }
@@ -609,6 +614,24 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       udhaarRecoveryAccountTotal: state.udhaarRecoveryAccountTotal,
       udhaarRecoveryPartialTotal: state.udhaarRecoveryPartialTotal,
     );
+  }
+
+  double _readingsTotalSale(
+    OperatorShiftRecord shift,
+    ShiftWindowMetrics metrics,
+  ) {
+    return shiftReadingsTotalSale(
+      shift: shift,
+      sales: metrics.sales,
+      showUnit5: ref.read(settingsProvider).showUnit5,
+    );
+  }
+
+  double _expectedCashInHand(
+    OperatorShiftRecord shift,
+    ShiftWindowMetrics metrics,
+  ) {
+    return metrics.expectedCashInHandFrom(_readingsTotalSale(shift, metrics));
   }
 
   void setHelperPreset(HelperRangePreset preset) {
@@ -731,11 +754,12 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics metrics = _metricsWithRecoveries(window);
     final OperatorShiftRecord closed = open.copyWith(
       endTime: ended,
-      expectedCash: metrics.expectedCashInHand,
+      expectedCash: _expectedCashInHand(window, metrics),
       actualCash: actualCash,
       notes: notes.trim(),
       status: OperatorShiftStatus.closed,
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal: state.udhaarRecoveryAccountTotal,
     );
     await _repo.persistShift(closed);
     state = state.copyWith(
@@ -811,11 +835,12 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics frozenMetrics = _metricsWithRecoveries(window);
     final OperatorShiftRecord outgoing = open.copyWith(
       endTime: handoffAt,
-      expectedCash: frozenMetrics.expectedCashInHand,
+      expectedCash: _expectedCashInHand(window, frozenMetrics),
       actualCash: actualCash,
       notes: notes.trim(),
       status: OperatorShiftStatus.pendingReconciliation,
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal: state.udhaarRecoveryAccountTotal,
       closingMeters: closingMeters,
     );
     final ({OperatorShiftRecord pending, OperatorShiftRecord opened}) swapped =
@@ -863,11 +888,12 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
       return null;
     }
     final OperatorShiftRecord closed = pending.shift.copyWith(
-      expectedCash: pending.metrics.expectedCashInHand,
+      expectedCash: _expectedCashInHand(pending.shift, pending.metrics),
       actualCash: actualCash,
       notes: notes.trim(),
       status: OperatorShiftStatus.closed,
       udhaarRecoveryTotal: pending.metrics.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal: pending.metrics.udhaarRecoveryAccountTotal,
     );
     await _repo.persistShift(closed);
     state = state.copyWith(
@@ -963,9 +989,10 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics metrics = _metricsWithRecoveries(window);
     final OperatorShiftRecord pendingShift = open.copyWith(
       endTime: ended,
-      expectedCash: metrics.expectedCashInHand,
+      expectedCash: _expectedCashInHand(window, metrics),
       status: OperatorShiftStatus.pendingReconciliation,
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal: state.udhaarRecoveryAccountTotal,
       closingMeters: closingMeters,
     );
     await _repo.persistShift(pendingShift);
@@ -1016,11 +1043,12 @@ class ShiftWorkspaceNotifier extends Notifier<ShiftWorkspaceState> {
     final ShiftWindowMetrics metrics = _metricsWithRecoveries(window);
     final OperatorShiftRecord closed = target.copyWith(
       endTime: ended,
-      expectedCash: metrics.expectedCashInHand,
+      expectedCash: _expectedCashInHand(window, metrics),
       actualCash: 0,
       notes: 'FORCE_CLOSED',
       status: OperatorShiftStatus.forceClosed,
       udhaarRecoveryTotal: state.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal: state.udhaarRecoveryAccountTotal,
     );
     await _repo.persistShift(closed);
     await DatabaseHelper.instance.insertAuditLog(

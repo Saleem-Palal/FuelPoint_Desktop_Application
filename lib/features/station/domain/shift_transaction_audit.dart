@@ -120,7 +120,7 @@ bool shiftVolumeMatchesSaleLiters({
   if (shiftVolumeLiters == null) {
     return true;
   }
-  return metersMatchAtAuditScale(shiftVolumeLiters, saleLiters + testLiters);
+  return volumesMatchForShiftAudit(shiftVolumeLiters, saleLiters + testLiters);
 }
 
 String shiftVolumeRemark({
@@ -187,11 +187,11 @@ ShiftUnitAudit _auditUnit({
     } else {
       saleLiters += row.volumeLiters;
     }
-    if (!row.litersMatchMeterDelta) {
-      final double delta = meterDeltaLiters(
-        row.openingMeter,
-        row.closingMeter,
-      ).toDouble();
+    final double meterDelta = meterDeltaLiters(
+      row.openingMeter,
+      row.closingMeter,
+    ).toDouble();
+    if (!volumesMatchForShiftAudit(row.volumeLiters, meterDelta)) {
       findings.add(
         ShiftAuditFinding(
           kind: ShiftAuditKind.litersVsMeter,
@@ -199,7 +199,7 @@ ShiftUnitAudit _auditUnit({
           tokenNo: row.tokenNo,
           message:
               '${formatLedgerToken(row.tokenNo)} liters ${formatLiters(row.volumeLiters)} ≠ '
-              'Closing − Opening ${formatLiters(delta)} '
+              'Closing − Opening ${formatLiters(meterDelta)} '
               '(${formatMeterReading(row.closingMeter)} − ${formatMeterReading(row.openingMeter)}).',
         ),
       );
@@ -209,7 +209,10 @@ ShiftUnitAudit _auditUnit({
   for (int i = 1; i < chronological.length; i++) {
     final SaleTransaction previous = chronological[i - 1];
     final SaleTransaction current = chronological[i];
-    if (metersMatchAtAuditScale(current.openingMeter, previous.closingMeter)) {
+    if (volumesMatchForShiftAudit(
+      current.openingMeter,
+      previous.closingMeter,
+    )) {
       continue;
     }
     findings.add(
@@ -254,7 +257,7 @@ ShiftUnitAudit _auditUnit({
     final SaleTransaction first = chronological.first;
     final double? shiftOpening = summary.openingMeters[unitId];
     if (shiftOpening != null &&
-        !metersMatchAtAuditScale(first.openingMeter, shiftOpening)) {
+        !volumesMatchForShiftAudit(first.openingMeter, shiftOpening)) {
       findings.add(
         ShiftAuditFinding(
           kind: ShiftAuditKind.firstOpening,
@@ -270,7 +273,7 @@ ShiftUnitAudit _auditUnit({
     final double? shiftClosing = summary.closingMeters[unitId];
     if (!summary.isLive &&
         shiftClosing != null &&
-        !metersMatchAtAuditScale(last.closingMeter, shiftClosing)) {
+        !volumesMatchForShiftAudit(last.closingMeter, shiftClosing)) {
       findings.add(
         ShiftAuditFinding(
           kind: ShiftAuditKind.lastClosing,

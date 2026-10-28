@@ -44,6 +44,8 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
     double cashAmountPkr = 0,
     double accountAmountPkr = 0,
     String notes = '',
+    String cashierName = '',
+    String proofImagePath = '',
     DateTime? timestamp,
   }) async {
     final int receiptSeq = await nextReceiptSeq();
@@ -66,7 +68,45 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
         cashAmountPkr: cash,
         accountAmountPkr: account,
         notes: notes,
+        cashierName: cashierName,
+        proofImagePath: proofImagePath,
       ),
+      proofImagePath: proofImagePath,
+    );
+    return fromRow(row);
+  }
+
+  @override
+  Future<UnifiedUdhaarRow> updateSettlement({
+    required String ledgerId,
+    required double amountPkr,
+    required SettlementPaymentMode paymentMode,
+    double cashAmountPkr = 0,
+    double accountAmountPkr = 0,
+    String notes = '',
+    String cashierName = '',
+    String proofImagePath = '',
+    String receiptNo = '',
+  }) async {
+    final double cash = cashAmountPkr > 0 || accountAmountPkr > 0
+        ? cashAmountPkr
+        : (paymentMode.isAccount ? 0 : amountPkr);
+    final double account = cashAmountPkr > 0 || accountAmountPkr > 0
+        ? accountAmountPkr
+        : (paymentMode.isAccount ? amountPkr : 0);
+    final Map<String, Object?> row = await _db.updateUnifiedUdhaarSettlement(
+      primaryKey: ledgerId,
+      amountPkr: amountPkr,
+      description: encodeSettlementDescription(
+        receiptNo: receiptNo,
+        paymentMode: paymentMode,
+        cashAmountPkr: cash,
+        accountAmountPkr: account,
+        notes: notes,
+        cashierName: cashierName,
+        proofImagePath: proofImagePath,
+      ),
+      proofImagePath: proofImagePath,
     );
     return fromRow(row);
   }
@@ -112,6 +152,7 @@ class SqliteUnifiedUdhaarRepository implements UnifiedUdhaarRepository {
       udhaarPkr: _asDouble(row['UDHAAR']),
       paidPkr: _asDouble(row['PAID']),
       status: '${row['Status'] ?? 'Unpaid'}',
+      proofImagePath: '${row['PROOF_IMAGE_PATH'] ?? ''}'.trim(),
     );
   }
 

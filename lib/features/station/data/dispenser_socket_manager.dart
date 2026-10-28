@@ -8,7 +8,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../domain/dispenser_models.dart';
 import '../domain/dispenser_monitor_models.dart';
 import '../domain/esp_token_log.dart';
+import 'intercom_codec.dart';
 import 'telemetry_parser.dart';
+import 'wifi_status.dart';
 
 typedef TelemetryHandler = void Function(DispenserTelemetry packet);
 typedef OfflineHandler = void Function(int unitId);
@@ -17,6 +19,9 @@ typedef WireFrameHandler = void Function(DispenserWireFrame frame);
 typedef PendingSaleHandler = void Function(PendingEspSale sale);
 typedef NextSequenceLookup = int Function(int unitId);
 typedef SyncLogHandler = void Function(int unitId, List<EspTokenLogRow> rows);
+typedef IntercomSignalHandler = void Function(IntercomNotice notice);
+typedef IntercomAudioHandler = void Function(int unitId, Uint8List pcm);
+typedef WifiStatusHandler = void Function(DispenserWifiStatus status);
 
 class StationNetDefaults {
   static const int port = 81;
@@ -57,6 +62,9 @@ class DispenserSocketManager {
     this.onWire,
     this.onPendingSale,
     this.onSyncLog,
+    this.onIntercomSignal,
+    this.onIntercomAudio,
+    this.onWifiStatus,
     this.nextSequenceFor,
   });
 
@@ -66,6 +74,9 @@ class DispenserSocketManager {
   final WireFrameHandler? onWire;
   final PendingSaleHandler? onPendingSale;
   final SyncLogHandler? onSyncLog;
+  final IntercomSignalHandler? onIntercomSignal;
+  final IntercomAudioHandler? onIntercomAudio;
+  final WifiStatusHandler? onWifiStatus;
   NextSequenceLookup? nextSequenceFor;
 
   final TelemetryParser _parser = TelemetryParser();
@@ -92,10 +103,25 @@ class DispenserSocketManager {
         host: host,
         port: port,
         onText: (String text) => _accept(text, fallbackUnit: unitId),
+        onBytes: (Uint8List bytes) => _onSocketBytes(unitId, bytes),
         onOffline: () => onOffline(unitId),
         onConnected: () => onConnected?.call(unitId),
       );
     }
+  }
+
+  void _onSocketBytes(int unitId, Uint8List bytes) {
+    if (bytes.isNotEmpty && bytes[0] == IntercomCodec.helperMagic) {
+      final Uint8List? pcm = IntercomCodec.pcmFromFrame(
+        bytes,
+        magic: IntercomCodec.helperMagic,
+      );
+      if (pcm != null) {
+        onIntercomAudio?.call(unitId, pcm);
+      }
+      return;
+    }
+    _accept(utf8.decode(bytes, allowMalformed: true), fallbackUnit: unitId);
   }
 
   static Future<void> persistEndpoint({
@@ -127,6 +153,37 @@ class DispenserSocketManager {
     }
     final String trimmed = piece.trim();
     if (trimmed.isEmpty) {
+      return;
+    }
+    final DispenserWifiStatus? wifi = tryParseWifiStatus(trimmed);
+    if (wifi != null) {
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.command,
+          payload: trimmed,
+          unitId: wifi.unitId > 0 ? wifi.unitId : fallbackUnit,
+        ),
+      );
+      onWifiStatus?.call(wifi);
+      return;
+    }
+    final IntercomNotice? voice = tryParseIntercomNotice(
+      trimmed,
+      fallbackUnit: fallbackUnit,
+    );
+    if (voice != null) {
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: false,
+          kind: DispenserWireKind.command,
+          payload: trimmed,
+          unitId: voice.unitId > 0 ? voice.unitId : fallbackUnit,
+        ),
+      );
+      onIntercomSignal?.call(voice);
       return;
     }
     final List<EspTokenLogRow> syncRows = EspTokenLogRow.tryParseSyncLog(
@@ -240,11 +297,7 @@ class DispenserSocketManager {
   Future<void> resetFdx(int unitId) async {
     await sendCommand(
       unitId: unitId,
-      payload: <String, Object>{
-        'cmd': 'FDX_RESET',
-        'unit': unitId,
-        'gpio': 21,
-      },
+      payload: <String, Object>{'cmd': 'FDX_RESET', 'unit': unitId, 'gpio': 21},
     );
   }
 
@@ -343,6 +396,7 @@ class DispenserSocketManager {
         host: host,
         port: port,
         onText: (String text) => _accept(text, fallbackUnit: unitId),
+        onBytes: (Uint8List bytes) => _onSocketBytes(unitId, bytes),
         onOffline: () => onOffline(unitId),
         onConnected: () => onConnected?.call(unitId),
       ),
@@ -360,6 +414,47 @@ class DispenserSocketManager {
     }
     link.wanted = false;
     await link.hangUp();
+  }
+
+  Future<bool> sendWifi({
+    required int unitId,
+    required String ssid,
+    required String password,
+  }) async {
+    final _UnitLink? link = _links[unitId];
+    final String encoded = jsonEncode(<String, Object>{
+      'cmd': 'SET_WIFI',
+      'unit': unitId,
+      'ssid': ssid,
+      'pass': password,
+    });
+    _emitWire(
+      DispenserWireFrame(
+        at: DateTime.now(),
+        outbound: true,
+        kind: DispenserWireKind.command,
+        payload: '{"cmd":"SET_WIFI","unit":$unitId,"ssid":"$ssid"}',
+        unitId: unitId,
+      ),
+    );
+    if (link == null || !link._hasLiveSocket) {
+      return false;
+    }
+    try {
+      await link.sendLine(encoded);
+      return true;
+    } catch (error) {
+      _emitWire(
+        DispenserWireFrame(
+          at: DateTime.now(),
+          outbound: true,
+          kind: DispenserWireKind.command,
+          payload: 'SET_WIFI failed: $error',
+          unitId: unitId,
+        ),
+      );
+      return false;
+    }
   }
 
   Future<void> rescanUnitWifi(int unitId) async {
@@ -415,6 +510,18 @@ class DispenserSocketManager {
     }
   }
 
+  Future<void> sendBinary({
+    required int unitId,
+    required Uint8List frame,
+  }) async {
+    _links[unitId]?.sendBytes(frame);
+  }
+
+  @visibleForTesting
+  void acceptTextForTest(String text, {int fallbackUnit = 0}) {
+    _accept(text, fallbackUnit: fallbackUnit);
+  }
+
   Future<void> dispose() async {
     _disposed = true;
     _appHeartbeat?.cancel();
@@ -432,12 +539,14 @@ class _UnitLink {
     required this.host,
     required this.port,
     required this.onText,
+    required this.onBytes,
     required this.onOffline,
     required this.onConnected,
   });
 
   final int unitId;
   final void Function(String text) onText;
+  final void Function(Uint8List bytes) onBytes;
   final void Function() onOffline;
   final void Function() onConnected;
 
@@ -487,7 +596,7 @@ class _UnitLink {
           if (data is String) {
             onText(data);
           } else if (data is List<int>) {
-            onText(utf8.decode(data, allowMalformed: true));
+            onBytes(data is Uint8List ? data : Uint8List.fromList(data));
           }
         },
         onError: (Object error, StackTrace _) {
@@ -544,6 +653,13 @@ class _UnitLink {
       throw const SocketException('Unit WebSocket unavailable');
     }
     socket.add(line);
+  }
+
+  void sendBytes(Uint8List bytes) {
+    if (_dropping || !_hasLiveSocket) {
+      return;
+    }
+    _socket?.add(bytes);
   }
 
   Future<void> _handleDrop(int generation) async {

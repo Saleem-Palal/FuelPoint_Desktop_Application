@@ -9,7 +9,9 @@ import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/fuel_precision.dart';
 import '../../../features/station/domain/money_format.dart';
 import '../../../features/station/presentation/station_providers.dart';
+import '../../../providers/settings_provider.dart';
 import 'Services/receipt_preview_widget.dart';
+import 'proof_capture_dialog.dart';
 
 class PendingAccountBanner extends ConsumerWidget {
   const PendingAccountBanner({super.key});
@@ -82,20 +84,34 @@ class _PendingAccountCard extends ConsumerWidget {
   final SaleTransaction txn;
 
   Future<void> _openConfirm(BuildContext context, WidgetRef ref) async {
-    final bool? confirmed = await showDialog<bool>(
+    final SaleTransaction? confirmed = await showDialog<SaleTransaction>(
       context: context,
       builder: (BuildContext context) {
         return _PendingAccountDialog(txn: txn);
       },
     );
-    if (confirmed != true || !context.mounted) {
+    if (confirmed == null || !context.mounted) {
+      return;
+    }
+    SaleTransaction latest = await maybeCaptureAccountProof(
+      context: context,
+      txn: confirmed,
+    );
+    if (!context.mounted) {
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Account confirmed for ${formatTokenNo(txn.tokenNo)}'),
+        content: Text(
+          txn.payment == PaymentMethod.udhaar
+              ? 'Udhaar account transfer confirmed for ${formatTokenNo(txn.tokenNo)}'
+              : 'Account confirmed for ${formatTokenNo(txn.tokenNo)}',
+        ),
       ),
     );
+    if (ref.read(settingsProvider).showReceiptPreview) {
+      showUnitReceiptOverlay(ref, latest);
+    }
   }
 
   @override
@@ -126,6 +142,13 @@ class _PendingAccountCard extends ConsumerWidget {
                   _Fact(
                     label: 'Token #',
                     value: formatTokenNo(txn.tokenNo),
+                    tokens: tokens,
+                  ),
+                  _Fact(
+                    label: 'Payment',
+                    value: txn.payment == PaymentMethod.udhaar
+                        ? 'Udhaar · Account pending'
+                        : '${txn.payment.label} · Pending',
                     tokens: tokens,
                   ),
                   _Fact(
@@ -244,18 +267,25 @@ class _PendingAccountDialog extends ConsumerStatefulWidget {
 class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
   late final TextEditingController _cash;
   late final TextEditingController _account;
+  late String _proofPath;
   bool _syncing = false;
   bool _busy = false;
 
   int get _sale => roundRupees(widget.txn.amountPkr);
 
+  bool get _fromUdhaar => widget.txn.payment == PaymentMethod.udhaar;
+
   @override
   void initState() {
     super.initState();
     final int cash = roundRupees(widget.txn.cashAmount).clamp(0, _sale);
-    final int account = (_sale - cash);
+    final int received = roundRupees(widget.txn.pendingAccountAmount);
+    final int account = _fromUdhaar
+        ? received
+        : (received > 0 ? received : (_sale - cash));
     _cash = TextEditingController(text: cash == 0 ? '' : '$cash');
     _account = TextEditingController(text: account == 0 ? '' : '$account');
+    _proofPath = widget.txn.proofImagePath.trim();
   }
 
   @override
@@ -276,8 +306,20 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
     );
   }
 
-  int _parsed(TextEditingController controller) {
-    return (int.tryParse(controller.text.trim()) ?? 0).clamp(0, _sale);
+  int _parsedCash() {
+    return (int.tryParse(_cash.text.trim()) ?? 0).clamp(0, _sale);
+  }
+
+  int _parsedAccount() {
+    final int account = int.tryParse(_account.text.trim()) ?? 0;
+    return account < 0 ? 0 : account;
+  }
+
+  int get _baqayaRupees {
+    return accountOverpayBaqaya(
+      saleAmount: _sale.toDouble(),
+      accountNow: _parsedAccount().toDouble(),
+    );
   }
 
   void _onCashChanged(String _) {
@@ -285,7 +327,7 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
       return;
     }
     _syncing = true;
-    final int cash = _parsed(_cash);
+    final int cash = _parsedCash();
     _setField(_cash, cash);
     _setField(_account, _sale - cash);
     _syncing = false;
@@ -297,27 +339,85 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
       return;
     }
     _syncing = true;
-    final int account = _parsed(_account);
-    _setField(_account, account);
-    _setField(_cash, _sale - account);
+    final int account = _parsedAccount();
+    if (account > _sale) {
+      _setField(_cash, 0);
+    } else {
+      _setField(_account, account);
+      _setField(_cash, _sale - account);
+    }
     _syncing = false;
     setState(() {});
   }
 
   SaleTransaction _previewTxn() {
+    if (_fromUdhaar) {
+      return widget.txn.copyWith(
+        payment: PaymentMethod.udhaar,
+        cashAmount: widget.txn.cashAmount,
+        accountAmount: 0,
+        pendingAccountAmount: widget.txn.pendingAccountAmount,
+        proofImagePath: _proofPath,
+      );
+    }
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
     confirmed = resolvePendingAccountConfirm(
       payment: widget.txn.payment,
       saleAmount: widget.txn.amountPkr,
-      cashAmount: _parsed(_cash).toDouble(),
+      cashAmount: _parsedCash().toDouble(),
+      pendingAccountAmount: _parsedAccount().toDouble(),
     );
-    final bool waiting = confirmed.accountAmount > 0;
     return widget.txn.copyWith(
       payment: confirmed.payment,
       cashAmount: confirmed.cashAmount,
-      accountAmount: waiting ? 0 : confirmed.accountAmount,
-      pendingAccountAmount: waiting ? confirmed.accountAmount : 0,
+      accountAmount: confirmed.accountAmount,
+      pendingAccountAmount: 0,
+      proofImagePath: _proofPath,
     );
+  }
+
+  Future<void> _addProof() async {
+    if (_busy) {
+      return;
+    }
+    setState(() {
+      _busy = true;
+    });
+    try {
+      final int account = _parsedAccount();
+      final SaleTransaction? withProof = await showProofCaptureDialog(
+        context: context,
+        txn: widget.txn.copyWith(
+          cashAmount: _parsedCash().toDouble(),
+          accountAmount: account.toDouble(),
+          pendingAccountAmount: 0,
+          proofImagePath: _proofPath,
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      final String path = withProof?.proofImagePath.trim() ?? '';
+      if (path.isNotEmpty) {
+        setState(() {
+          _proofPath = path;
+        });
+      }
+    } catch (error, stack) {
+      debugPrint('Add proof failed: $error\n$stack');
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not add proof. $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
   }
 
   Future<void> _print() async {
@@ -328,19 +428,7 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
       _busy = true;
     });
     try {
-      await spoolSaleReceipt(context: context, txn: _previewTxn());
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.txn.payment.printsTwoCopies
-                ? '2 copies sent to printer'
-                : 'Receipt sent to printer',
-          ),
-        ),
-      );
+      await presentSaleReceipt(context: context, txn: _previewTxn());
     } catch (error, stack) {
       debugPrint('Pending account print failed: $error\n$stack');
       if (!mounted) {
@@ -370,7 +458,8 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
           .read(stationControllerProvider.notifier)
           .confirmPendingAccountTransfer(
             tokenNo: widget.txn.tokenNo,
-            cashAmount: _parsed(_cash).toDouble(),
+            cashAmount: _parsedCash().toDouble(),
+            pendingAccountAmount: _parsedAccount().toDouble(),
           );
       if (!mounted) {
         return;
@@ -383,7 +472,7 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
         );
         return;
       }
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop(updated);
     } catch (error, stack) {
       debugPrint('Pending account confirm failed: $error\n$stack');
       if (!mounted) {
@@ -407,7 +496,9 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
     return AlertDialog(
       backgroundColor: tokens.card,
       title: Text(
-        'Confirm account ${formatTokenNo(widget.txn.tokenNo)}',
+        _fromUdhaar
+            ? 'Confirm Udhaar account ${formatTokenNo(widget.txn.tokenNo)}'
+            : 'Confirm account ${formatTokenNo(widget.txn.tokenNo)}',
         style: TextStyle(
           fontFamily: 'Roboto',
           fontWeight: FontWeight.w700,
@@ -422,7 +513,9 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Text(
-              'Ticket ${formatPkr(_sale.toDouble())}. Cash and Account must add up to the sale.',
+              _fromUdhaar
+                  ? 'This Account amount is from an Udhaar sale. Confirm the transfer and add proof. Cash and Udhaar credit stay as they are.'
+                  : 'Ticket ${formatPkr(_sale.toDouble())}. Cash and Account must add up to the sale.',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontSize: 13,
@@ -436,7 +529,7 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
                 Expanded(
                   child: TextField(
                     controller: _cash,
-                    enabled: !_busy,
+                    enabled: !_busy && !_fromUdhaar,
                     keyboardType: TextInputType.number,
                     inputFormatters: <TextInputFormatter>[
                       FilteringTextInputFormatter.digitsOnly,
@@ -449,7 +542,7 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
                 Expanded(
                   child: TextField(
                     controller: _account,
-                    enabled: !_busy,
+                    enabled: !_busy && !_fromUdhaar,
                     keyboardType: TextInputType.number,
                     inputFormatters: <TextInputFormatter>[
                       FilteringTextInputFormatter.digitsOnly,
@@ -460,6 +553,18 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
                 ),
               ],
             ),
+            if (_baqayaRupees > 0) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                'Baqaya Dene hain  ${formatPkr(_baqayaRupees.toDouble())}',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: tokens.warn,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -472,6 +577,16 @@ class _PendingAccountDialogState extends ConsumerState<_PendingAccountDialog> {
           onPressed: _busy ? null : _print,
           icon: const Icon(Icons.print_outlined, size: 18),
           label: const Text('Print'),
+        ),
+        TextButton.icon(
+          onPressed: _busy ? null : _addProof,
+          icon: Icon(
+            _proofPath.isEmpty
+                ? Icons.add_a_photo_outlined
+                : Icons.check_circle_outline,
+            size: 18,
+          ),
+          label: Text(_proofPath.isEmpty ? 'Add Proof' : 'Proof added'),
         ),
         FilledButton(
           onPressed: _busy ? null : _confirm,

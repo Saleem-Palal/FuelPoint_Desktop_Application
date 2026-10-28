@@ -1,5 +1,7 @@
 import 'package:decimal/decimal.dart';
 
+import '../../../core/pdf_text.dart' as pdf_text;
+import '../../customer/domain/customer_models.dart';
 import '../../station/domain/dispenser_models.dart';
 import '../../station/domain/fuel_precision.dart';
 import '../../station/domain/ledger_rate_bands.dart';
@@ -64,11 +66,221 @@ class ShiftUnitReading {
   final List<ShiftRateReadingRow> rows;
 }
 
+/// Sum of Readings Amount (net volume × rate). Rows without a priced amount
+/// contribute 0.
+int shiftReadingsAmountPkr(List<ShiftUnitReading> readings) {
+  int total = 0;
+  for (final ShiftUnitReading unit in readings) {
+    for (final ShiftRateReadingRow row in unit.rows) {
+      final int? amount = row.amountPkr;
+      if (amount != null) {
+        total += amount;
+      }
+    }
+  }
+  return total;
+}
+
+double shiftReadingsTotalSale({
+  required OperatorShiftRecord shift,
+  required List<HelperSaleRecord> sales,
+  bool showUnit5 = false,
+  int? unitId,
+}) {
+  return shiftReadingsAmountPkr(
+    buildShiftReportReadings(
+      shift: shift,
+      sales: sales,
+      showUnit5: showUnit5,
+      unitId: unitId,
+    ),
+  ).toDouble();
+}
+
 class ShiftUnitSaleGroup {
   const ShiftUnitSaleGroup({required this.unitId, required this.sales});
 
   final int unitId;
   final List<HelperSaleRecord> sales;
+}
+
+/// Column sums for one Itemized Sales unit table, including test rows.
+class ShiftItemizedSaleTotals {
+  const ShiftItemizedSaleTotals({
+    required this.liters,
+    required this.amountPkr,
+    required this.cashPkr,
+    required this.accountPkr,
+  });
+
+  final double liters;
+  final int amountPkr;
+  final int cashPkr;
+  final int accountPkr;
+
+  static ShiftItemizedSaleTotals of(List<HelperSaleRecord> sales) {
+    Decimal liters = Decimal.zero;
+    int amountPkr = 0;
+    int cashPkr = 0;
+    int accountPkr = 0;
+    for (final HelperSaleRecord row in sales) {
+      liters = truncateFuel(liters + parseDecimal(row.volumeLiters));
+      amountPkr += roundRupees(row.amountPkr);
+      cashPkr += roundRupees(row.cashTender);
+      accountPkr += roundRupees(
+        shiftSaleAccountColumn(row, tenderFallback: true),
+      );
+    }
+    return ShiftItemizedSaleTotals(
+      liters: liters.toDouble(),
+      amountPkr: amountPkr,
+      cashPkr: cashPkr,
+      accountPkr: accountPkr,
+    );
+  }
+}
+
+bool isShiftReportAccountSale(HelperSaleRecord row) {
+  if (row.isTest) {
+    return false;
+  }
+  return row.payment == PaymentMethod.bankAccount ||
+      row.payment == PaymentMethod.easyPaisa;
+}
+
+List<HelperSaleRecord> shiftReportAccountSales(
+  List<HelperSaleRecord> sales, {
+  bool showUnit5 = false,
+  int? unitId,
+}) {
+  final List<HelperSaleRecord> rows = sales
+      .where((HelperSaleRecord row) {
+        if (!isShiftReportAccountSale(row)) {
+          return false;
+        }
+        if (isDirectSaleUnit(row.unitId)) {
+          return includeShiftReportDirectSales(unitId: unitId);
+        }
+        return includeShiftReportUnit(
+          row.unitId,
+          showUnit5: showUnit5,
+          unitId: unitId,
+        );
+      })
+      .toList();
+  rows.sort(compareShiftReportSales);
+  return rows;
+}
+
+List<UnifiedUdhaarRow> shiftUdhaarIssuedRows(List<UnifiedUdhaarRow> rows) {
+  return rows.where((UnifiedUdhaarRow row) => row.isSale).toList();
+}
+
+List<UnifiedUdhaarRow> shiftUdhaarRecoveryRows(List<UnifiedUdhaarRow> rows) {
+  return rows.where((UnifiedUdhaarRow row) => !row.isSale).toList();
+}
+
+HelperSaleRecord? shiftSaleForUdhaarToken(
+  String? tokenLabel,
+  Iterable<HelperSaleRecord> sales,
+) {
+  final String raw = (tokenLabel ?? '').trim();
+  if (raw.isEmpty) {
+    return null;
+  }
+  final int token = parseLedgerToken(raw);
+  if (token <= 0) {
+    return null;
+  }
+  for (final HelperSaleRecord row in sales) {
+    if (row.tokenNo == token) {
+      return row;
+    }
+  }
+  return null;
+}
+
+/// Amount / Cash / Account for one unified-ledger row on the Shift Report.
+class ShiftUdhaarLine {
+  const ShiftUdhaarLine({
+    required this.row,
+    required this.amountPkr,
+    required this.cashPkr,
+    required this.accountPkr,
+  });
+
+  final UnifiedUdhaarRow row;
+  final double amountPkr;
+  final double cashPkr;
+  final double accountPkr;
+
+  bool get hasFuel => row.isSale && row.liters.abs() > 0;
+
+  static ShiftUdhaarLine of(UnifiedUdhaarRow row, {HelperSaleRecord? sale}) {
+    if (row.isSale) {
+      return ShiftUdhaarLine(
+        row: row,
+        amountPkr: sale == null ? row.amountPkr : sale.amountPkr,
+        cashPkr: sale?.cashAmount ?? 0,
+        accountPkr: sale?.accountAmount ?? 0,
+      );
+    }
+    final SettlementTender tender = parseSettlementDescription(
+      row.description,
+      paidPkr: row.amountPkr,
+    );
+    return ShiftUdhaarLine(
+      row: row,
+      amountPkr: row.amountPkr,
+      cashPkr: tender.cashAmountPkr,
+      accountPkr: tender.accountAmountPkr,
+    );
+  }
+}
+
+class ShiftUdhaarTableTotals {
+  const ShiftUdhaarTableTotals({
+    required this.liters,
+    required this.amountPkr,
+    required this.cashPkr,
+    required this.accountPkr,
+    required this.udhaarPkr,
+    required this.paidPkr,
+  });
+
+  final double liters;
+  final int amountPkr;
+  final int cashPkr;
+  final int accountPkr;
+  final int udhaarPkr;
+  final int paidPkr;
+
+  static ShiftUdhaarTableTotals of(List<ShiftUdhaarLine> lines) {
+    Decimal liters = Decimal.zero;
+    int amountPkr = 0;
+    int cashPkr = 0;
+    int accountPkr = 0;
+    int udhaarPkr = 0;
+    int paidPkr = 0;
+    for (final ShiftUdhaarLine line in lines) {
+      if (line.hasFuel) {
+        liters = truncateFuel(liters + parseDecimal(line.row.liters));
+      }
+      amountPkr += roundRupees(line.amountPkr);
+      cashPkr += roundRupees(line.cashPkr);
+      accountPkr += roundRupees(line.accountPkr);
+      udhaarPkr += roundRupees(line.row.udhaarPkr);
+      paidPkr += roundRupees(line.row.paidPkr);
+    }
+    return ShiftUdhaarTableTotals(
+      liters: liters.toDouble(),
+      amountPkr: amountPkr,
+      cashPkr: cashPkr,
+      accountPkr: accountPkr,
+      udhaarPkr: udhaarPkr,
+      paidPkr: paidPkr,
+    );
+  }
 }
 
 bool isShiftReportUnit(int unitId, {required bool showUnit5}) {
@@ -79,6 +291,22 @@ bool isShiftReportUnit(int unitId, {required bool showUnit5}) {
     return false;
   }
   return true;
+}
+
+/// All Units: every dispenser (plus Direct Sale in its own table).
+/// One dispenser: that unit only. Direct Sale filter: no dispenser units.
+bool includeShiftReportUnit(int id, {required bool showUnit5, int? unitId}) {
+  if (unitId != null) {
+    if (isDirectSaleUnit(unitId) || isDirectSaleUnit(id)) {
+      return false;
+    }
+    return id == unitId;
+  }
+  return isShiftReportUnit(id, showUnit5: showUnit5);
+}
+
+bool includeShiftReportDirectSales({int? unitId}) {
+  return unitId == null || isDirectSaleUnit(unitId);
 }
 
 String shiftReportPaymentLabel(PaymentMethod payment) {
@@ -119,14 +347,15 @@ double shiftSaleAccountColumn(
   return tenderFallback ? row.accountTender : row.accountAmount;
 }
 
-String pdfSafeText(String value) {
-  return value.replaceAll(
-    RegExp(r'[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]'),
-    '-',
-  );
-}
+String pdfSafeText(String value) => pdf_text.pdfSafeText(value);
 
-List<HelperSaleRecord> shiftReportDirectSales(List<HelperSaleRecord> sales) {
+List<HelperSaleRecord> shiftReportDirectSales(
+  List<HelperSaleRecord> sales, {
+  int? unitId,
+}) {
+  if (!includeShiftReportDirectSales(unitId: unitId)) {
+    return const <HelperSaleRecord>[];
+  }
   final List<HelperSaleRecord> rows = sales
       .where((HelperSaleRecord row) => isDirectSaleUnit(row.unitId))
       .toList();
@@ -149,11 +378,15 @@ int compareShiftReportSales(HelperSaleRecord a, HelperSaleRecord b) {
 List<HelperSaleRecord> shiftReportSalesChronological(
   List<HelperSaleRecord> sales, {
   bool showUnit5 = false,
+  int? unitId,
 }) {
   final List<HelperSaleRecord> rows = sales
       .where(
-        (HelperSaleRecord row) =>
-            isShiftReportUnit(row.unitId, showUnit5: showUnit5),
+        (HelperSaleRecord row) => includeShiftReportUnit(
+          row.unitId,
+          showUnit5: showUnit5,
+          unitId: unitId,
+        ),
       )
       .toList();
   rows.sort(compareShiftReportSales);
@@ -163,10 +396,12 @@ List<HelperSaleRecord> shiftReportSalesChronological(
 List<ShiftUnitSaleGroup> groupShiftReportSalesByUnit(
   List<HelperSaleRecord> sales, {
   bool showUnit5 = false,
+  int? unitId,
 }) {
   final List<HelperSaleRecord> sorted = shiftReportSalesChronological(
     sales,
     showUnit5: showUnit5,
+    unitId: unitId,
   );
   final Map<int, List<HelperSaleRecord>> grouped =
       <int, List<HelperSaleRecord>>{};
@@ -184,19 +419,24 @@ List<ShiftUnitReading> buildShiftReportReadings({
   required OperatorShiftRecord shift,
   required List<HelperSaleRecord> sales,
   bool showUnit5 = false,
+  int? unitId,
 }) {
+  if (unitId != null && isDirectSaleUnit(unitId)) {
+    return const <ShiftUnitReading>[];
+  }
   final List<HelperSaleRecord> sorted = shiftReportSalesChronological(
     sales,
     showUnit5: showUnit5,
+    unitId: unitId,
   );
   final Set<int> unitIds = <int>{};
   for (final int id in shift.openingMeters.keys) {
-    if (isShiftReportUnit(id, showUnit5: showUnit5)) {
+    if (includeShiftReportUnit(id, showUnit5: showUnit5, unitId: unitId)) {
       unitIds.add(id);
     }
   }
   for (final int id in shift.closingMeters.keys) {
-    if (isShiftReportUnit(id, showUnit5: showUnit5)) {
+    if (includeShiftReportUnit(id, showUnit5: showUnit5, unitId: unitId)) {
       unitIds.add(id);
     }
   }
@@ -373,30 +613,41 @@ List<String> shiftReportAuditLines({
   required OperatorShiftRecord shift,
   required List<HelperSaleRecord> sales,
   bool showUnit5 = false,
+  int? unitId,
 }) {
+  if (unitId != null && isDirectSaleUnit(unitId)) {
+    return const <String>[];
+  }
   final ShiftLedgerSummary summary = shiftReportLedgerSummary(shift);
   final List<SaleTransaction> rows = shiftReportSalesChronological(
     sales,
     showUnit5: showUnit5,
+    unitId: unitId,
   ).map(saleTransactionForShiftReport).toList();
   final ShiftTransactionAudit audit = auditShiftTransactions(
     rows: rows,
     summary: summary,
   );
   final Map<int, ShiftUnitAudit> byUnit = <int, ShiftUnitAudit>{
-    for (final ShiftUnitAudit unit in audit.units) unit.unitId: unit,
+    for (final ShiftUnitAudit unit in audit.units)
+      if (includeShiftReportUnit(
+        unit.unitId,
+        showUnit5: showUnit5,
+        unitId: unitId,
+      ))
+        unit.unitId: unit,
   };
   final Set<int> unitIds = Set<int>.from(byUnit.keys);
   for (final int id in <int>{
     ...shift.openingMeters.keys,
     ...shift.closingMeters.keys,
   }) {
-    if (!isShiftReportUnit(id, showUnit5: showUnit5) ||
+    if (!includeShiftReportUnit(id, showUnit5: showUnit5, unitId: unitId) ||
         byUnit.containsKey(id)) {
       continue;
     }
     final double? volume = shiftVolumeLitersFor(summary: summary, unitId: id);
-    if (volume != null && !metersMatchAtAuditScale(volume, 0)) {
+    if (volume != null && !volumesMatchForShiftAudit(volume, 0)) {
       unitIds.add(id);
     }
   }

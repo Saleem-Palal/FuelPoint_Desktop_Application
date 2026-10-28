@@ -2,10 +2,14 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/customer/domain/customer_models.dart';
+import '../../../features/station/data/receipt_widget_capture.dart';
+import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/money_format.dart';
+import '../../../providers/settings_provider.dart';
 import '../../Sale Screen/Widgets/Services/generate_receipt.dart';
 import '../../Sale Screen/Widgets/Services/receipt_preview_widget.dart';
 
@@ -16,6 +20,7 @@ ThermalReceiptView settlementThermalReceipt(
   CustomerSettlement settlement, {
   String? copyBanner,
   bool forPrint = false,
+  bool showFooter = true,
 }) {
   final List<ThermalReceiptDetail> details = <ThermalReceiptDetail>[
     ThermalReceiptDetail(label: 'Customer ID', value: settlement.customerId),
@@ -26,7 +31,7 @@ ThermalReceiptView settlementThermalReceipt(
     ),
     ThermalReceiptDetail(
       label: 'Operator',
-      value: '${settlement.cashierId} · ${settlement.cashierName}',
+      value: settlement.operatorReceiptLabel,
     ),
     ThermalReceiptDetail(
       label: 'Previous Balance',
@@ -66,6 +71,7 @@ ThermalReceiptView settlementThermalReceipt(
     showLcd: false,
     forPrint: forPrint,
     copyBanner: copyBanner,
+    showFooter: showFooter,
     details: details,
   );
 }
@@ -73,20 +79,110 @@ ThermalReceiptView settlementThermalReceipt(
 Future<void> showSettlementReceiptDialog(
   BuildContext context, {
   required CustomerSettlement settlement,
+  bool autoPrint = false,
 }) {
   return showDialog<void>(
     context: context,
     barrierDismissible: false,
     builder: (BuildContext context) {
-      return _SettlementReceiptDialog(settlement: settlement);
+      return _SettlementReceiptDialog(
+        settlement: settlement,
+        autoPrint: autoPrint,
+      );
     },
   );
 }
 
+Future<void> spoolSettlementReceipt({
+  required BuildContext context,
+  required CustomerSettlement settlement,
+}) async {
+  final Uint8List customerCopy = await captureReceiptWidget(
+    context: context,
+    child: settlementThermalReceipt(
+      settlement,
+      copyBanner: kSettlementCustomerCopy,
+      forPrint: true,
+    ),
+  );
+  if (!context.mounted) {
+    return;
+  }
+  final Uint8List stationCopy = await captureReceiptWidget(
+    context: context,
+    child: settlementThermalReceipt(
+      settlement,
+      copyBanner: kSettlementStationCopy,
+      forPrint: true,
+      showFooter: false,
+    ),
+  );
+  if (!context.mounted) {
+    return;
+  }
+  final String base = settlement.receiptNo;
+  final Uint8List? screenshotPng = await captureScreenshotCopyPng(
+    context: context,
+    facts: ScreenshotCopyFacts(
+      tokenLabel: settlementReceiptDisplay(settlement.receiptNo),
+      customerName: settlement.customerName,
+      accountAmountPkr: settlement.accountAmountPkr > 0.004
+          ? settlement.accountAmountPkr
+          : settlement.amountPkr,
+      operatorName: settlement.cashierName.trim().isEmpty
+          ? 'Operator'
+          : settlement.cashierName,
+      dateLabel: formatDateOnly(settlement.timestamp),
+      timeLabel: formatClock(settlement.timestamp),
+    ),
+    proofImagePath: settlement.proofImagePath,
+  );
+  await ReceiptGenerator.instance.printPngJobs(
+    <Uint8List>[customerCopy, stationCopy],
+    fileNames: <String>[
+      'settlement-$base-customer.pdf',
+      'settlement-$base-station.pdf',
+    ],
+    screenshotPng: screenshotPng,
+    proofImagePath: screenshotPng == null ? settlement.proofImagePath : null,
+  );
+}
+
+Future<void> presentSettlementReceipt(
+  BuildContext context, {
+  required CustomerSettlement settlement,
+  bool autoPrint = false,
+}) async {
+  if (!receiptPreviewEnabled(context)) {
+    await spoolSettlementReceipt(context: context, settlement: settlement);
+    if (!context.mounted) {
+      return;
+    }
+    final int slips = settlement.proofImagePath.trim().isEmpty ? 2 : 3;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Receipt ${settlement.receiptNo} — $slips copies sent to printer',
+        ),
+      ),
+    );
+    return;
+  }
+  await showSettlementReceiptDialog(
+    context,
+    settlement: settlement,
+    autoPrint: autoPrint,
+  );
+}
+
 class _SettlementReceiptDialog extends StatefulWidget {
-  const _SettlementReceiptDialog({required this.settlement});
+  const _SettlementReceiptDialog({
+    required this.settlement,
+    this.autoPrint = false,
+  });
 
   final CustomerSettlement settlement;
+  final bool autoPrint;
 
   @override
   State<_SettlementReceiptDialog> createState() =>
@@ -98,6 +194,20 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
   final GlobalKey _stationKey = GlobalKey();
   bool _busy = false;
   bool _forPrint = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.autoPrint) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_print());
+      });
+    }
+  }
+
+  bool get _hasProof => widget.settlement.proofImagePath.trim().isNotEmpty;
+
+  int get _slipCount => _hasProof ? 3 : 2;
 
   String get _pngName => 'settlement-${widget.settlement.receiptNo}.png';
 
@@ -112,7 +222,7 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
       'Paid now  ${formatPkrStatement(row.amountPkr)}',
       'Remaining  ${formatPkrStatement(row.remainingBalance)}',
       'Payment  ${row.receiptPaymentLabel}',
-      'Operator  ${row.cashierId} · ${row.cashierName}',
+      'Operator  ${row.operatorReceiptLabel}',
     ].join('\n');
   }
 
@@ -125,19 +235,55 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
       _forPrint = true;
     });
     try {
-      await WidgetsBinding.instance.endOfFrame;
-      await WidgetsBinding.instance.endOfFrame;
-      final Uint8List customerCopy = await ReceiptGenerator.instance
-          .capturePreview(_customerKey);
-      final Uint8List stationCopy = await ReceiptGenerator.instance
-          .capturePreview(_stationKey);
+      final Uint8List customerCopy = await captureReceiptWidget(
+        context: context,
+        child: settlementThermalReceipt(
+          widget.settlement,
+          copyBanner: kSettlementCustomerCopy,
+          forPrint: true,
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      final Uint8List stationCopy = await captureReceiptWidget(
+        context: context,
+        child: settlementThermalReceipt(
+          widget.settlement,
+          copyBanner: kSettlementStationCopy,
+          forPrint: true,
+          showFooter: false,
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
       final String base = widget.settlement.receiptNo;
+      final CustomerSettlement row = widget.settlement;
+      final Uint8List? screenshotPng = await captureScreenshotCopyPng(
+        context: context,
+        facts: ScreenshotCopyFacts(
+          tokenLabel: settlementReceiptDisplay(row.receiptNo),
+          customerName: row.customerName,
+          accountAmountPkr: row.accountAmountPkr > 0.004
+              ? row.accountAmountPkr
+              : row.amountPkr,
+          operatorName: row.cashierName.trim().isEmpty
+              ? 'Operator'
+              : row.cashierName,
+          dateLabel: formatDateOnly(row.timestamp),
+          timeLabel: formatClock(row.timestamp),
+        ),
+        proofImagePath: row.proofImagePath,
+      );
       await ReceiptGenerator.instance.printPngJobs(
         <Uint8List>[customerCopy, stationCopy],
         fileNames: <String>[
           'settlement-$base-customer.pdf',
           'settlement-$base-station.pdf',
         ],
+        screenshotPng: screenshotPng,
+        proofImagePath: screenshotPng == null ? row.proofImagePath : null,
       );
       if (!mounted) {
         return;
@@ -146,7 +292,7 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Receipt ${widget.settlement.receiptNo} — 2 copies sent to printer',
+            'Receipt ${widget.settlement.receiptNo} — $_slipCount copies sent to printer',
           ),
         ),
       );
@@ -175,8 +321,13 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
       _busy = true;
     });
     try {
-      final Uint8List png = await ReceiptGenerator.instance.capturePreview(
-        _customerKey,
+      final Uint8List png = await captureReceiptWidget(
+        context: context,
+        child: settlementThermalReceipt(
+          widget.settlement,
+          copyBanner: kSettlementCustomerCopy,
+          forPrint: true,
+        ),
       );
       await ReceiptGenerator.instance.sharePng(
         png: png,
@@ -247,7 +398,9 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
                   child: Column(
                     children: <Widget>[
                       Text(
-                        'Two slips will print: customer copy, then station record.',
+                        _hasProof
+                            ? 'Three slips will print: customer copy, station record, then screenshot.'
+                            : 'Two slips will print: customer copy, then station record.',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontFamily: 'Roboto',
@@ -271,6 +424,7 @@ class _SettlementReceiptDialogState extends State<_SettlementReceiptDialog> {
                           widget.settlement,
                           copyBanner: kSettlementStationCopy,
                           forPrint: _forPrint,
+                          showFooter: false,
                         ),
                       ),
                     ],

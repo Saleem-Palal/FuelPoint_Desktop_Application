@@ -32,7 +32,21 @@ abstract class UnifiedUdhaarRepository {
     double cashAmountPkr = 0,
     double accountAmountPkr = 0,
     String notes = '',
+    String cashierName = '',
+    String proofImagePath = '',
     DateTime? timestamp,
+  });
+
+  Future<UnifiedUdhaarRow> updateSettlement({
+    required String ledgerId,
+    required double amountPkr,
+    required SettlementPaymentMode paymentMode,
+    double cashAmountPkr = 0,
+    double accountAmountPkr = 0,
+    String notes = '',
+    String cashierName = '',
+    String proofImagePath = '',
+    String receiptNo = '',
   });
 
   Future<UnifiedUdhaarRow> insertOpeningBalance({

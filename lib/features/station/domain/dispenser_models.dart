@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'fuel_precision.dart';
+import 'money_format.dart';
 
 enum DispenserRunState {
   idle,
@@ -51,6 +52,49 @@ extension PaymentMethodX on PaymentMethod {
         return false;
     }
   }
+
+  /// Bank / EasyPaisa, and Udhaar tickets with an Account slice, print a screenshot slip.
+  bool get printsScreenshotCopy {
+    switch (this) {
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+      case PaymentMethod.udhaar:
+        return true;
+      case PaymentMethod.cash:
+        return false;
+    }
+  }
+}
+
+/// Credit posted to the customer ledger for an Udhaar ticket.
+///
+/// Cash and Account slices stay on the sale. Only the remainder is Udhaar.
+/// Old rows with both slices empty still credit the whole ticket.
+int udhaarCreditRupees({
+  required double saleAmount,
+  required double cashAmount,
+  double accountAmount = 0,
+}) {
+  final int sale = roundRupees(saleAmount);
+  final int cash = roundRupees(cashAmount);
+  final int account = roundRupees(accountAmount);
+  final int safeCash = cash < 0 ? 0 : cash;
+  final int safeAccount = account < 0 ? 0 : account;
+  final int remainder = sale - safeCash - safeAccount;
+  return remainder < 0 ? 0 : remainder;
+}
+
+/// Cash to hand back when Account received is above the fuel ticket.
+int accountOverpayBaqaya({
+  required double saleAmount,
+  required double accountNow,
+}) {
+  final int sale = roundRupees(saleAmount);
+  final int account = roundRupees(accountNow);
+  if (account <= sale) {
+    return 0;
+  }
+  return account - sale;
 }
 
 /// Tender columns on `sales_transactions`. [amountPkr] stays the ticket total
@@ -60,6 +104,7 @@ resolveAccountSplit({
   required PaymentMethod payment,
   required double saleAmount,
   required double cashNow,
+  double accountNow = 0,
 }) {
   final int sale = roundRupees(saleAmount);
   switch (payment) {
@@ -70,9 +115,23 @@ resolveAccountSplit({
         accountAmount: 0,
       );
     case PaymentMethod.udhaar:
-      return (payment: PaymentMethod.udhaar, cashAmount: 0, accountAmount: 0);
+      final int cash = roundRupees(cashNow);
+      final int account = roundRupees(accountNow);
+      return (
+        payment: PaymentMethod.udhaar,
+        cashAmount: (cash < 0 ? 0 : cash).toDouble(),
+        accountAmount: (account < 0 ? 0 : account).toDouble(),
+      );
     case PaymentMethod.bankAccount:
     case PaymentMethod.easyPaisa:
+      final int typedAccount = roundRupees(accountNow);
+      if (typedAccount > sale) {
+        return (
+          payment: payment,
+          cashAmount: 0,
+          accountAmount: typedAccount.toDouble(),
+        );
+      }
       final int cash = roundRupees(cashNow).clamp(0, sale);
       if (cash >= sale) {
         return (
@@ -90,15 +149,21 @@ resolveAccountSplit({
 }
 
 /// Confirm / Update on a waiting account sale. Cash above the ticket is cut
-/// down to the sale. A zero account remainder becomes a cash ticket.
+/// down to the sale. A zero account remainder becomes a cash ticket. Account
+/// received above the ticket stays as the credited Account amount.
 ({PaymentMethod payment, double cashAmount, double accountAmount})
 resolvePendingAccountConfirm({
   required PaymentMethod payment,
   required double saleAmount,
   required double cashAmount,
+  double pendingAccountAmount = 0,
 }) {
   final int sale = roundRupees(saleAmount);
   final int cash = roundRupees(cashAmount).clamp(0, sale);
+  final int pending = roundRupees(pendingAccountAmount);
+  if (pending > sale && cash <= 0) {
+    return (payment: payment, cashAmount: 0, accountAmount: pending.toDouble());
+  }
   final int account = sale - cash;
   if (account <= 0) {
     return (
@@ -129,14 +194,83 @@ accountPersistSplit({
         accountAmount: 0,
         pendingAccountAmount: accountAmount,
       );
-    case PaymentMethod.cash:
     case PaymentMethod.udhaar:
+      return (
+        cashAmount: cashAmount,
+        accountAmount: 0,
+        pendingAccountAmount: accountAmount,
+      );
+    case PaymentMethod.cash:
       return (
         cashAmount: cashAmount,
         accountAmount: accountAmount,
         pendingAccountAmount: 0,
       );
   }
+}
+
+/// Edit save: a changed Account slice on Bank / EasyPaisa / Udhaar waits
+/// in pending so proof can be added. Unchanged credited Account stays put.
+({
+  double cashAmount,
+  double accountAmount,
+  double pendingAccountAmount,
+  bool clearProof,
+})
+editedAccountPersistSplit({
+  required SaleTransaction saved,
+  required PaymentMethod payment,
+  required double cashAmount,
+  required double accountAmount,
+}) {
+  final ({
+    double cashAmount,
+    double accountAmount,
+    double pendingAccountAmount,
+  })
+  held = accountPersistSplit(
+    payment: payment,
+    cashAmount: cashAmount,
+    accountAmount: accountAmount,
+  );
+  final int oldSlice = roundRupees(
+    saved.accountAmount + saved.pendingAccountAmount,
+  );
+  final int newSlice = roundRupees(
+    held.accountAmount + held.pendingAccountAmount,
+  );
+  final bool accountChanged =
+      oldSlice != newSlice || (newSlice > 0 && saved.payment != payment);
+  if (held.pendingAccountAmount <= 0) {
+    return (
+      cashAmount: held.cashAmount,
+      accountAmount: held.accountAmount,
+      pendingAccountAmount: 0,
+      clearProof: false,
+    );
+  }
+  if (accountChanged) {
+    return (
+      cashAmount: held.cashAmount,
+      accountAmount: 0,
+      pendingAccountAmount: held.pendingAccountAmount,
+      clearProof: true,
+    );
+  }
+  if (saved.isAccountPending) {
+    return (
+      cashAmount: held.cashAmount,
+      accountAmount: 0,
+      pendingAccountAmount: held.pendingAccountAmount,
+      clearProof: false,
+    );
+  }
+  return (
+    cashAmount: held.cashAmount,
+    accountAmount: held.pendingAccountAmount,
+    pendingAccountAmount: 0,
+    clearProof: false,
+  );
 }
 
 String _tenderCustomerName(String raw) {
@@ -531,6 +665,7 @@ class SaleTransaction {
     this.isTest = false,
     this.drumQty = 0,
     this.saleType = '',
+    this.proofImagePath = '',
   });
 
   final int? id;
@@ -563,6 +698,7 @@ class SaleTransaction {
   final bool isTest;
   final int drumQty;
   final String saleType;
+  final String proofImagePath;
 
   bool get isRecoveredSale {
     return saleType.toUpperCase() == 'RECOVERED' ||
@@ -573,8 +709,48 @@ class SaleTransaction {
     return !isTest && pendingAccountAmount > 0;
   }
 
+  bool get isDigitalAccountPayment {
+    switch (payment) {
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+        return !isTest && accountAmount > 0;
+      case PaymentMethod.cash:
+      case PaymentMethod.udhaar:
+        return false;
+    }
+  }
+
+  /// Cash 1; Udhaar / Bank / EasyPaisa 2, plus screenshot when a proof file exists.
+  int get thermalSlipCount {
+    if (!payment.printsTwoCopies) {
+      return 1;
+    }
+    if (payment.printsScreenshotCopy && proofImagePath.trim().isNotEmpty) {
+      return 3;
+    }
+    return 2;
+  }
+
+  bool get needsAccountProof {
+    if (isTest || proofImagePath.trim().isNotEmpty) {
+      return false;
+    }
+    if (isAccountPending || isDigitalAccountPayment) {
+      return true;
+    }
+    return payment == PaymentMethod.udhaar && accountAmount > 0;
+  }
+
   double get receiptAccountAmount {
     return pendingAccountAmount > 0 ? pendingAccountAmount : accountAmount;
+  }
+
+  /// Cash back implied by Account received vs the fuel ticket. Not a DB column.
+  int get receiptBaqayaPkr {
+    return accountOverpayBaqaya(
+      saleAmount: amountPkr,
+      accountNow: receiptAccountAmount,
+    );
   }
 
   bool get isUnsettledUdhaar {
@@ -621,6 +797,7 @@ class SaleTransaction {
     bool? isTest,
     int? drumQty,
     String? saleType,
+    String? proofImagePath,
   }) {
     return SaleTransaction(
       id: id ?? this.id,
@@ -653,6 +830,63 @@ class SaleTransaction {
       isTest: isTest ?? this.isTest,
       drumQty: drumQty ?? this.drumQty,
       saleType: saleType ?? this.saleType,
+      proofImagePath: proofImagePath ?? this.proofImagePath,
+    );
+  }
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'TOKEN': formatLedgerToken(tokenNo),
+      'DATE_TIME': timestamp.toIso8601String(),
+      'UNIT_NO': unitId,
+      'AMOUNT': amountPkr,
+      'LITERS': volumeLiters,
+      'RATE': rate,
+      'OPENING_READING': openingMeter,
+      'CLOSING_READING': closingMeter,
+      'PAYMENT_METHOD': payment.label,
+      'CASH_AMOUNT': cashAmount,
+      'ACCOUNT_AMOUNT': accountAmount,
+      'PENDING_ACCOUNT': pendingAccountAmount,
+      'CUSTOMER_NAME': customerName,
+      'VEHICLE_NO': vehicleNo,
+      'ESP_TX_ID': espTxId.trim().isEmpty ? null : espTxId.trim(),
+      'EDITED': edited ? 1 : 0,
+      'IS_TEST': isTest ? 1 : 0,
+      'DRUM_QTY': drumQty,
+      'SALE_TYPE': saleType,
+      'PROOF_IMAGE_PATH': proofImagePath.trim().isEmpty
+          ? null
+          : proofImagePath.trim(),
+    };
+  }
+
+  factory SaleTransaction.fromMap(Map<String, Object?> map) {
+    final double closing = storedNumberToDouble(map['CLOSING_READING']);
+    return SaleTransaction(
+      tokenNo: parseLedgerToken('${map['TOKEN'] ?? ''}'),
+      unitId: storedNumberToDouble(map['UNIT_NO']).round(),
+      fuelType: kDieselFuelType,
+      amountPkr: storedNumberToDouble(map['AMOUNT']),
+      volumeLiters: storedNumberToDouble(map['LITERS']),
+      rate: storedNumberToDouble(map['RATE']),
+      meterCount: closing.round(),
+      timestamp:
+          DateTime.tryParse('${map['DATE_TIME'] ?? ''}') ?? DateTime.now(),
+      openingMeter: storedNumberToDouble(map['OPENING_READING']),
+      closingMeter: closing,
+      customerName: (map['CUSTOMER_NAME'] as String?)?.trim() ?? 'Walk-in',
+      vehicleNo: (map['VEHICLE_NO'] as String?)?.trim() ?? '',
+      payment: paymentMethodFromStorage(map['PAYMENT_METHOD'] as String?),
+      cashAmount: storedNumberToDouble(map['CASH_AMOUNT']),
+      accountAmount: storedNumberToDouble(map['ACCOUNT_AMOUNT']),
+      pendingAccountAmount: storedNumberToDouble(map['PENDING_ACCOUNT']),
+      edited: storedNumberToDouble(map['EDITED']).round() != 0,
+      isTest: storedNumberToDouble(map['IS_TEST']).round() != 0,
+      drumQty: storedNumberToDouble(map['DRUM_QTY']).round(),
+      saleType: (map['SALE_TYPE'] as String?)?.trim() ?? '',
+      proofImagePath: (map['PROOF_IMAGE_PATH'] as String?)?.trim() ?? '',
+      espTxId: '${map['ESP_TX_ID'] ?? ''}',
     );
   }
 }
@@ -953,6 +1187,40 @@ String formatLedgerToken(int tokenNo) {
     return 'TKN-DR-${formatTokenNo(tokenNo)}';
   }
   return 'TKN-${formatTokenNo(tokenNo)}';
+}
+
+class ScreenshotCopyFacts {
+  const ScreenshotCopyFacts({
+    required this.tokenLabel,
+    required this.customerName,
+    required this.accountAmountPkr,
+    required this.operatorName,
+    this.dateLabel = '',
+    this.timeLabel = '',
+  });
+
+  factory ScreenshotCopyFacts.fromSale(SaleTransaction txn) {
+    final double account = txn.pendingAccountAmount > 0.004
+        ? txn.pendingAccountAmount
+        : txn.accountAmount;
+    final String name = txn.customerName.trim();
+    final String operator = txn.cashierName.trim();
+    return ScreenshotCopyFacts(
+      tokenLabel: formatLedgerToken(txn.tokenNo),
+      customerName: name.isEmpty ? 'Walk-in' : name,
+      accountAmountPkr: account,
+      operatorName: operator.isEmpty ? 'Operator' : operator,
+      dateLabel: formatDateOnly(txn.timestamp),
+      timeLabel: formatClock(txn.timestamp),
+    );
+  }
+
+  final String tokenLabel;
+  final String customerName;
+  final double accountAmountPkr;
+  final String operatorName;
+  final String dateLabel;
+  final String timeLabel;
 }
 
 int parseLedgerToken(String raw) {

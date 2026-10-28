@@ -263,9 +263,9 @@ class _MasterPinSettingsCardState extends ConsumerState<MasterPinSettingsCard> {
                     ),
                     if (FingerprintHelperSession.isSupported)
                       DsPillButton(
-                        label: access.fingerprintEnrolled
-                            ? 'Re-enroll fingerprint'
-                            : 'Enroll fingerprint',
+                        label: access.fingerprintCount == 0
+                            ? 'Enroll fingerprint'
+                            : 'Add fingerprint',
                         icon: Icons.fingerprint,
                         compact: true,
                         variant: DsPillVariant.outline,
@@ -278,9 +278,11 @@ class _MasterPinSettingsCardState extends ConsumerState<MasterPinSettingsCard> {
                             : null,
                       ),
                     if (FingerprintHelperSession.isSupported &&
-                        access.fingerprintEnrolled)
+                        access.fingerprintCount > 0)
                       DsStatusPill(
-                        label: 'Fingerprint enrolled',
+                        label: access.fingerprintCount == 1
+                            ? '1 fingerprint enrolled'
+                            : '${access.fingerprintCount} fingerprints enrolled',
                         foreground: tokens.good,
                         background: tokens.good.withValues(alpha: 0.12),
                       ),

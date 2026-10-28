@@ -8,6 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:decimal/decimal.dart';
 
 import '../core/security/pin_hasher.dart';
+import '../features/access/domain/owner_fingerprint_gallery.dart';
 import '../features/shift/domain/shift_lifecycle.dart';
 import '../features/station/domain/average_rate.dart';
 import '../features/station/domain/dispenser_models.dart';
@@ -24,7 +25,7 @@ class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
 
   static const String dbName = 'fuel_point_system.db';
-  static const int dbVersion = 3;
+  static const int dbVersion = 4;
 
   static const String tableOperators = 'managers';
   static const String tableHelpers = 'helpers';
@@ -76,6 +77,14 @@ class DatabaseHelper {
   static const String settingReceiptFooterFontSize = 'receipt_footer_font_size';
   static const String settingReceiptFooterLineHeight =
       'receipt_footer_line_height';
+  static const String settingIntercomPumpVolume = 'intercom_pump_volume';
+  static const String settingIntercomPumpMic = 'intercom_pump_mic';
+  static const String settingIntercomPumpNoiseCut = 'intercom_pump_noise_cut';
+  static const String settingIntercomStationVolume = 'intercom_station_volume';
+  static const String settingIntercomMicLevel = 'intercom_mic_level';
+  static const String settingIntercomOfficeNoiseCut =
+      'intercom_office_noise_cut';
+  static const String settingIntercomNoiseCut = 'intercom_noise_cut';
 
   /// Keys kept when `station_settings` is truncated so Drive OAuth survives.
   static const List<String> googleIdentitySettingKeys = <String>[
@@ -222,12 +231,18 @@ class DatabaseHelper {
     await _ensureSalesTransactionDutyIds(db);
     await _ensureTestMeterLogs(db);
     await _ensureShiftWorkflowSchema(db);
+    await _ensureSalesProofImagePath(db);
+    await _ensureUnifiedProofImagePath(db);
     await _seedOwnerAccessSettings(db);
     await _purgeLegacyDemoHelpers(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     await _ensureShiftWorkflowSchema(db);
+    if (oldVersion < 4) {
+      await _ensureSalesProofImagePath(db);
+    }
+    await _ensureUnifiedProofImagePath(db);
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -287,6 +302,8 @@ CREATE TABLE IF NOT EXISTS $tableShifts (
   NOTES TEXT NOT NULL DEFAULT '',
   OPENING_METERS TEXT NOT NULL DEFAULT '{}',
   CLOSING_METERS TEXT NOT NULL DEFAULT '{}',
+  UDHAAR_RECOVERY_CASH REAL NOT NULL DEFAULT 0.0,
+  UDHAAR_RECOVERY_ACCOUNT REAL NOT NULL DEFAULT 0.0,
   FOREIGN KEY (MANAGER) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (Helper) REFERENCES $tableHelpers (Helper_ID)
 );
@@ -319,6 +336,7 @@ CREATE TABLE IF NOT EXISTS $tableSalesTransactions (
   IS_TEST INTEGER NOT NULL DEFAULT 0,
   DRUM_QTY INTEGER NOT NULL DEFAULT 0,
   SALE_TYPE TEXT NOT NULL DEFAULT '',
+  PROOF_IMAGE_PATH TEXT,
   FOREIGN KEY (HELPER) REFERENCES $tableHelpers (Helper_ID),
   FOREIGN KEY (Manager) REFERENCES $tableOperators (manager_ID),
   FOREIGN KEY (SHIFT_ID) REFERENCES $tableShifts (SHIFT_ID),
@@ -476,6 +494,10 @@ WHERE HELPER_ID IS NULL OR TRIM(HELPER_ID) = ''
         'CREATE INDEX IF NOT EXISTS idx_sales_transactions_shift_id '
         'ON $tableSalesTransactions (SHIFT_ID)',
       );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_sales_transactions_date_time '
+        'ON $tableSalesTransactions (DATE_TIME)',
+      );
       if (!names.contains('ESP_TX_ID')) {
         await db.execute(
           'ALTER TABLE $tableSalesTransactions ADD COLUMN ESP_TX_ID TEXT',
@@ -521,6 +543,15 @@ WHERE HELPER_ID IS NULL OR TRIM(HELPER_ID) = ''
           "ALTER TABLE $tableSalesTransactions ADD COLUMN SALE_TYPE TEXT NOT NULL DEFAULT ''",
         );
       }
+      if (names.contains('BAQAYA_PKR')) {
+        try {
+          await db.execute(
+            'ALTER TABLE $tableSalesTransactions DROP COLUMN BAQAYA_PKR',
+          );
+        } catch (error, stack) {
+          debugPrint('Could not drop BAQAYA_PKR: $error\n$stack');
+        }
+      }
       await _backfillSalesTenderColumns(db);
     } catch (error, stack) {
       debugPrint(
@@ -529,8 +560,50 @@ WHERE HELPER_ID IS NULL OR TRIM(HELPER_ID) = ''
     }
   }
 
+  Future<void> _ensureUnifiedProofImagePath(Database db) async {
+    try {
+      final List<Map<String, Object?>> cols = await db.rawQuery(
+        'PRAGMA table_info($tableUnifiedUdhaarLedger)',
+      );
+      final Set<String> names = <String>{
+        for (final Map<String, Object?> col in cols) '${col['name']}',
+      };
+      if (names.contains('PROOF_IMAGE_PATH')) {
+        return;
+      }
+      await db.execute(
+        'ALTER TABLE $tableUnifiedUdhaarLedger ADD COLUMN PROOF_IMAGE_PATH TEXT',
+      );
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._ensureUnifiedProofImagePath failed: $error\n$stack',
+      );
+    }
+  }
+
+  Future<void> _ensureSalesProofImagePath(Database db) async {
+    try {
+      final List<Map<String, Object?>> cols = await db.rawQuery(
+        'PRAGMA table_info($tableSalesTransactions)',
+      );
+      final Set<String> names = <String>{
+        for (final Map<String, Object?> col in cols) '${col['name']}',
+      };
+      if (names.contains('PROOF_IMAGE_PATH')) {
+        return;
+      }
+      await db.execute(
+        'ALTER TABLE $tableSalesTransactions ADD COLUMN PROOF_IMAGE_PATH TEXT',
+      );
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper._ensureSalesProofImagePath failed: $error\n$stack',
+      );
+    }
+  }
+
   /// Cash column = cash tickets + Cash Now. Account column = account remainder.
-  /// Udhaar leaves both empty. Does not copy [AMOUNT] into those KPIs twice.
+  /// Does not copy [AMOUNT] into those KPIs twice. Udhaar rows keep a stored split.
   Future<void> _backfillSalesTenderColumns(Database db) async {
     final List<Map<String, Object?>> rows = await db.query(
       tableSalesTransactions,
@@ -555,8 +628,7 @@ WHERE HELPER_ID IS NULL OR TRIM(HELPER_ID) = ''
       double nextCash = cash;
       double nextAccount = account;
       if (key == 'udhaar') {
-        nextCash = 0;
-        nextAccount = 0;
+        continue;
       } else if (key == 'cash' && cash == 0 && account == 0) {
         nextCash = sale.toDouble();
       } else if ((key == 'bank account' || key == 'easypaisa') &&
@@ -628,6 +700,18 @@ CREATE TABLE IF NOT EXISTS $tableAppSessionState (
       if (!shiftNames.contains('CLOSING_METERS')) {
         await db.execute(
           "ALTER TABLE $tableShifts ADD COLUMN CLOSING_METERS TEXT NOT NULL DEFAULT '{}'",
+        );
+      }
+      if (!shiftNames.contains('UDHAAR_RECOVERY_CASH')) {
+        await db.execute(
+          'ALTER TABLE $tableShifts ADD COLUMN UDHAAR_RECOVERY_CASH '
+          'REAL NOT NULL DEFAULT 0.0',
+        );
+      }
+      if (!shiftNames.contains('UDHAAR_RECOVERY_ACCOUNT')) {
+        await db.execute(
+          'ALTER TABLE $tableShifts ADD COLUMN UDHAAR_RECOVERY_ACCOUNT '
+          'REAL NOT NULL DEFAULT 0.0',
         );
       }
       await db.execute(
@@ -860,6 +944,10 @@ CREATE TABLE ${tableSalesTransactions}__precision (
           'CREATE INDEX IF NOT EXISTS idx_sales_transactions_shift_id '
           'ON $tableSalesTransactions (SHIFT_ID)',
         );
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_sales_transactions_date_time '
+          'ON $tableSalesTransactions (DATE_TIME)',
+        );
       }
       if (!await _columnIsText(db, tableUnifiedUdhaarLedger, 'LITERS')) {
         await _rebuildTable(
@@ -1069,6 +1157,7 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
     String? creditShiftId,
     String? creditDescription,
     String? creditVehicle,
+    double? creditAmount,
   }) async {
     try {
       final Database db = await database;
@@ -1104,6 +1193,7 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
         saleRow['PENDING_ACCOUNT'] = roundRupees(
           saleRow['PENDING_ACCOUNT'] ?? 0,
         );
+        saleRow.remove('BAQAYA_PKR');
         if (espTxId.isNotEmpty) {
           final List<Map<String, Object?>> existing = await txn.query(
             tableSalesTransactions,
@@ -1118,7 +1208,12 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
         }
         await txn.insert(tableSalesTransactions, saleRow);
         final String? creditId = creditCustomerId?.trim();
-        if (creditId != null && creditId.isNotEmpty) {
+        final double postedCredit = creditAmount == null
+            ? parseDecimal(saleRow['AMOUNT']).toDouble()
+            : creditAmount;
+        if (creditId != null &&
+            creditId.isNotEmpty &&
+            roundRupees(postedCredit) > 0) {
           final String creditName =
               (creditCustomerName ?? sale['CUSTOMER_NAME'] as String? ?? '')
                   .trim();
@@ -1136,7 +1231,13 @@ CREATE TABLE ${tableUnifiedUdhaarLedger}__precision (
             at:
                 DateTime.tryParse('${sale['DATE_TIME'] ?? ''}') ??
                 DateTime.now(),
-            amount: parseDecimal(saleRow['AMOUNT']).toDouble(),
+            amount: udhaarCreditRupees(
+              saleAmount: parseDecimal(saleRow['AMOUNT']).toDouble(),
+              cashAmount: _asDouble(saleRow['CASH_AMOUNT']),
+              accountAmount:
+                  _asDouble(saleRow['ACCOUNT_AMOUNT']) +
+                  _asDouble(saleRow['PENDING_ACCOUNT']),
+            ).toDouble(),
             token: sale['TOKEN'] as String?,
             liters: parseFuel(saleRow['LITERS']).toDouble(),
             rate: parseFuel(saleRow['RATE']).toDouble(),
@@ -1180,6 +1281,7 @@ SELECT
   s.IS_TEST,
   s.DRUM_QTY,
   s.SALE_TYPE,
+  s.PROOF_IMAGE_PATH,
   m.Manager_name AS manager_name,
   h.Helper_name AS helper_name
 FROM $tableSalesTransactions s
@@ -1359,6 +1461,187 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     }
   }
 
+  /// All Transactions window: aggregate totals plus the rows in that window.
+  ///
+  /// [fromInclusive] / [toInclusive] are calendar days. Pass a null [limit]
+  /// to load every row in the window.
+  Future<({Map<String, Object?> totals, List<Map<String, Object?>> rows})>
+  querySalesLedgerWindow({
+    required DateTime fromInclusive,
+    required DateTime toInclusive,
+    int? unitId,
+    String search = '',
+    int? limit,
+    int offset = 0,
+  }) async {
+    try {
+      final Database db = await database;
+      final ({String clause, List<Object> args}) filter = _salesLedgerFilter(
+        fromInclusive: fromInclusive,
+        toInclusive: toInclusive,
+        unitId: unitId,
+        search: search,
+      );
+      return db.transaction((Transaction txn) async {
+        final List<Map<String, Object?>> totals = await txn.rawQuery(
+          '''
+SELECT
+  COUNT(*) AS row_count,
+  COALESCE(SUM(CASE WHEN $_commercialSale THEN 1 ELSE 0 END), 0) AS commercial_count,
+  COALESCE(SUM(CASE WHEN $_commercialSale THEN s.AMOUNT ELSE 0 END), 0) AS total_amount,
+  COALESCE(SUM(CASE WHEN $_commercialSale THEN CAST(s.LITERS AS REAL) ELSE 0 END), 0) AS commercial_liters,
+  COALESCE(SUM(CASE WHEN s.UNIT_NO != ? THEN CAST(s.LITERS AS REAL) ELSE 0 END), 0) AS physical_liters,
+  COALESCE(SUM(CASE WHEN $_commercialSale AND LOWER(TRIM(s.PAYMENT_METHOD)) = 'udhaar' THEN MAX(0, s.AMOUNT - COALESCE(s.CASH_AMOUNT, 0) - COALESCE(s.ACCOUNT_AMOUNT, 0)) ELSE 0 END), 0) AS udhaar_amount,
+  COALESCE(SUM(CASE WHEN $_commercialSale AND LOWER(TRIM(s.PAYMENT_METHOD)) = 'udhaar' THEN 1 ELSE 0 END), 0) AS udhaar_count,
+  COALESCE(SUM(CASE WHEN $_commercialSale THEN COALESCE(s.ACCOUNT_AMOUNT, 0) ELSE 0 END), 0) AS account_amount
+FROM $tableSalesTransactions s
+WHERE ${filter.clause}
+''',
+          <Object>[
+            kDirectSaleUnitId,
+            kDirectSaleUnitId,
+            kDirectSaleUnitId,
+            kDirectSaleUnitId,
+            kDirectSaleUnitId,
+            kDirectSaleUnitId,
+            kDirectSaleUnitId,
+            ...filter.args,
+          ],
+        );
+        final StringBuffer rowsSql = StringBuffer('''
+$_salesSelectSql
+WHERE ${filter.clause}
+ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
+''');
+        final List<Object> rowArgs = List<Object>.from(filter.args);
+        if (limit != null) {
+          rowsSql.write(' LIMIT ? OFFSET ?');
+          rowArgs.add(limit);
+          rowArgs.add(offset < 0 ? 0 : offset);
+        }
+        final List<Map<String, Object?>> rows = await txn.rawQuery(
+          rowsSql.toString(),
+          rowArgs,
+        );
+        return (
+          totals: totals.isEmpty ? const <String, Object?>{} : totals.first,
+          rows: rows,
+        );
+      });
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.querySalesLedgerWindow failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
+  static const String _commercialSale =
+      'COALESCE(s.IS_TEST, 0) = 0 AND s.UNIT_NO != ?';
+
+  /// Earliest sale matching [unitId] and [search], ignoring the date window.
+  Future<DateTime?> queryOldestSaleTimestamp({
+    int? unitId,
+    String search = '',
+  }) async {
+    try {
+      final Database db = await database;
+      final ({List<String> where, List<Object> args}) match = _salesMatchFilter(
+        unitId: unitId,
+        search: search,
+      );
+      final StringBuffer sql = StringBuffer(
+        'SELECT MIN(datetime(s.DATE_TIME)) AS oldest '
+        'FROM $tableSalesTransactions s',
+      );
+      if (match.where.isNotEmpty) {
+        sql.write(' WHERE ');
+        sql.write(match.where.join(' AND '));
+      }
+      final List<Map<String, Object?>> rows = await db.rawQuery(
+        sql.toString(),
+        match.args,
+      );
+      if (rows.isEmpty) {
+        return null;
+      }
+      final String raw = '${rows.first['oldest'] ?? ''}'.trim();
+      if (raw.isEmpty || raw == 'null') {
+        return null;
+      }
+      return DateTime.tryParse(raw.replaceFirst(' ', 'T'));
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.queryOldestSaleTimestamp failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
+  ({String clause, List<Object> args}) _salesLedgerFilter({
+    required DateTime fromInclusive,
+    required DateTime toInclusive,
+    int? unitId,
+    String search = '',
+  }) {
+    final List<String> where = <String>[];
+    final List<Object> args = <Object>[];
+    final DateTime start = DateTime(
+      fromInclusive.year,
+      fromInclusive.month,
+      fromInclusive.day,
+    );
+    final DateTime endExclusive = DateTime(
+      toInclusive.year,
+      toInclusive.month,
+      toInclusive.day,
+    ).add(const Duration(days: 1));
+    where.add('datetime(s.DATE_TIME) >= datetime(?)');
+    args.add(start.toIso8601String());
+    where.add('datetime(s.DATE_TIME) < datetime(?)');
+    args.add(endExclusive.toIso8601String());
+    final ({List<String> where, List<Object> args}) match = _salesMatchFilter(
+      unitId: unitId,
+      search: search,
+    );
+    where.addAll(match.where);
+    args.addAll(match.args);
+    return (clause: where.join(' AND '), args: args);
+  }
+
+  ({List<String> where, List<Object> args}) _salesMatchFilter({
+    int? unitId,
+    String search = '',
+  }) {
+    final List<String> where = <String>[];
+    final List<Object> args = <Object>[];
+    if (unitId != null) {
+      where.add('s.UNIT_NO = ?');
+      args.add(unitId);
+    }
+    final String query = search.trim().toLowerCase();
+    if (query.isNotEmpty) {
+      final String pattern = _likeContains(query);
+      where.add(
+        "(LOWER(s.TOKEN) LIKE ? ESCAPE '\\' "
+        "OR LOWER(IFNULL(s.CUSTOMER_NAME, '')) LIKE ? ESCAPE '\\' "
+        "OR LOWER(IFNULL(s.VEHICLE_NO, '')) LIKE ? ESCAPE '\\')",
+      );
+      args.add(pattern);
+      args.add(pattern);
+      args.add(pattern);
+    }
+    return (where: where, args: args);
+  }
+
+  String _likeContains(String lowerQuery) {
+    final String escaped = lowerQuery
+        .replaceAll(r'\', r'\\')
+        .replaceAll('%', r'\%')
+        .replaceAll('_', r'\_');
+    return '%$escaped%';
+  }
+
   Future<void> markSaleSettled({
     required String token,
     required String actions,
@@ -1415,38 +1698,54 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
     bool? edited,
     int? drumQty,
     String? saleType,
+    String? creditCustomerId,
+    String? creditCustomerName,
+    String? creditShiftId,
+    String? creditDescription,
   }) async {
     try {
       final Database db = await database;
-      final Map<String, Object?> values = <String, Object?>{
-        'CUSTOMER_NAME': customerName,
-        'VEHICLE_NO': vehicleNo,
-        'PAYMENT_METHOD': paymentMethod,
-      };
-      if (cashAmount != null) {
-        values['CASH_AMOUNT'] = roundRupees(cashAmount);
-      }
-      if (accountAmount != null) {
-        values['ACCOUNT_AMOUNT'] = roundRupees(accountAmount);
-      }
-      if (pendingAccountAmount != null) {
-        values['PENDING_ACCOUNT'] = roundRupees(pendingAccountAmount);
-      }
-      if (edited != null) {
-        values['EDITED'] = edited ? 1 : 0;
-      }
-      if (drumQty != null) {
-        values['DRUM_QTY'] = drumQty;
-      }
-      if (saleType != null) {
-        values['SALE_TYPE'] = saleType;
-      }
-      await db.update(
-        tableSalesTransactions,
-        values,
-        where: 'TOKEN = ?',
-        whereArgs: <Object>[token],
-      );
+      await db.transaction((Transaction txn) async {
+        final Map<String, Object?> values = <String, Object?>{
+          'CUSTOMER_NAME': customerName,
+          'VEHICLE_NO': vehicleNo,
+          'PAYMENT_METHOD': paymentMethod,
+        };
+        if (cashAmount != null) {
+          values['CASH_AMOUNT'] = roundRupees(cashAmount);
+        }
+        if (accountAmount != null) {
+          values['ACCOUNT_AMOUNT'] = roundRupees(accountAmount);
+        }
+        if (pendingAccountAmount != null) {
+          values['PENDING_ACCOUNT'] = roundRupees(pendingAccountAmount);
+        }
+        if (edited != null) {
+          values['EDITED'] = edited ? 1 : 0;
+        }
+        if (drumQty != null) {
+          values['DRUM_QTY'] = drumQty;
+        }
+        if (saleType != null) {
+          values['SALE_TYPE'] = saleType;
+        }
+        await txn.update(
+          tableSalesTransactions,
+          values,
+          where: 'TOKEN = ?',
+          whereArgs: <Object>[token],
+        );
+        await _syncUdhaarSaleForPayment(
+          txn,
+          token: token,
+          paymentMethod: paymentMethod,
+          creditCustomerId: creditCustomerId,
+          creditCustomerName: creditCustomerName ?? customerName,
+          creditShiftId: creditShiftId,
+          creditDescription: creditDescription,
+          vehicleNo: vehicleNo,
+        );
+      });
     } catch (error, stack) {
       debugPrint(
         'DatabaseHelper.updateSalesTransaction failed: $error\n$stack',
@@ -1532,40 +1831,18 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
           where: 'TOKEN = ?',
           whereArgs: <Object>[token],
         );
-        final String? creditId = creditCustomerId?.trim();
-        if (creditId == null || creditId.isEmpty) {
-          return;
-        }
-        final List<Map<String, Object?>> existing = await txn.query(
-          tableUnifiedUdhaarLedger,
-          columns: const <String>['PRIMARY_KEY'],
-          where: "TKN = ? AND TYPE = 'SALE'",
-          whereArgs: <Object>[token],
-          limit: 1,
-        );
-        if (existing.isNotEmpty) {
-          return;
-        }
-        final String creditName = (creditCustomerName ?? customerName ?? '')
-            .trim();
-        await _upsertCustomerTxn(
+        await _syncUdhaarSaleForPayment(
           txn,
-          id: creditId,
-          name: creditName.isEmpty ? creditId : creditName,
-        );
-        await _insertUnifiedUdhaarTxn(
-          txn,
-          type: 'SALE',
-          shiftId: creditShiftId ?? '',
-          customerId: creditId,
-          customerName: creditName.isEmpty ? creditId : creditName,
-          at: DateTime.now(),
-          amount: saleAmount,
           token: token,
-          liters: volumeLiters,
+          paymentMethod: paymentMethod,
+          creditCustomerId: creditCustomerId,
+          creditCustomerName: creditCustomerName ?? customerName,
+          creditShiftId: creditShiftId,
+          creditDescription: creditDescription,
+          vehicleNo: vehicleNo,
+          saleAmount: saleAmount,
+          volumeLiters: volumeLiters,
           rate: rate,
-          description: creditDescription ?? '',
-          vehicle: vehicleNo,
         );
       });
     } catch (error, stack) {
@@ -1604,6 +1881,34 @@ ORDER BY datetime(s.DATE_TIME) DESC, s.TOKEN DESC
       }
     } catch (error, stack) {
       debugPrint('DatabaseHelper.confirmPendingAccount failed: $error\n$stack');
+      rethrow;
+    }
+  }
+
+  Future<void> updateSaleProofImagePath({
+    required String token,
+    required String? path,
+  }) async {
+    try {
+      final Database db = await database;
+      final String? trimmed = path?.trim();
+      final int changed = await db.update(
+        tableSalesTransactions,
+        <String, Object?>{
+          'PROOF_IMAGE_PATH': (trimmed == null || trimmed.isEmpty)
+              ? null
+              : trimmed,
+        },
+        where: 'TOKEN = ?',
+        whereArgs: <Object>[token],
+      );
+      if (changed == 0) {
+        throw StateError('No sale found for token $token');
+      }
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.updateSaleProofImagePath failed: $error\n$stack',
+      );
       rethrow;
     }
   }
@@ -2292,6 +2597,8 @@ SELECT
   s.NOTES,
   s.OPENING_METERS,
   s.CLOSING_METERS,
+  s.UDHAAR_RECOVERY_CASH,
+  s.UDHAAR_RECOVERY_ACCOUNT,
   m.Manager_name AS manager_name,
   h.Helper_name AS helper_name
 FROM $tableShifts s
@@ -2369,6 +2676,8 @@ ORDER BY datetime(s.START_TIME) DESC
     String notes = '',
     String openingMeters = '{}',
     String closingMeters = '{}',
+    double udhaarRecoveryCash = 0,
+    double udhaarRecoveryAccount = 0,
     DatabaseExecutor? executor,
   }) async {
     try {
@@ -2385,6 +2694,8 @@ ORDER BY datetime(s.START_TIME) DESC
         'NOTES': notes,
         'OPENING_METERS': openingMeters,
         'CLOSING_METERS': closingMeters,
+        'UDHAAR_RECOVERY_CASH': udhaarRecoveryCash,
+        'UDHAAR_RECOVERY_ACCOUNT': udhaarRecoveryAccount,
       });
     } catch (error, stack) {
       debugPrint('DatabaseHelper.insertShift failed: $error\n$stack');
@@ -2403,6 +2714,8 @@ ORDER BY datetime(s.START_TIME) DESC
     String? notes,
     String? openingMeters,
     String? closingMeters,
+    double? udhaarRecoveryCash,
+    double? udhaarRecoveryAccount,
     DatabaseExecutor? executor,
   }) async {
     try {
@@ -2434,6 +2747,12 @@ ORDER BY datetime(s.START_TIME) DESC
       }
       if (closingMeters != null) {
         values['CLOSING_METERS'] = closingMeters;
+      }
+      if (udhaarRecoveryCash != null) {
+        values['UDHAAR_RECOVERY_CASH'] = udhaarRecoveryCash;
+      }
+      if (udhaarRecoveryAccount != null) {
+        values['UDHAAR_RECOVERY_ACCOUNT'] = udhaarRecoveryAccount;
       }
       if (values.isEmpty) {
         return;
@@ -2566,7 +2885,7 @@ ORDER BY datetime(s.START_TIME) DESC
       if (prefix.isNotEmpty) {
         return db.query(
           tableUnifiedUdhaarLedger,
-          where: "TYPE = 'SETTLEMENT' AND PRIMARY_KEY LIKE ?",
+          where: 'PRIMARY_KEY LIKE ?',
           whereArgs: <Object>['$prefix%'],
           orderBy: 'datetime(DATE_TIME) ASC, PRIMARY_KEY ASC',
         );
@@ -2623,6 +2942,7 @@ ORDER BY datetime(s.START_TIME) DESC
     double rate = 0,
     String description = '',
     String? vehicle,
+    String proofImagePath = '',
   }) async {
     try {
       final Database db = await database;
@@ -2641,11 +2961,64 @@ ORDER BY datetime(s.START_TIME) DESC
           rate: rate,
           description: description,
           vehicle: vehicle,
+          proofImagePath: proofImagePath,
         );
       });
     } catch (error, stack) {
       debugPrint(
         'DatabaseHelper.insertUnifiedUdhaarEntry failed: $error\n$stack',
+      );
+      rethrow;
+    }
+  }
+
+  Future<Map<String, Object?>> updateUnifiedUdhaarSettlement({
+    required String primaryKey,
+    required double amountPkr,
+    required String description,
+    String proofImagePath = '',
+  }) async {
+    try {
+      final Database db = await database;
+      return db.transaction((Transaction txn) async {
+        final List<Map<String, Object?>> found = await txn.query(
+          tableUnifiedUdhaarLedger,
+          where: 'PRIMARY_KEY = ?',
+          whereArgs: <Object>[primaryKey],
+          limit: 1,
+        );
+        if (found.isEmpty) {
+          throw StateError('Settlement $primaryKey was not found');
+        }
+        final String customerId = '${found.first['Customer_ID'] ?? ''}'.trim();
+        final String proof = proofImagePath.trim();
+        await txn.update(
+          tableUnifiedUdhaarLedger,
+          <String, Object?>{
+            'AMOUNT': roundRupees(amountPkr),
+            'DESCRIPTION': description.trim(),
+            'PROOF_IMAGE_PATH': proof.isEmpty ? null : proof,
+          },
+          where: 'PRIMARY_KEY = ?',
+          whereArgs: <Object>[primaryKey],
+        );
+        if (customerId.isNotEmpty) {
+          await _recomputeUnifiedRemaining(txn, customerId);
+        }
+        final List<Map<String, Object?>> rows = await txn.query(
+          tableUnifiedUdhaarLedger,
+          where: 'PRIMARY_KEY = ?',
+          whereArgs: <Object>[primaryKey],
+          limit: 1,
+        );
+        if (rows.isEmpty) {
+          throw StateError('Settlement $primaryKey was not found after save');
+        }
+        return rows.first;
+      });
+    } catch (error, stack) {
+      debugPrint(
+        'DatabaseHelper.updateUnifiedUdhaarSettlement failed: $error\n$stack',
       );
       rethrow;
     }
@@ -3248,17 +3621,26 @@ ORDER BY datetime(s.START_TIME) DESC
     await writeAppSetting(settingOwnerAutoLockMinutes, '$safe');
   }
 
-  Future<String?> readOwnerFingerprintFmd() async {
+  Future<List<String>> readOwnerFingerprintFmds() async {
     final String? stored = await readAppSetting(settingOwnerFingerprintFmd);
-    final String trimmed = stored?.trim() ?? '';
-    return trimmed.isEmpty ? null : trimmed;
+    return OwnerFingerprintGallery.parse(stored);
+  }
+
+  Future<String?> readOwnerFingerprintFmd() async {
+    final List<String> fingers = await readOwnerFingerprintFmds();
+    if (fingers.isEmpty) {
+      return null;
+    }
+    return fingers.first;
   }
 
   Future<bool> hasOwnerFingerprint() async {
-    return await readOwnerFingerprintFmd() != null;
+    final List<String> fingers = await readOwnerFingerprintFmds();
+    return fingers.isNotEmpty;
   }
 
-  Future<void> writeOwnerFingerprint({
+  /// Adds one finger. Existing fingers stay enrolled.
+  Future<int> addOwnerFingerprint({
     required String protectedFmd,
     String format = 'ANSI',
   }) async {
@@ -3266,11 +3648,45 @@ ORDER BY datetime(s.START_TIME) DESC
     if (blob.isEmpty) {
       throw ArgumentError('Owner fingerprint template is empty.');
     }
-    await writeAppSetting(settingOwnerFingerprintFmd, blob);
+    final List<String> fingers = await readOwnerFingerprintFmds();
+    if (fingers.length >= OwnerFingerprintGallery.maxFingers) {
+      throw StateError(
+        'The owner already has ${OwnerFingerprintGallery.maxFingers} fingerprints enrolled.',
+      );
+    }
+    fingers.add(blob);
+    await writeAppSetting(
+      settingOwnerFingerprintFmd,
+      OwnerFingerprintGallery.encode(fingers),
+    );
     await writeAppSetting(settingOwnerFingerprintFormat, format);
     await writeAppSetting(
       settingOwnerFingerprintEnrolledAt,
       DateTime.now().toIso8601String(),
+    );
+    return fingers.length;
+  }
+
+  Future<void> writeOwnerFingerprint({
+    required String protectedFmd,
+    String format = 'ANSI',
+  }) {
+    return addOwnerFingerprint(protectedFmd: protectedFmd, format: format);
+  }
+
+  Future<void> removeOwnerFingerprintAt(int index) async {
+    final List<String> fingers = await readOwnerFingerprintFmds();
+    if (index < 0 || index >= fingers.length) {
+      return;
+    }
+    fingers.removeAt(index);
+    if (fingers.isEmpty) {
+      await clearOwnerFingerprint();
+      return;
+    }
+    await writeAppSetting(
+      settingOwnerFingerprintFmd,
+      OwnerFingerprintGallery.encode(fingers),
     );
   }
 
@@ -3521,6 +3937,146 @@ ORDER BY datetime(s.START_TIME) DESC
     );
   }
 
+  Future<void> _syncUdhaarSaleForPayment(
+    Transaction txn, {
+    required String token,
+    required String paymentMethod,
+    String? creditCustomerId,
+    String? creditCustomerName,
+    String? creditShiftId,
+    String? creditDescription,
+    String? vehicleNo,
+    double? saleAmount,
+    double? volumeLiters,
+    double? rate,
+  }) async {
+    final List<Map<String, Object?>> existing = await txn.query(
+      tableUnifiedUdhaarLedger,
+      where: "TKN = ? AND TYPE = 'SALE'",
+      whereArgs: <Object>[token],
+      limit: 1,
+    );
+    final bool wantUdhaar =
+        paymentMethod.trim().toLowerCase() ==
+        PaymentMethod.udhaar.label.toLowerCase();
+    final String? creditId = creditCustomerId?.trim();
+    if (!wantUdhaar || creditId == null || creditId.isEmpty) {
+      if (existing.isNotEmpty) {
+        await _deleteUnifiedSaleAndRecompute(txn, existing.first);
+      }
+      return;
+    }
+    final String paddedId = creditId.padLeft(2, '0');
+    if (existing.isNotEmpty) {
+      final String oldId = '${existing.first['Customer_ID'] ?? ''}'.trim();
+      if (oldId.padLeft(2, '0') == paddedId) {
+        return;
+      }
+      await _deleteUnifiedSaleAndRecompute(txn, existing.first);
+    }
+    final List<Map<String, Object?>> sales = await txn.query(
+      tableSalesTransactions,
+      columns: const <String>[
+        'AMOUNT',
+        'CASH_AMOUNT',
+        'ACCOUNT_AMOUNT',
+        'LITERS',
+        'RATE',
+        'VEHICLE_NO',
+        'SHIFT_ID',
+        'CUSTOMER_NAME',
+      ],
+      where: 'TOKEN = ?',
+      whereArgs: <Object>[token],
+      limit: 1,
+    );
+    if (sales.isEmpty) {
+      return;
+    }
+    final Map<String, Object?> sale = sales.first;
+    final String creditName =
+        (creditCustomerName ?? sale['CUSTOMER_NAME'] as String? ?? '').trim();
+    final String resolvedName = creditName.isEmpty ? creditId : creditName;
+    String shiftId = (creditShiftId ?? '').trim();
+    if (shiftId.isEmpty) {
+      shiftId = '${sale['SHIFT_ID'] ?? ''}';
+    }
+    await _upsertCustomerTxn(txn, id: creditId, name: resolvedName);
+    await _insertUnifiedUdhaarTxn(
+      txn,
+      type: 'SALE',
+      shiftId: shiftId,
+      customerId: creditId,
+      customerName: resolvedName,
+      at: DateTime.now(),
+      amount: udhaarCreditRupees(
+        saleAmount: saleAmount ?? _asDouble(sale['AMOUNT']),
+        cashAmount: _asDouble(sale['CASH_AMOUNT']),
+        accountAmount: _asDouble(sale['ACCOUNT_AMOUNT']),
+      ).toDouble(),
+      token: token,
+      liters: volumeLiters ?? parseFuel(sale['LITERS']).toDouble(),
+      rate: rate ?? parseFuel(sale['RATE']).toDouble(),
+      description: creditDescription ?? '',
+      vehicle: vehicleNo ?? sale['VEHICLE_NO'] as String?,
+    );
+  }
+
+  Future<void> _deleteUnifiedSaleAndRecompute(
+    Transaction txn,
+    Map<String, Object?> saleRow,
+  ) async {
+    final String primaryKey = '${saleRow['PRIMARY_KEY'] ?? ''}';
+    final String customerId = '${saleRow['Customer_ID'] ?? ''}'.trim();
+    if (primaryKey.isEmpty) {
+      return;
+    }
+    await txn.delete(
+      tableUnifiedUdhaarLedger,
+      where: 'PRIMARY_KEY = ?',
+      whereArgs: <Object>[primaryKey],
+    );
+    if (customerId.isNotEmpty) {
+      await _recomputeUnifiedRemaining(txn, customerId);
+    }
+  }
+
+  Future<void> _recomputeUnifiedRemaining(
+    Transaction txn,
+    String customerId,
+  ) async {
+    final String resolvedId = customerId.trim().padLeft(2, '0');
+    final List<Map<String, Object?>> rows = await txn.query(
+      tableUnifiedUdhaarLedger,
+      where: 'Customer_ID = ?',
+      whereArgs: <Object>[resolvedId],
+      orderBy: 'datetime(DATE_TIME) ASC, PRIMARY_KEY ASC',
+    );
+    int remaining = 0;
+    int paidTotal = 0;
+    for (final Map<String, Object?> row in rows) {
+      final bool isSale = '${row['TYPE'] ?? ''}'.trim().toUpperCase() == 'SALE';
+      final int amount = roundRupees(row['AMOUNT']);
+      remaining = isSale ? remaining + amount : remaining - amount;
+      final int thisPaid = isSale ? 0 : amount;
+      paidTotal += thisPaid;
+      final String status = remaining <= 0
+          ? 'Paid'
+          : (paidTotal > 0 ? 'Partially Paid' : 'Unpaid');
+      await txn.update(
+        tableUnifiedUdhaarLedger,
+        <String, Object?>{
+          'REMAINING': remaining,
+          'Status': status,
+          'UDHAAR': isSale ? amount : 0,
+          'PAID': thisPaid,
+        },
+        where: 'PRIMARY_KEY = ?',
+        whereArgs: <Object>['${row['PRIMARY_KEY'] ?? ''}'],
+      );
+    }
+  }
+
   Future<Map<String, Object?>> _insertUnifiedUdhaarTxn(
     Transaction txn, {
     required String type,
@@ -3534,6 +4090,7 @@ ORDER BY datetime(s.START_TIME) DESC
     double rate = 0,
     String description = '',
     String? vehicle,
+    String proofImagePath = '',
   }) async {
     final String resolvedType = type.trim().toUpperCase();
     final bool isSale = resolvedType == 'SALE';
@@ -3581,6 +4138,9 @@ ORDER BY datetime(s.START_TIME) DESC
       'PAID': thisPaid,
       'REMAINING': remaining,
       'Status': status,
+      'PROOF_IMAGE_PATH': proofImagePath.trim().isEmpty
+          ? null
+          : proofImagePath.trim(),
     };
     await txn.insert(tableUnifiedUdhaarLedger, row);
     return row;

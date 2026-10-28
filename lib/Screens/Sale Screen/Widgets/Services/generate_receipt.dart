@@ -28,8 +28,7 @@ class ReceiptCopy {
   static const String staffLineUrdu =
       'پروپرائیٹر: حاجی عبدالحلیم عمرانی — مینیجر: لطیف عمرانی';
   static const String stationPhone = '0334 3706655';
-  static const String complaintUrdu =
-      'کسی بھی قسم کی شکایت کے لیے رابطہ کریں';
+  static const String complaintUrdu = 'کسی بھی قسم کی شکایت کے لیے رابطہ کریں';
   static const String thankYouUrdu =
       'آپ کا شکریہ — آپ کا بھروسہ ہماری اولین ترجیح۔';
 
@@ -64,6 +63,36 @@ class ReceiptCopy {
 
   static const String customerCopyBanner = 'COPY 1: CUSTOMER RECEIPT';
   static const String stationCopyBanner = 'COPY 2: STATION RECORD';
+  static const String screenshotCopyBanner = 'COPY 3: TRANSFER SCREENSHOT';
+
+  /// Station record slips for Account and Udhaar print without the footer.
+  static bool showFooterFor({
+    required PaymentMethod payment,
+    required bool stationCopy,
+  }) {
+    if (!stationCopy) {
+      return true;
+    }
+    switch (payment) {
+      case PaymentMethod.bankAccount:
+      case PaymentMethod.easyPaisa:
+      case PaymentMethod.udhaar:
+        return false;
+      case PaymentMethod.cash:
+        return true;
+    }
+  }
+
+  static String printedSlipsMessage(SaleTransaction txn) {
+    switch (txn.thermalSlipCount) {
+      case 3:
+        return '3 copies sent: customer, station, screenshot';
+      case 2:
+        return '2 copies sent to printer';
+      default:
+        return 'Receipt sent to printer';
+    }
+  }
   static const String secondCopyBanner = 'SECOND COPY';
   static const String editedCopyBanner = 'EDITED COPY';
   static const String recoveredBanner = 'RECOVERED TRANSACTION';
@@ -250,26 +279,77 @@ class ReceiptGenerator {
     GlobalKey previewKey, {
     double pixelRatio = 3,
   }) async {
-    final BuildContext? context = previewKey.currentContext;
-    if (context == null) {
-      throw StateError('Receipt preview is not on screen');
-    }
-    await WidgetsBinding.instance.endOfFrame;
-    final RenderObject? box = context.findRenderObject();
-    if (box is! RenderRepaintBoundary) {
-      throw StateError('Receipt preview cannot be captured');
-    }
-    final ui.Image image = await box.toImage(pixelRatio: pixelRatio);
-    try {
-      final ByteData? bytes = await image.toByteData(
-        format: ui.ImageByteFormat.png,
-      );
-      if (bytes == null) {
-        throw StateError('Receipt snapshot failed');
+    Object? lastError;
+    for (int attempt = 0; attempt < 5; attempt++) {
+      await WidgetsBinding.instance.endOfFrame;
+      final BuildContext? context = previewKey.currentContext;
+      if (context == null || !context.mounted) {
+        lastError = StateError('Receipt preview is not on screen');
+        continue;
       }
-      return bytes.buffer.asUint8List();
-    } finally {
-      image.dispose();
+      final RenderObject? box;
+      try {
+        box = context.findRenderObject();
+      } on FlutterError catch (error) {
+        lastError = error;
+        continue;
+      }
+      if (box is! RenderRepaintBoundary ||
+          !box.attached ||
+          !box.hasSize ||
+          box.size.isEmpty) {
+        lastError = StateError('Receipt preview cannot be captured');
+        continue;
+      }
+      try {
+        final ui.Image image = await box.toImage(pixelRatio: pixelRatio);
+        try {
+          final ByteData? bytes = await image.toByteData(
+            format: ui.ImageByteFormat.png,
+          );
+          if (bytes == null) {
+            throw StateError('Receipt snapshot failed');
+          }
+          return bytes.buffer.asUint8List();
+        } finally {
+          image.dispose();
+        }
+      } on FlutterError catch (error) {
+        lastError = error;
+      }
+    }
+    final Object? error = lastError;
+    if (error is FlutterError) {
+      throw error;
+    }
+    throw error is StateError
+        ? error
+        : StateError('Receipt preview cannot be captured');
+  }
+
+  Future<Uint8List?> _pngFromImageFile(String path) async {
+    try {
+      final File file = File(path);
+      if (!await file.exists()) {
+        return null;
+      }
+      final Uint8List bytes = await file.readAsBytes();
+      final ui.Codec codec = await ui.instantiateImageCodec(bytes);
+      final ui.FrameInfo frame = await codec.getNextFrame();
+      try {
+        final ByteData? png = await frame.image.toByteData(
+          format: ui.ImageByteFormat.png,
+        );
+        if (png == null) {
+          return null;
+        }
+        return png.buffer.asUint8List();
+      } finally {
+        frame.image.dispose();
+      }
+    } catch (error, stack) {
+      debugPrint('Screenshot page skipped: $error\n$stack');
+      return null;
     }
   }
 
@@ -325,8 +405,18 @@ class ReceiptGenerator {
     return false;
   }
 
-  Future<void> printPng(Uint8List png, {required String fileName}) async {
-    await printPngs(<Uint8List>[png], fileName: fileName);
+  Future<void> printPng(
+    Uint8List png, {
+    required String fileName,
+    String? proofImagePath,
+    Uint8List? screenshotPng,
+  }) async {
+    await printPngs(
+      <Uint8List>[png],
+      fileName: fileName,
+      proofImagePath: proofImagePath,
+      screenshotPng: screenshotPng,
+    );
   }
 
   /// Sends each slip as its own print job.
@@ -336,6 +426,8 @@ class ReceiptGenerator {
     required List<String> fileNames,
     Duration pause = const Duration(milliseconds: 250),
     bool parallel = false,
+    String? proofImagePath,
+    Uint8List? screenshotPng,
   }) async {
     if (pngs.length != fileNames.length) {
       throw ArgumentError('Each print job needs a file name');
@@ -343,35 +435,68 @@ class ReceiptGenerator {
     if (parallel) {
       await Future.wait(<Future<void>>[
         for (int i = 0; i < pngs.length; i++)
-          printPng(pngs[i], fileName: fileNames[i]),
+          printPng(
+            pngs[i],
+            fileName: fileNames[i],
+            proofImagePath: i == pngs.length - 1 ? proofImagePath : null,
+            screenshotPng: i == pngs.length - 1 ? screenshotPng : null,
+          ),
       ]);
       return;
     }
     for (int i = 0; i < pngs.length; i++) {
-      await printPng(pngs[i], fileName: fileNames[i]);
+      await printPng(
+        pngs[i],
+        fileName: fileNames[i],
+        proofImagePath: i == pngs.length - 1 ? proofImagePath : null,
+        screenshotPng: i == pngs.length - 1 ? screenshotPng : null,
+      );
       if (i < pngs.length - 1) {
         await Future<void>.delayed(pause);
       }
     }
   }
 
-  Future<void> printCapturedPng(Uint8List png, ReceiptTicket ticket) async {
+  Future<void> printCapturedPng(
+    Uint8List png,
+    ReceiptTicket ticket, {
+    String? proofImagePath,
+    Uint8List? screenshotPng,
+  }) async {
     if (ticket.payment.printsTwoCopies) {
-      await printDualCopies(customerPng: png, stationPng: png, ticket: ticket);
+      await printDualCopies(
+        customerPng: png,
+        stationPng: png,
+        ticket: ticket,
+        proofImagePath: proofImagePath,
+        screenshotPng: screenshotPng,
+      );
       return;
     }
-    await printPng(png, fileName: ticket.fileName);
+    await printPng(
+      png,
+      fileName: ticket.fileName,
+      proofImagePath: ticket.payment.printsScreenshotCopy
+          ? proofImagePath
+          : null,
+      screenshotPng: screenshotPng,
+    );
   }
 
   Future<void> printDualCopies({
     required Uint8List customerPng,
     required Uint8List stationPng,
     required ReceiptTicket ticket,
+    String? proofImagePath,
+    Uint8List? screenshotPng,
   }) async {
-    await printPngJobs(
+    await printPngs(
       <Uint8List>[customerPng, stationPng],
-      fileNames: ticket.dualCopyFileNames,
-      parallel: true,
+      fileName: ticket.dualCopyFileNames.last,
+      proofImagePath: ticket.payment.printsScreenshotCopy
+          ? proofImagePath
+          : null,
+      screenshotPng: screenshotPng,
     );
   }
 
@@ -390,16 +515,34 @@ class ReceiptGenerator {
   Future<void> printPngs(
     List<Uint8List> pngs, {
     required String fileName,
+    String? proofImagePath,
+    Uint8List? screenshotPng,
   }) async {
     if (!kIsWeb && Platform.isWindows) {
       try {
-        await WindowsEscPosSpooler.instance.printPngs(pngs);
+        await WindowsEscPosSpooler.instance.printPngs(
+          pngs,
+          proofImagePath: proofImagePath,
+          screenshotPng: screenshotPng,
+        );
         return;
       } catch (error, stack) {
         debugPrint('ESC/POS spool failed: $error\n$stack');
       }
     }
-    final Uint8List pdfBytes = await _pdfFromPngs(pngs);
+    final List<Uint8List> pages = List<Uint8List>.from(pngs);
+    if (screenshotPng != null && screenshotPng.isNotEmpty) {
+      pages.add(screenshotPng);
+    } else {
+      final String proof = proofImagePath?.trim() ?? '';
+      if (proof.isNotEmpty) {
+        final Uint8List? shot = await _pngFromImageFile(proof);
+        if (shot != null) {
+          pages.add(shot);
+        }
+      }
+    }
+    final Uint8List pdfBytes = await _pdfFromPngs(pages);
     final bool printed = await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => pdfBytes,
       name: fileName,

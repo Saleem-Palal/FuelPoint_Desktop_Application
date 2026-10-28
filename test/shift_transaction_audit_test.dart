@@ -97,6 +97,36 @@ void main() {
       expect(audit.units.single.shiftVolumeLiters, 40);
     });
 
+    test('ignores a 0.1 L gap on tickets, chain, and shift volume', () {
+      final ShiftTransactionAudit audit = auditShiftTransactions(
+        summary: _summary(
+          status: OperatorShiftStatus.closed,
+          openingMeters: const <int, double>{1: 80},
+          closingMeters: const <int, double>{1: 100.1},
+        ),
+        rows: <SaleTransaction>[
+          _sale(
+            tokenNo: 1,
+            liters: 10,
+            opening: 80,
+            closing: 90,
+            timestamp: DateTime(2026, 9, 8, 10),
+          ),
+          _sale(
+            tokenNo: 2,
+            liters: 10,
+            opening: 90.1,
+            closing: 100.1,
+            timestamp: DateTime(2026, 9, 8, 11),
+          ),
+        ],
+      );
+
+      expect(audit.ok, isTrue);
+      expect(shiftVolumeRemark(shiftVolume: 20.1, saleLiters: 20), 'Match');
+      expect(shiftVolumeRemark(shiftVolume: 20.11, saleLiters: 20), 'Mismatch');
+    });
+
     test('flags liters that do not match closing minus opening', () {
       final ShiftTransactionAudit audit = auditShiftTransactions(
         summary: _summary(
@@ -148,8 +178,8 @@ void main() {
           _sale(
             tokenNo: 4,
             liters: 10,
-            opening: 111,
-            closing: 121,
+            opening: 112,
+            closing: 122,
             timestamp: DateTime(2026, 9, 8, 13),
           ),
         ],

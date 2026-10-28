@@ -12,6 +12,7 @@ void main() {
       expect(isOnOfficeLan(wifiName: 'System'), isTrue);
       expect(isOnOfficeLan(wifiName: '"SYSTEM"'), isTrue);
       expect(isOnOfficeLan(wifiName: ' system '), isTrue);
+      expect(isOnOfficeLan(wifiName: 'Tenda_System_5G'), isTrue);
     });
 
     test('matches 192.168.0.x even without SSID', () {
@@ -22,10 +23,48 @@ void main() {
       );
     });
 
+    test('matches a System LAN address on any adapter when SSID is hidden', () {
+      expect(
+        isOnOfficeLan(localIps: const <String>['10.0.0.5', '192.168.0.55']),
+        isTrue,
+      );
+      expect(
+        isOnOfficeLan(
+          wifiName: null,
+          wifiIp: null,
+          localIps: const <String>['192.168.1.20'],
+        ),
+        isFalse,
+      );
+    });
+
     test('rejects dispenser AP and other subnets', () {
       expect(isOnOfficeLan(wifiName: 'FDX-ALPHA'), isFalse);
       expect(isOnOfficeLan(wifiIp: '192.168.1.10'), isFalse);
       expect(isOnOfficeLan(), isFalse);
+    });
+
+    test('a chosen network matches that name on any subnet', () {
+      expect(
+        isOnOfficeLan(
+          wifiName: 'LaptopNet',
+          wifiIp: '192.168.1.20',
+          officeSsid: 'LaptopNet',
+        ),
+        isTrue,
+      );
+      expect(
+        isOnOfficeLan(
+          wifiName: 'System',
+          wifiIp: '192.168.0.20',
+          officeSsid: 'LaptopNet',
+        ),
+        isFalse,
+      );
+      expect(
+        isOnOfficeLan(wifiIp: '192.168.0.20', officeSsid: 'LaptopNet'),
+        isFalse,
+      );
     });
   });
 
@@ -79,13 +118,37 @@ void main() {
   });
 
   group('buildStationLinkAlerts', () {
-    test('PC off Tenda shows only the software banner, not per-unit ESP', () {
+    test('PC off Tenda with no live units shows only the software banner', () {
+      final StationState station = StationState.seed().copyWith(
+        endpoints: <int, UnitEndpoint>{
+          1: UnitEndpoint.seedFor(1).copyWith(connected: false),
+          2: UnitEndpoint.seedFor(2).copyWith(connected: false),
+          3: UnitEndpoint.seedFor(3).copyWith(connected: false),
+          4: UnitEndpoint.seedFor(4).copyWith(connected: false),
+        },
+      );
+
+      final List<StationLinkAlert> alerts = buildStationLinkAlerts(
+        onOfficeLan: false,
+        unitIds: const <int>[1, 2, 3],
+        station: station,
+        monitor: DispenserMonitorState.empty(),
+      );
+
+      expect(alerts, hasLength(1));
+      expect(alerts.single.kind, StationLinkAlertKind.softwareWifi);
+      expect(
+        alerts.single.message,
+        'Software is not connected to Tenda WiFi System',
+      );
+    });
+
+    test('onOfficeLan true skips the software banner and lists unit issues', () {
       final StationState station = StationState.seed().copyWith(
         endpoints: <int, UnitEndpoint>{
           1: UnitEndpoint.seedFor(1).copyWith(connected: false),
           2: UnitEndpoint.seedFor(2).copyWith(connected: true),
           3: UnitEndpoint.seedFor(3).copyWith(connected: true),
-          4: UnitEndpoint.seedFor(4).copyWith(connected: true),
         },
       );
       final DispenserMonitorState monitor = DispenserMonitorState.empty()
@@ -97,17 +160,22 @@ void main() {
           );
 
       final List<StationLinkAlert> alerts = buildStationLinkAlerts(
-        onOfficeLan: false,
+        onOfficeLan: true,
         unitIds: const <int>[1, 2, 3],
         station: station,
         monitor: monitor,
       );
 
-      expect(alerts, hasLength(1));
-      expect(alerts.single.kind, StationLinkAlertKind.softwareWifi);
       expect(
-        alerts.single.message,
-        'Software is not connected to Tenda WiFi System',
+        alerts.map((StationLinkAlert a) => a.kind).toList(),
+        <StationLinkAlertKind>[
+          StationLinkAlertKind.espWifi,
+          StationLinkAlertKind.fdxBoard,
+        ],
+      );
+      expect(
+        alerts.any((StationLinkAlert a) => a.kind == StationLinkAlertKind.softwareWifi),
+        isFalse,
       );
     });
 
@@ -174,6 +242,18 @@ void main() {
 
       expect(alerts, hasLength(1));
       expect(alerts.single.kind, StationLinkAlertKind.espWifi);
+    });
+
+    test('names the network chosen in place of System', () {
+      final List<StationLinkAlert> alerts = buildLinkAlerts(
+        onOfficeLan: false,
+        unitIds: const <int>[1],
+        networkName: stationWifiAlertName('LaptopNet'),
+        connected: (int unitId) => false,
+        espToBoardLink: (int unitId) => null,
+      );
+      expect(alerts.single.message, 'Software is not connected to LaptopNet');
+      expect(stationWifiAlertName('System'), 'Tenda WiFi System');
     });
   });
 

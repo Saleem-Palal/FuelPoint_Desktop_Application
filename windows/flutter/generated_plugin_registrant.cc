@@ -6,6 +6,8 @@
 
 #include "generated_plugin_registrant.h"
 
+#include <audio_decoder/audio_decoder_plugin_c_api.h>
+#include <camera_windows/camera_windows.h>
 #include <connectivity_plus/connectivity_plus_windows_plugin.h>
 #include <printing/printing_plugin.h>
 #include <screen_retriever_windows/screen_retriever_windows_plugin_c_api.h>
@@ -14,6 +16,10 @@
 #include <window_manager/window_manager_plugin.h>
 
 void RegisterPlugins(flutter::PluginRegistry* registry) {
+  AudioDecoderPluginCApiRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("AudioDecoderPluginCApi"));
+  CameraWindowsRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("CameraWindows"));
   ConnectivityPlusWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("ConnectivityPlusWindowsPlugin"));
   PrintingPluginRegisterWithRegistrar(

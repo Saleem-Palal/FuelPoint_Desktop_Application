@@ -1,28 +1,58 @@
 /**
- *
  * Board: ESP32 Dev Module / 38-pin
- * USB Serial: 115200
- * UART2: GPIO 16 RX, GPIO 17 TX (idle, optional)
- * ESP-01 header on the dispenser: labels are the ESP-01's pins, not the pump MCU.
- *   GPIO 16  ->  header RX  (pump TX is on this net — Type-33 comes here)
- *   GPIO 17  ->  header TX  (optional; leave unconnected to test RX-only)
- *   GND      ->  header GND
- * Putting GPIO 16 on the pin labelled TX hears pump RX — UART STALL forever.
- * Relay IN: GPIO 4  LOCK = LOW, UNLOCK = HIGH (active-LOW module).
- * FDX reset relay IN: GPIO 21. Active-LOW. LOW holds the reset button for 3 s.
- *   HIGH at boot so a restart cannot hold the FDX board in reset.
- *   Refused only while Type-33 status is '5' (dispensing).
- * Power relay VCC from 3.3 V, not 5 V, or the green IN LED never turns off.
- * Buzzer+: GPIO 5   Buzzer-: GND  (chirp while waiting for Confirm; solid if live-shift comms lost)
+ * USB Serial monitor: 115200 on UART0 (GPIO1 TX / GPIO3 RX on-chip — tied to CP2102).
+ * Do NOT wire FDX to GPIO1/3: the USB bridge loads those pins; uart=STALL rx/s=0.
  *
- * Wi-Fi: SSID System
+ * --- Power rails (station harness) ---
+ * Right rail: 5 V from LM2596 (MAX98357 VIN, etc.)
+ * Left rail:  3.3 V (INMP441 VDD, relay VCC per notes below)
+ * Ground rail: common GND for all modules and FDX.
+ *
+ * --- MAX98357A I2S amplifier (4 Ω 5 W speaker, +/− direct to amp outputs) ---
+ * VIN  -> 5 V right rail (LM2596)
+ * GND  -> ground rail
+ * DIN  -> GPIO 22 (data)
+ * LRC  -> GPIO 26 (word / LR clock)
+ * BCLK -> GPIO 27 (bit clock)
+ *
+ * --- INMP441 MEMS microphone ---
+ * VDD  -> 3.3 V left rail
+ * GND  -> ground rail
+ * L/R  -> ground rail (left channel)
+ * SD   -> GPIO 32 (data)
+ * WS   -> GPIO 25 (word select)
+ * SCK  -> GPIO 33 (bit clock)
+ *
+ * --- Helper talk (PTT), half-duplex with intercom above ---
+ * Leg 1 -> GPIO 18 (INPUT_PULLUP; pressed = LOW)
+ * Leg 2 -> ground rail
+ *
+ * --- FDX telemetry / keypad (4800 8N1 on UART2 — see UART2_*_PIN below) ---
+ * GPIO 14 (UART2 RX) <- FDX TX   (pump TX must land on ESP RX — swap = STALL / 0/0)
+ * GPIO 15 (UART2 TX) -> FDX RX   (optional; live telemetry works RX-only)
+ * GND                <-> FDX GND
+ * Alternates if one GPIO is damaged: 16/17 (legacy harness), never 1/3 on USB DevKit.
+ * ESP-01 style header labels are the ESP module pins, not the pump MCU pin names.
+ *
+ * --- Keypad lock relay ---
+ * GPIO 4 -> relay IN (LOCK = LOW, UNLOCK = HIGH on active-LOW Songle-style modules).
+ * Relay VCC from 3.3 V left rail, not 5 V, or the green IN LED may never turn off.
+ *
+ * --- Buzzer ---
+ * GPIO 5 -> buzzer + ; buzzer − -> GND
+ * (Chirp while waiting for Confirm; solid if live-shift comms lost.)
+ *
+ * --- FDX reset relay (optional; firmware GPIO 21) ---
+ * Active-LOW hold: OUTPUT LOW ~3 s on reset command, then float INPUT.
+ *
+ * Wi-Fi: station SSID (see WIFI_SSID / prefs)
  * Flutter: ws://192.168.0.1x0:81/   (x = UNIT_ID)
  *
  * Arduino libraries: WebSockets by Markus Sattler, LittleFS
  */
 
 #ifndef UNIT_ID
-#define UNIT_ID 4
+#define UNIT_ID 1
 #endif
 
 #include <Arduino.h>
@@ -33,16 +63,24 @@
 #include <ctype.h>
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
+#include <ESP_I2S.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/ringbuf.h>
 #include <stdlib.h>
 #include <string.h>
 
-static const char *WIFI_SSID = "System";
-static const char *WIFI_PASS = "2658305@nadir";
+static const char *WIFI_SSID = "Ufone_006";
+static const char *WIFI_PASS = "sadam_palal";
+static char wifiSsid[33];
+static char wifiPass[65];
+static bool wifiAnnouncePending = false;
+static String usbWifiLine;
+static bool wifiConsumeText(const String &raw);
 
 static const uint32_t USB_BAUD = 115200;
 static const uint32_t UART2_BAUD = 4800;
-static const int UART2_RX_PIN = 16;
-static const int UART2_TX_PIN = 17;
+static const int UART2_RX_PIN = 14;  // FDX TX -> ESP RX (not 1/3 — USB-UART DevKit)
+static const int UART2_TX_PIN = 15;  // ESP TX -> FDX RX
 static const int RELAY_PIN = 4;
 static const int BUZZER_PIN = 5;
 static const int FDX_RESET_PIN = 21;
@@ -80,7 +118,6 @@ long lastPumpingVolumeCents = 0;
 
 char productLabel[16] = "-";
 char statusLabel[24] = "-";
-char fdxStatusCode = 0;
 bool fdxResetActive = false;
 uint32_t fdxResetStartedMs = 0;
 char macId[18] = "ESP";
@@ -161,7 +198,6 @@ static void setProduct(char code) {
 }
 
 static void setStatus(char code) {
-  fdxStatusCode = code;
   switch (code) {
     case '5':
       strncpy(statusLabel, "Active / Pumping", sizeof(statusLabel) - 1);
@@ -251,17 +287,16 @@ static void setKeypadLocked(bool locked) {
 
 static void applySessionLock() { setKeypadLocked(keypadShouldLock()); }
 
-static bool fdxIsDispensing() { return fdxStatusCode == '5'; }
-
 static void fdxResetRelease() {
-  digitalWrite(FDX_RESET_PIN, HIGH);
+  pinMode(FDX_RESET_PIN, INPUT);
   fdxResetActive = false;
 }
 
 static void fdxResetBegin() {
-  if (fdxResetActive || fdxIsDispensing()) {
+  if (fdxResetActive) {
     return;
   }
+  pinMode(FDX_RESET_PIN, OUTPUT);
   digitalWrite(FDX_RESET_PIN, LOW);
   fdxResetActive = true;
   fdxResetStartedMs = millis();
@@ -270,14 +305,12 @@ static void fdxResetBegin() {
 
 static void serviceFdxReset() {
   if (!fdxResetActive) {
+    pinMode(FDX_RESET_PIN, INPUT);
     return;
   }
-  if (fdxIsDispensing() ||
-      (millis() - fdxResetStartedMs) >= FDX_RESET_HOLD_MS) {
-    const bool stoppedEarly = fdxIsDispensing();
+  if ((millis() - fdxResetStartedMs) >= FDX_RESET_HOLD_MS) {
     fdxResetRelease();
-    Serial.println(stoppedEarly ? "GPIO21 reset released dispensing"
-                                 : "GPIO21 reset hold end");
+    Serial.println("GPIO21 reset hold end");
   }
 }
 
@@ -866,9 +899,7 @@ static void handleCommand(const String &raw) {
                       t.indexOf("\"lock\": true") >= 0;
     operatorLock = lock;
     if (!lock) {
-      saleAwaitingConfirm = false;
       shiftLive = true;
-      setKeypadLocked(false);
     }
     applySessionLock();
     broadcastJson(buildTelemetryJson("TELEMETRY", lastTxId));
@@ -876,12 +907,313 @@ static void handleCommand(const String &raw) {
   }
   if (t.indexOf("\"cmd\":\"FDX_RESET\"") >= 0 ||
       t.indexOf("\"cmd\": \"FDX_RESET\"") >= 0) {
-    if (fdxIsDispensing()) {
-      Serial.println("GPIO21 reset refused dispensing");
-      return;
-    }
     fdxResetBegin();
   }
+}
+
+// Half-duplex intercom. Speaker write matches the walkie-talkie:
+// 16 kHz 16-bit stereo, sample * speaker / 100, 100 = full level.
+// Operator PCM is not noise-gated. Frames stay 0xA1 out and 0xA2 in.
+static const int IC_MIC_SD = 32;
+static const int IC_MIC_WS = 25;
+static const int IC_MIC_SCK = 33;
+static const int IC_SPK_DIN = 22;
+static const int IC_SPK_LRC = 26;
+static const int IC_SPK_BCLK = 27;
+static const int IC_PTT_PIN = 18;
+static const int IC_MIC_SHIFT = 16;
+static const uint32_t IC_RATE = 16000;
+static const int IC_SAMPLES = 320;
+static const size_t IC_PCM_BYTES = (size_t)IC_SAMPLES * 2;
+static const size_t IC_FRAME_BYTES = 1 + IC_PCM_BYTES;
+static const uint8_t IC_MAGIC_OPERATOR = 0xA1;
+static const uint8_t IC_MAGIC_HELPER = 0xA2;
+static const uint32_t IC_DEBOUNCE_MS = 20;
+static const int IC_IDLE = 0;
+static const int IC_OPERATOR = 1;
+static const int IC_HELPER = 2;
+static const size_t IC_RING_BYTES = 8192;
+
+static I2SClass icMicPort;
+static I2SClass icAmpPort;
+static RingbufHandle_t icPlayRing = nullptr;
+static int icMode = IC_IDLE;
+static int icMicGain = 12;
+static int icSpkGain = 80;
+static int icNoiseCut = 20;
+static bool icHwOk = false;
+static bool icPttRaw = false;
+static bool icHelperDown = false;
+static uint32_t icPttChangeMs = 0;
+static int32_t icDcPrevX = 0;
+static int32_t icDcPrevY = 0;
+static int32_t icMicRaw[IC_SAMPLES * 2];
+static int16_t icMicPcm[IC_SAMPLES];
+static int16_t icPhoneMono[IC_SAMPLES];
+static int16_t icSpkStereo[IC_SAMPLES * 2];
+static uint8_t icTxFrame[IC_FRAME_BYTES];
+
+static int16_t icScaleMic(int32_t rawWord) {
+  const int32_t x = rawWord >> IC_MIC_SHIFT;
+  int32_t y = x - icDcPrevX + icDcPrevY - (icDcPrevY >> 8);
+  icDcPrevX = x;
+  icDcPrevY = y;
+  int32_t scaled = y * icMicGain;
+  if (scaled > 32767) {
+    scaled = 32767;
+  } else if (scaled < -32768) {
+    scaled = -32768;
+  }
+  return (int16_t)scaled;
+}
+
+static bool icReadMic(int16_t *dst, size_t *outCount) {
+  *outCount = 0;
+  if (icMicPort.rxChan() == nullptr) {
+    return false;
+  }
+  const size_t got = icMicPort.readBytes((char *)icMicRaw, IC_SAMPLES * 2 * sizeof(int32_t));
+  if (got < 8) {
+    return false;
+  }
+  const size_t pairs = got / 8;
+  size_t count = 0;
+  for (size_t i = 0; i < pairs && count < IC_SAMPLES; i++) {
+    dst[count++] = icScaleMic(icMicRaw[i * 2]);
+  }
+  *outCount = count;
+  return count > 0;
+}
+
+static void icWriteSpeaker(const int16_t *mono, size_t count) {
+  if (count == 0 || icAmpPort.txChan() == nullptr) {
+    return;
+  }
+  if (count > IC_SAMPLES) {
+    count = IC_SAMPLES;
+  }
+  const int volume = icSpkGain;
+  for (size_t i = 0; i < count; i++) {
+    int32_t sample = ((int32_t)mono[i] * volume) / 100;
+    if (sample > 32767) {
+      sample = 32767;
+    } else if (sample < -32768) {
+      sample = -32768;
+    }
+    icSpkStereo[i * 2] = (int16_t)sample;
+    icSpkStereo[i * 2 + 1] = (int16_t)sample;
+  }
+  icAmpPort.write((const uint8_t *)icSpkStereo, count * 4);
+}
+
+static void icQueuePcm(const uint8_t *data, size_t len) {
+  if (icPlayRing == nullptr || len < 2) {
+    return;
+  }
+  len &= ~((size_t)1);
+  if (xRingbufferSend(icPlayRing, data, len, 0) == pdTRUE) {
+    return;
+  }
+  size_t dropped = 0;
+  void *old = xRingbufferReceiveUpTo(icPlayRing, &dropped, 0, len);
+  if (old != nullptr) {
+    vRingbufferReturnItem(icPlayRing, old);
+  }
+  xRingbufferSend(icPlayRing, data, len, 0);
+}
+
+static void icFlushPlay() {
+  if (icPlayRing == nullptr) {
+    return;
+  }
+  size_t got = 0;
+  void *item = nullptr;
+  while ((item = xRingbufferReceiveUpTo(icPlayRing, &got, 0, 1024)) != nullptr) {
+    vRingbufferReturnItem(icPlayRing, item);
+  }
+}
+
+static bool icPlayQueued() {
+  if (icPlayRing == nullptr) {
+    return false;
+  }
+  size_t got = 0;
+  uint8_t *item = (uint8_t *)xRingbufferReceiveUpTo(
+      icPlayRing, &got, 0, IC_SAMPLES * sizeof(int16_t));
+  if (item == nullptr || got < 2) {
+    if (item != nullptr) {
+      vRingbufferReturnItem(icPlayRing, item);
+    }
+    return false;
+  }
+  got &= ~((size_t)1);
+  size_t count = got / sizeof(int16_t);
+  if (count > IC_SAMPLES) {
+    count = IC_SAMPLES;
+  }
+  memcpy(icPhoneMono, item, count * sizeof(int16_t));
+  vRingbufferReturnItem(icPlayRing, item);
+  icWriteSpeaker(icPhoneMono, count);
+  return true;
+}
+
+static void icSendHelper(const int16_t *pcm, size_t count) {
+  if (wsClients <= 0 || count == 0) {
+    return;
+  }
+  memset(icTxFrame, 0, sizeof(icTxFrame));
+  icTxFrame[0] = IC_MAGIC_HELPER;
+  if (count > IC_SAMPLES) {
+    count = IC_SAMPLES;
+  }
+  memcpy(icTxFrame + 1, pcm, count * sizeof(int16_t));
+  webSocket.broadcastBIN(icTxFrame, IC_FRAME_BYTES);
+}
+
+static void intercomNotifyHelper(bool down) {
+  if (wsClients <= 0) {
+    return;
+  }
+  char buf[80];
+  snprintf(buf, sizeof(buf),
+           "{\"cmd\":\"INTERCOM\",\"unit\":%d,\"who\":\"helper\",\"down\":%s}",
+           UNIT_ID, down ? "true" : "false");
+  webSocket.broadcastTXT(buf);
+}
+
+static int icParseBounded(const String &raw, const char *key, int fallback, int high) {
+  const String token = String("\"") + key + "\":";
+  const int at = raw.indexOf(token);
+  if (at < 0) {
+    return fallback;
+  }
+  int pos = at + (int)token.length();
+  while (pos < (int)raw.length() && raw.charAt(pos) == ' ') {
+    pos += 1;
+  }
+  int value = raw.substring(pos).toInt();
+  if (value < 0) {
+    value = 0;
+  } else if (value > high) {
+    value = high;
+  }
+  return value;
+}
+
+static int icParsePercent(const String &raw, const char *key, int fallback) {
+  return icParseBounded(raw, key, fallback, 100);
+}
+
+static bool intercomConsumeText(const String &raw) {
+  if (raw.indexOf("INTERCOM_CFG") >= 0) {
+    lastAppHbMs = millis();
+    icSpkGain = icParseBounded(raw, "spk", icSpkGain, 200);
+    const int micPercent = icParsePercent(raw, "mic", (icMicGain * 100) / 12);
+    int gain = (micPercent * 12) / 100;
+    if (micPercent > 0 && gain < 1) {
+      gain = 1;
+    }
+    icMicGain = gain;
+    icNoiseCut = icParsePercent(raw, "gate", icNoiseCut);
+    (void)icNoiseCut;
+    return true;
+  }
+  const bool down = raw.indexOf("PTT_DOWN") >= 0;
+  const bool up = raw.indexOf("PTT_UP") >= 0;
+  if (!down && !up) {
+    return false;
+  }
+  lastAppHbMs = millis();
+  if (down) {
+    if (!icHelperDown && icMode != IC_HELPER) {
+      icFlushPlay();
+      icMode = IC_OPERATOR;
+    }
+    return true;
+  }
+  if (icMode == IC_OPERATOR) {
+    icFlushPlay();
+    icMode = IC_IDLE;
+  }
+  return true;
+}
+
+static void intercomConsumeBinary(uint8_t *payload, size_t length) {
+  if (payload == NULL || length < 3 || payload[0] != IC_MAGIC_OPERATOR) {
+    return;
+  }
+  if (icMode != IC_OPERATOR) {
+    return;
+  }
+  icQueuePcm(payload + 1, length - 1);
+}
+
+static void intercomBegin() {
+  pinMode(IC_PTT_PIN, INPUT_PULLUP);
+  icPttRaw = digitalRead(IC_PTT_PIN) == LOW;
+  icHelperDown = false;
+  icPttChangeMs = millis();
+  icMode = IC_IDLE;
+  icPlayRing = xRingbufferCreate(IC_RING_BYTES, RINGBUF_TYPE_BYTEBUF);
+
+  icAmpPort.setPins(IC_SPK_BCLK, IC_SPK_LRC, IC_SPK_DIN, -1);
+  const bool speakerOk = icAmpPort.begin(
+      I2S_MODE_STD, IC_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+  icMicPort.setPins(IC_MIC_SCK, IC_MIC_WS, -1, IC_MIC_SD);
+  const bool micOk = icMicPort.begin(
+      I2S_MODE_STD, IC_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+  if (micOk) {
+    icMicPort.setTimeout(200);
+  }
+  icHwOk = icPlayRing != nullptr && speakerOk && micOk;
+  if (!icHwOk) {
+    Serial.println("intercom I2S init failed");
+    return;
+  }
+  Serial.println("intercom ready  mic 32/25/33  spk 22/26/27  ptt 18");
+}
+
+static void serviceIntercom() {
+  const bool raw = digitalRead(IC_PTT_PIN) == LOW;
+  const uint32_t now = millis();
+  if (raw != icPttRaw) {
+    icPttRaw = raw;
+    icPttChangeMs = now;
+  } else if ((now - icPttChangeMs) >= IC_DEBOUNCE_MS && raw != icHelperDown) {
+    icHelperDown = raw;
+    icFlushPlay();
+    icDcPrevX = 0;
+    icDcPrevY = 0;
+    if (icHelperDown) {
+      icMode = IC_HELPER;
+      intercomNotifyHelper(true);
+    } else {
+      if (icMode == IC_HELPER) {
+        icMode = IC_IDLE;
+      }
+      intercomNotifyHelper(false);
+    }
+  }
+
+  if (!icHwOk) {
+    return;
+  }
+  if (icMode == IC_HELPER) {
+    size_t count = 0;
+    if (!icReadMic(icMicPcm, &count)) {
+      return;
+    }
+    icSendHelper(icMicPcm, count);
+    return;
+  }
+  if (icMode == IC_OPERATOR) {
+    // The dispenser loop also reads the pump, so keep two chunks ready.
+    // writeSpeaker is the walkie-talkie path: sample * speaker / 100.
+    icPlayQueued();
+    icPlayQueued();
+    return;
+  }
+  icFlushPlay();
 }
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
@@ -905,9 +1237,14 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       for (size_t i = 0; i < length; i++) {
         msg += (char)payload[i];
       }
-      handleCommand(msg);
+      if (!wifiConsumeText(msg) && !intercomConsumeText(msg)) {
+        handleCommand(msg);
+      }
       break;
     }
+    case WStype_BIN:
+      intercomConsumeBinary(payload, length);
+      break;
     default:
       break;
   }
@@ -918,6 +1255,11 @@ static void beginUart2() {
   Serial2.begin(UART2_BAUD, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
   Serial2.setTimeout(2);
   rxBuf = "";
+  Serial.printf(
+      "UART2 FDX 4800 8N1  RX GPIO%d <- pump TX   TX GPIO%d -> pump RX\n",
+      UART2_RX_PIN, UART2_TX_PIN);
+  Serial.println(
+      "Watch: uart=FDX rx/s>0 when linked. STALL + rx/s=0 = wiring/GND/pin, not app.");
 }
 
 static void fillMacId() {
@@ -948,6 +1290,128 @@ static void stopWebSocket() {
   wsClients = 0;
 }
 
+static bool wifiIsStation() {
+  return strcmp(wifiSsid, WIFI_SSID) == 0;
+}
+
+static void loadWifiPrefs() {
+  memset(wifiSsid, 0, sizeof(wifiSsid));
+  memset(wifiPass, 0, sizeof(wifiPass));
+  strncpy(wifiSsid, WIFI_SSID, sizeof(wifiSsid) - 1);
+  strncpy(wifiPass, WIFI_PASS, sizeof(wifiPass) - 1);
+  if (!prefs.isKey("wifiSsid")) {
+    return;
+  }
+  const String savedSsid = prefs.getString("wifiSsid", "");
+  const String savedPass = prefs.getString("wifiPass", "");
+  if (savedSsid.length() < 1 || savedSsid.length() > 32 || savedPass.length() > 64) {
+    return;
+  }
+  strncpy(wifiSsid, savedSsid.c_str(), sizeof(wifiSsid) - 1);
+  strncpy(wifiPass, savedPass.c_str(), sizeof(wifiPass) - 1);
+}
+
+static void applyStaAddress() {
+  if (wifiIsStation()) {
+    IPAddress ip(192, 168, 1, 1 + (10 * UNIT_ID));
+    IPAddress gw(192, 168, 1, 1);
+    IPAddress mask(255, 255, 255, 0);
+    WiFi.config(ip, gw, mask);
+    return;
+  }
+  WiFi.config(IPAddress(), IPAddress(), IPAddress());
+}
+
+static String jsonQuoted(const String &raw, const char *key) {
+  String token = String("\"") + key + "\":\"";
+  int at = raw.indexOf(token);
+  if (at < 0) {
+    token = String("\"") + key + "\": \"";
+    at = raw.indexOf(token);
+  }
+  if (at < 0) {
+    return "";
+  }
+  String out;
+  for (int i = at + (int)token.length(); i < (int)raw.length(); i++) {
+    const char c = raw.charAt(i);
+    if (c == '\\' && i + 1 < (int)raw.length()) {
+      out += raw.charAt(i + 1);
+      i += 1;
+      continue;
+    }
+    if (c == '"') {
+      break;
+    }
+    out += c;
+  }
+  return out;
+}
+
+static void announceWifi(const char *ip) {
+  char buf[160];
+  snprintf(buf, sizeof(buf),
+           "{\"cmd\":\"WIFI_STATUS\",\"unit\":%d,\"ssid\":\"%s\",\"ip\":\"%s\",\"dhcp\":%s}",
+           UNIT_ID, wifiSsid, ip, wifiIsStation() ? "false" : "true");
+  Serial.println(buf);
+  if (wsClients > 0) {
+    webSocket.broadcastTXT(buf);
+  }
+}
+
+static void joinWifiNow() {
+  stopWebSocket();
+  WiFi.disconnect(false, false);
+  applyStaAddress();
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(wifiSsid, wifiPass);
+  lastWifiTryMs = millis();
+}
+
+static bool wifiConsumeText(const String &raw) {
+  if (raw.indexOf("SET_WIFI") < 0) {
+    return false;
+  }
+  String ssid = jsonQuoted(raw, "ssid");
+  String pass = jsonQuoted(raw, "pass");
+  ssid.trim();
+  if (ssid.length() < 1 || ssid.length() > 32 || pass.length() > 64 ||
+      ssid.indexOf('"') >= 0 || ssid.indexOf('\\') >= 0) {
+    Serial.println("{\"cmd\":\"WIFI_STATUS\",\"unit\":0,\"ssid\":\"\",\"ip\":\"\",\"dhcp\":false}");
+    return true;
+  }
+  memset(wifiSsid, 0, sizeof(wifiSsid));
+  memset(wifiPass, 0, sizeof(wifiPass));
+  strncpy(wifiSsid, ssid.c_str(), sizeof(wifiSsid) - 1);
+  strncpy(wifiPass, pass.c_str(), sizeof(wifiPass) - 1);
+  prefs.putString("wifiSsid", wifiSsid);
+  prefs.putString("wifiPass", wifiPass);
+  wifiAnnouncePending = true;
+  joinWifiNow();
+  announceWifi("0.0.0.0");
+  return true;
+}
+
+static void serviceUsbWifi() {
+  while (Serial.available() > 0) {
+    const char c = (char)Serial.read();
+    if (c == '\r') {
+      continue;
+    }
+    if (c != '\n') {
+      if (usbWifiLine.length() < 400) {
+        usbWifiLine += c;
+      }
+      continue;
+    }
+    if (usbWifiLine.indexOf("SET_WIFI") >= 0) {
+      wifiConsumeText(usbWifiLine);
+    }
+    usbWifiLine = "";
+  }
+}
+
 static void startWifi() {
   WiFi.persistent(true);
   WiFi.mode(WIFI_STA);
@@ -956,11 +1420,8 @@ static void startWifi() {
   char host[24];
   snprintf(host, sizeof(host), "Unit-%d_ESP32", UNIT_ID);
   WiFi.setHostname(host);
-  IPAddress ip(192, 168, 0, 100 + (10 * UNIT_ID));
-  IPAddress gw(192, 168, 0, 1);
-  IPAddress mask(255, 255, 255, 0);
-  WiFi.config(ip, gw, mask);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  applyStaAddress();
+  WiFi.begin(wifiSsid, wifiPass);
   esp_wifi_set_max_tx_power(68);
   lastWifiTryMs = millis();
 }
@@ -971,6 +1432,10 @@ static void ensureWifi() {
     lastWifiOkMs = millis();
     fillMacId();
     startWebSocket();
+    if (wifiAnnouncePending) {
+      wifiAnnouncePending = false;
+      announceWifi(WiFi.localIP().toString().c_str());
+    }
     return;
   }
   stopWebSocket();
@@ -983,19 +1448,20 @@ static void ensureWifi() {
     return;
   }
   lastWifiTryMs = now;
-  Serial.printf("[wifi] status=%d join %s\n", (int)st, WIFI_SSID);
+  Serial.printf("[wifi] status=%d join %s\n", (int)st, wifiSsid);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   WiFi.disconnect(false, false);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  applyStaAddress();
+  WiFi.begin(wifiSsid, wifiPass);
 }
 
 void setup() {
-  pinMode(FDX_RESET_PIN, OUTPUT);
-  digitalWrite(FDX_RESET_PIN, HIGH);
+  pinMode(FDX_RESET_PIN, INPUT);
   pinMode(RELAY_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   writeBuzzer(false);
+  intercomBegin();
 
   Serial.begin(USB_BAUD);
   delay(200);
@@ -1009,6 +1475,7 @@ void setup() {
   beginUart2();
   LittleFS.begin(true);
   prefs.begin("fp", false);
+  loadWifiPrefs();
   nextSequence = prefs.getUInt("nextSeq", 1);
   if (nextSequence < 1) {
     nextSequence = 1;
@@ -1046,8 +1513,11 @@ void loop() {
     webSocket.loop();
   }
   ensureWifi();
+  serviceUsbWifi();
   applySessionLock();
   serviceBuzzer();
+  serviceIntercom();
+  readUart2();
 
   const uint32_t now = millis();
   if (pumpingSnapshotDirty && (now - lastLiveSnapMs) >= LIVE_SNAP_MS) {

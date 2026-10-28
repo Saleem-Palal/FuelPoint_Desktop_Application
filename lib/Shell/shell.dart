@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../Screens/Customer Screen/customer_screen.dart';
+import '../Screens/Intercom Test/intercom_test_screen.dart';
 import '../Screens/Dashboard/dashboard_screen.dart';
 import '../Screens/Dispenser Screen/dispenser_screen.dart';
 import '../Screens/Ledger Screen/ledger_screen.dart';
@@ -98,10 +100,24 @@ class _AppShellState extends ConsumerState<AppShell> {
     _NavDestination(icon: Icons.settings_outlined, label: 'Settings', index: 7),
   ];
 
+  List<_NavDestination> get _visibleSystem {
+    if (!kDebugMode) {
+      return _system;
+    }
+    return <_NavDestination>[
+      ..._system,
+      const _NavDestination(
+        icon: Icons.settings_voice_outlined,
+        label: 'Intercom Test',
+        index: ShellDestinations.intercomTest,
+      ),
+    ];
+  }
+
   String _titleFor(int selectedIndex) {
     for (final _NavDestination item in <_NavDestination>[
       ..._menu,
-      ..._system,
+      ..._visibleSystem,
     ]) {
       if (item.index == selectedIndex) {
         return item.label;
@@ -113,7 +129,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   IconData _titleIconFor(int selectedIndex) {
     for (final _NavDestination item in <_NavDestination>[
       ..._menu,
-      ..._system,
+      ..._visibleSystem,
     ]) {
       if (item.index == selectedIndex) {
         return item.icon;
@@ -152,6 +168,11 @@ class _AppShellState extends ConsumerState<AppShell> {
         return const DispenserScreen();
       case 7:
         return const SettingsScreen();
+      case ShellDestinations.intercomTest:
+        if (kDebugMode) {
+          return const IntercomTestScreen();
+        }
+        return const SaleScreen();
       default:
         return _PlaceholderPage(
           title: _titleFor(selectedIndex),
@@ -323,21 +344,6 @@ class _AppShellState extends ConsumerState<AppShell> {
     ref.read(selectedDispenserIndexProvider.notifier).state = unitId;
   }
 
-  void _confirmSelectedUnit() {
-    if (ref.read(shellDestinationProvider) != ShellDestinations.sale) {
-      return;
-    }
-    if (_editableTextHasFocus()) {
-      return;
-    }
-    final int unitId = ref.read(selectedDispenserIndexProvider);
-    final DispenserUnit unit = ref.read(stationControllerProvider).unit(unitId);
-    if (!unit.canConfirmPayment) {
-      return;
-    }
-    openPaymentSheet(ref, unitId);
-  }
-
   @override
   Widget build(BuildContext context) {
     ref.listen<ShiftWorkspaceState>(shiftWorkspaceProvider, (
@@ -415,9 +421,6 @@ class _AppShellState extends ConsumerState<AppShell> {
         const SingleActivator(LogicalKeyboardKey.numpad3): () => _selectUnit(3),
         const SingleActivator(LogicalKeyboardKey.numpad4): () => _selectUnit(4),
         const SingleActivator(LogicalKeyboardKey.numpad5): () => _selectUnit(5),
-        const SingleActivator(LogicalKeyboardKey.enter): _confirmSelectedUnit,
-        const SingleActivator(LogicalKeyboardKey.numpadEnter):
-            _confirmSelectedUnit,
       });
     }
 
@@ -437,7 +440,7 @@ class _AppShellState extends ConsumerState<AppShell> {
                   selectedIndex: selectedIndex,
                   collapsed: _sidebarCollapsed,
                   menu: _menu,
-                  system: _system,
+                  system: _visibleSystem,
                   onSelect: (int index) {
                     unawaited(_select(index));
                   },

@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/pdf_file_export.dart';
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
 import '../../core/widgets/fuel_point_stat_card.dart';
+import '../../core/widgets/proof_story_popup.dart';
 import '../../features/customer/data/customer_directory_pdf.dart';
 import '../../features/customer/data/customer_ledger_pdf.dart';
 import '../../features/customer/domain/customer_models.dart';
@@ -80,26 +82,15 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
   }
 
   Future<void> _exportPdf() async {
-    try {
-      final List<CustomerProfile> rows = ref
-          .read(customerAccountsProvider)
-          .map((CustomerAccount account) => account.profile)
-          .toList();
-      await CustomerDirectoryPdf.instance.export(rows);
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Customer directory PDF saved')));
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not export directory. $error')),
-      );
-    }
+    final List<CustomerProfile> rows = ref
+        .read(customerAccountsProvider)
+        .map((CustomerAccount account) => account.profile)
+        .toList();
+    await runPdfExport(
+      context,
+      export: () => CustomerDirectoryPdf.instance.export(rows),
+      success: (_) => 'Customer directory PDF saved',
+    );
   }
 
   Future<void> _settle(CustomerAccount account) async {
@@ -128,18 +119,16 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
             cashAmountPkr: draft.cashAmountPkr,
             accountAmountPkr: draft.accountAmountPkr,
             notes: draft.notes,
+            proofImagePath: draft.proofImagePath,
           );
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Settlement ${settlement.receiptNo} recorded. Opening receipt…',
-          ),
-        ),
+      await presentSettlementReceipt(
+        context,
+        settlement: settlement,
+        autoPrint: true,
       );
-      await showSettlementReceiptDialog(context, settlement: settlement);
     } catch (error) {
       if (!mounted) {
         return;
@@ -147,6 +136,40 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Could not settle bill. $error')));
+    }
+  }
+
+  Future<void> _editSettlement(
+    CustomerAccount account,
+    CustomerSettlement settlement,
+  ) async {
+    final SettleBillDraft? draft = await showSettleBillDialog(
+      context,
+      account: account,
+      existing: settlement,
+    );
+    if (draft == null || !mounted) {
+      return;
+    }
+    try {
+      await ref
+          .read(customerWorkspaceProvider.notifier)
+          .updateSettlement(
+            existing: settlement,
+            amountPkr: draft.amountPkr,
+            paymentMode: draft.paymentMode,
+            cashAmountPkr: draft.cashAmountPkr,
+            accountAmountPkr: draft.accountAmountPkr,
+            notes: draft.notes,
+            proofImagePath: draft.proofImagePath,
+          );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not update settlement. $error')),
+      );
     }
   }
 
@@ -193,22 +216,12 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
       );
       return;
     }
-    try {
-      await CustomerLedgerPdf.instance.export(account);
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Customer ledger PDF saved')));
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not export ledger. $error')),
-      );
-    }
+    await runPdfExport(
+      context,
+      export: () => CustomerLedgerPdf.instance.export(account),
+      success: (_) => 'Customer ledger PDF saved',
+      transactionCount: account.ledger.length,
+    );
   }
 
   @override
@@ -296,6 +309,12 @@ class _CustomerScreenState extends ConsumerState<CustomerScreen> {
                                       onExportLedger: () {
                                         unawaited(_exportLedgerPdf(selected));
                                       },
+                                      onEditSettlement:
+                                          (CustomerSettlement row) {
+                                            unawaited(
+                                              _editSettlement(selected, row),
+                                            );
+                                          },
                                     ),
                             ),
                           ],
@@ -648,12 +667,14 @@ class _CustomerWorkspace extends StatelessWidget {
     required this.onSettle,
     required this.onPreviousUdhaar,
     required this.onExportLedger,
+    required this.onEditSettlement,
   });
 
   final CustomerAccount account;
   final VoidCallback onSettle;
   final VoidCallback onPreviousUdhaar;
   final VoidCallback onExportLedger;
+  final ValueChanged<CustomerSettlement> onEditSettlement;
 
   @override
   Widget build(BuildContext context) {
@@ -789,7 +810,12 @@ class _CustomerWorkspace extends StatelessWidget {
               ),
             ),
           ),
-          Expanded(child: _LedgerTable(lines: account.ledger)),
+          Expanded(
+            child: _LedgerTable(
+              lines: account.ledger,
+              onEditSettlement: onEditSettlement,
+            ),
+          ),
         ],
       ),
     );
@@ -797,9 +823,10 @@ class _CustomerWorkspace extends StatelessWidget {
 }
 
 class _LedgerTable extends StatelessWidget {
-  const _LedgerTable({required this.lines});
+  const _LedgerTable({required this.lines, required this.onEditSettlement});
 
   final List<CustomerLedgerLine> lines;
+  final ValueChanged<CustomerSettlement> onEditSettlement;
 
   @override
   Widget build(BuildContext context) {
@@ -814,8 +841,8 @@ class _LedgerTable extends StatelessWidget {
     }
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        final double minWidth = constraints.maxWidth < 1680
-            ? 1680
+        final double minWidth = constraints.maxWidth < 2040
+            ? 2040
             : constraints.maxWidth;
         return _TwoAxisScroll(
           minWidth: minWidth,
@@ -844,11 +871,15 @@ class _LedgerTable extends StatelessWidget {
               DataColumn(label: Text('LITERS'), numeric: true),
               DataColumn(label: Text('RATE'), numeric: true),
               DataColumn(label: Text('AMOUNT'), numeric: true),
+              DataColumn(label: Text('CASH'), numeric: true),
+              DataColumn(label: Text('ACCOUNT'), numeric: true),
               DataColumn(label: Text('DESCRIPTION')),
               DataColumn(label: Text('VEHICLE')),
               DataColumn(label: Text('UDHAAR'), numeric: true),
               DataColumn(label: Text('PAID'), numeric: true),
               DataColumn(label: Text('REMAINING'), numeric: true),
+              DataColumn(label: Text('PROOF')),
+              DataColumn(label: Text('ACTIONS')),
             ],
             rows: <DataRow>[
               for (final CustomerLedgerLine line in lines)
@@ -900,12 +931,36 @@ class _LedgerTable extends StatelessWidget {
                       ),
                     ),
                     DataCell(
-                      Text(line.rate == null ? '—' : formatTableRate(line.rate!)),
+                      Text(
+                        line.rate == null ? '—' : formatTableRate(line.rate!),
+                      ),
                     ),
                     DataCell(
                       Text(
                         formatTablePkr(line.amountPkr),
                         style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    DataCell(
+                      Text(
+                        line.settlementCashPkr == null
+                            ? '—'
+                            : formatTablePkr(line.settlementCashPkr!),
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: line.isSale ? tokens.inkMuted : tokens.ink,
+                        ),
+                      ),
+                    ),
+                    DataCell(
+                      Text(
+                        line.settlementAccountPkr == null
+                            ? '—'
+                            : formatTablePkr(line.settlementAccountPkr!),
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: line.isSale ? tokens.inkMuted : tokens.ink,
+                        ),
                       ),
                     ),
                     DataCell(
@@ -928,7 +983,9 @@ class _LedgerTable extends StatelessWidget {
                     ),
                     DataCell(
                       Text(
-                        line.creditPkr > 0 ? formatTablePkr(line.creditPkr) : '—',
+                        line.creditPkr > 0
+                            ? formatTablePkr(line.creditPkr)
+                            : '—',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: line.isSale ? tokens.inkMuted : tokens.good,
@@ -941,12 +998,35 @@ class _LedgerTable extends StatelessWidget {
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
+                    DataCell(
+                      LedgerProofThumb(
+                        imagePath: line.settlement?.proofImagePath ?? '',
+                      ),
+                    ),
+                    _settlementEditCell(tokens, line),
                   ],
                 ),
             ],
           ),
         );
       },
+    );
+  }
+
+  DataCell _settlementEditCell(DispensrTokens tokens, CustomerLedgerLine line) {
+    final CustomerSettlement? settlement = line.settlement;
+    if (settlement == null) {
+      return DataCell(Text('—', style: TextStyle(color: tokens.inkMuted)));
+    }
+    return DataCell(
+      IconButton(
+        tooltip: 'Edit settlement',
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.all(6),
+        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        onPressed: () => onEditSettlement(settlement),
+        icon: Icon(Icons.edit_outlined, size: 18, color: tokens.inkMuted),
+      ),
     );
   }
 }

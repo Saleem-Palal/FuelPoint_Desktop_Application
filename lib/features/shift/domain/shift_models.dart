@@ -195,6 +195,7 @@ class OperatorShiftRecord {
     this.actualCash,
     this.notes = '',
     this.udhaarRecoveryTotal = 0,
+    this.udhaarRecoveryAccountTotal = 0,
     this.openingMeters = const <int, double>{},
     this.closingMeters = const <int, double>{},
   });
@@ -210,6 +211,7 @@ class OperatorShiftRecord {
   final String notes;
   final OperatorShiftStatus status;
   final double udhaarRecoveryTotal;
+  final double udhaarRecoveryAccountTotal;
   final Map<int, double> openingMeters;
   final Map<int, double> closingMeters;
 
@@ -233,6 +235,7 @@ class OperatorShiftRecord {
     String? notes,
     OperatorShiftStatus? status,
     double? udhaarRecoveryTotal,
+    double? udhaarRecoveryAccountTotal,
     Map<int, double>? openingMeters,
     Map<int, double>? closingMeters,
   }) {
@@ -248,6 +251,8 @@ class OperatorShiftRecord {
       notes: notes ?? this.notes,
       status: status ?? this.status,
       udhaarRecoveryTotal: udhaarRecoveryTotal ?? this.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal:
+          udhaarRecoveryAccountTotal ?? this.udhaarRecoveryAccountTotal,
       openingMeters: openingMeters ?? this.openingMeters,
       closingMeters: closingMeters ?? this.closingMeters,
     );
@@ -317,7 +322,7 @@ class HelperSaleRecord {
   double get cashTender {
     switch (payment) {
       case PaymentMethod.udhaar:
-        return 0;
+        return cashAmount;
       case PaymentMethod.cash:
         return cashAmount > 0 ? cashAmount : amountPkr;
       case PaymentMethod.bankAccount:
@@ -339,8 +344,9 @@ class HelperSaleRecord {
         }
         return amountPkr;
       case PaymentMethod.cash:
-      case PaymentMethod.udhaar:
         return 0;
+      case PaymentMethod.udhaar:
+        return accountAmount;
     }
   }
 
@@ -489,6 +495,8 @@ class ShiftWindowMetrics {
     required this.accountSales,
     required this.udhaarRecoveryTotal,
     required this.totalLiters,
+    this.cashNow = 0,
+    this.cashNowUdhaar = 0,
     this.udhaarRecoveryAccountTotal = 0,
     this.udhaarRecoveryPartialTotal = 0,
     this.directSales = const <HelperSaleRecord>[],
@@ -505,6 +513,12 @@ class ShiftWindowMetrics {
   final double fuelCashSales;
   final double udhaarSales;
   final double accountSales;
+
+  /// Cash Now Account: cash taken on Bank / EasyPaisa tickets.
+  final double cashNow;
+
+  /// Cash Now Udhaar: cash taken on Udhaar tickets.
+  final double cashNowUdhaar;
   final double udhaarRecoveryTotal;
   final double udhaarRecoveryAccountTotal;
   final double udhaarRecoveryPartialTotal;
@@ -529,8 +543,25 @@ class ShiftWindowMetrics {
   double get udhaarRecoveryCombined =>
       udhaarRecoveryTotal + udhaarRecoveryAccountTotal;
 
-  /// Cash sales + Cash Now on Account + cash udhaar recovery. Purchases are not shift cash.
-  double get expectedCashInHand => fuelCashSales + udhaarRecoveryTotal;
+  /// Account portion plus Cash Now Account. Excludes Cash Now Udhaar.
+  double get accountTicketTotal => cashNow + accountSales;
+
+  /// Pure cash tickets: readings minus credit, account, and both cash-now figures.
+  double cashOnlySalesFromReadings(double readingsTotalSale) {
+    return readingsTotalSale -
+        udhaarSales -
+        accountSales -
+        cashNow -
+        cashNowUdhaar;
+  }
+
+  /// Cash only Sales + Udhaar Recovery (Cash) + Cash Now Account + Cash Now Udhaar.
+  double expectedCashInHandFrom(double readingsTotalSale) {
+    return cashOnlySalesFromReadings(readingsTotalSale) +
+        udhaarRecoveryTotal +
+        cashNow +
+        cashNowUdhaar;
+  }
 
   static const ShiftWindowMetrics empty = ShiftWindowMetrics(
     sales: <HelperSaleRecord>[],
@@ -542,14 +573,16 @@ class ShiftWindowMetrics {
   );
 
   static const String totalSaleFormula =
-      'Cash Sales + Cash Now + Account remainder + Udhaar Issued';
+      'Readings Amount (Net Volume × Rate)';
   static const String expectedCashFormula =
-      'Cash Sales + Cash Now + Udhaar Recovery (Cash)';
-  static const String udhaarIssuedHint = 'Credit sales this shift';
+      'Cash only Sales + Udhaar Recovery (Cash) + Cash Now Account + Cash Now Udhaar';
+  static const String udhaarIssuedHint = 'Credit portion of Udhaar sales';
   static const String udhaarRecoveryHint =
       'Cash + Account recoveries this shift';
   static const String accountPaymentsHint =
-      'Bank / EasyPaisa remainder (not Cash Now)';
+      'Account remainder and Cash Now Account';
+  static const String cashOnlySalesHint =
+      'Total Sale − Udhaar Issued − Account − Cash Now Account − Cash Now Udhaar';
 }
 
 @immutable
@@ -728,6 +761,8 @@ ShiftWindowMetrics metricsForSales(
   double cash = 0;
   double udhaar = 0;
   double account = 0;
+  double cashNowTotal = 0;
+  double cashNowUdhaarTotal = 0;
   double liters = 0;
   int? firstToken;
   int? lastToken;
@@ -743,11 +778,19 @@ ShiftWindowMetrics metricsForSales(
       case PaymentMethod.cash:
         cash += row.cashTender;
       case PaymentMethod.udhaar:
-        udhaar += row.amountPkr;
+        udhaar += udhaarCreditRupees(
+          saleAmount: row.amountPkr,
+          cashAmount: row.cashAmount,
+          accountAmount: row.accountAmount,
+        );
+        cash += row.cashTender;
+        account += row.accountTender;
+        cashNowUdhaarTotal += row.cashTender;
       case PaymentMethod.bankAccount:
       case PaymentMethod.easyPaisa:
         cash += row.cashTender;
         account += row.accountTender;
+        cashNowTotal += row.cashTender;
     }
     if (firstToken == null || row.tokenNo < firstToken) {
       firstToken = row.tokenNo;
@@ -766,6 +809,8 @@ ShiftWindowMetrics metricsForSales(
     fuelCashSales: cash,
     udhaarSales: udhaar,
     accountSales: account,
+    cashNow: cashNowTotal,
+    cashNowUdhaar: cashNowUdhaarTotal,
     udhaarRecoveryTotal: udhaarRecoveryTotal,
     udhaarRecoveryAccountTotal: udhaarRecoveryAccountTotal,
     udhaarRecoveryPartialTotal: udhaarRecoveryPartialTotal,

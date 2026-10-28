@@ -15,14 +15,18 @@ class GatewayHeaderCard extends StatelessWidget {
     required this.showManualKeypadUnlock,
     required this.anyKeypadLocked,
     required this.onGlobalLock,
+    this.officeSsid = StationNetDefaults.officeSsid,
+    this.onChangeNetwork,
   });
 
   final StationState station;
   final DispenserMonitorState monitor;
   final bool onOfficeLan;
+  final String officeSsid;
   final bool showManualKeypadUnlock;
   final bool anyKeypadLocked;
   final VoidCallback onGlobalLock;
+  final VoidCallback? onChangeNetwork;
 
   @override
   Widget build(BuildContext context) {
@@ -56,7 +60,7 @@ class GatewayHeaderCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Text(
-            'FDX ALPHA  →  ESP32  →  Tenda System  →  App',
+            'FDX ALPHA  →  ESP32  →  $officeSsid  →  App',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -73,6 +77,7 @@ class GatewayHeaderCard extends StatelessWidget {
               final bool compact = bounds.maxWidth < 1180;
               final Widget mux = _GatewayStatusBlock(
                 url: url,
+                officeSsid: officeSsid,
                 connected: active > 0,
                 latencyMs: latencyMs,
               );
@@ -81,12 +86,11 @@ class GatewayHeaderCard extends StatelessWidget {
                       children: <Widget>[
                         _MetricChip(
                           icon: Icons.wifi_tethering,
-                          label: StationNetDefaults.officeSsid,
-                          value: onOfficeLan
-                              ? 'TENDA SYSTEM UP'
-                              : 'NOT ON TENDA SYSTEM',
+                          label: officeSsid,
+                          value: _officeLanValue(officeSsid, onOfficeLan),
                           good: onOfficeLan,
                           warn: !onOfficeLan,
+                          onTap: onChangeNetwork,
                         ),
                         const SizedBox(height: 8),
                         _MetricChip(
@@ -112,12 +116,11 @@ class GatewayHeaderCard extends StatelessWidget {
                         Expanded(
                           child: _MetricChip(
                             icon: Icons.wifi_tethering,
-                            label: StationNetDefaults.officeSsid,
-                            value: onOfficeLan
-                                ? 'TENDA SYSTEM UP'
-                                : 'NOT ON TENDA SYSTEM',
+                            label: officeSsid,
+                            value: _officeLanValue(officeSsid, onOfficeLan),
                             good: onOfficeLan,
                             warn: !onOfficeLan,
+                            onTap: onChangeNetwork,
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -190,14 +193,24 @@ class GatewayHeaderCard extends StatelessWidget {
   }
 }
 
+String _officeLanValue(String ssid, bool onOfficeLan) {
+  final bool station = ssid.trim().toLowerCase() == 'system';
+  if (onOfficeLan) {
+    return station ? 'TENDA SYSTEM UP' : 'ON ${ssid.trim()}';
+  }
+  return station ? 'NOT ON TENDA SYSTEM' : 'NOT ON ${ssid.trim()}';
+}
+
 class _GatewayStatusBlock extends StatelessWidget {
   const _GatewayStatusBlock({
     required this.url,
+    required this.officeSsid,
     required this.connected,
     required this.latencyMs,
   });
 
   final String url;
+  final String officeSsid;
   final bool connected;
   final int? latencyMs;
 
@@ -222,7 +235,7 @@ class _GatewayStatusBlock extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                'UNIT ESP32 · ${StationNetDefaults.officeSsid}',
+                'UNIT ESP32 · $officeSsid',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w700,
@@ -286,6 +299,7 @@ class _MetricChip extends StatelessWidget {
     required this.value,
     this.good = false,
     this.warn = false,
+    this.onTap,
   });
 
   final IconData icon;
@@ -293,6 +307,7 @@ class _MetricChip extends StatelessWidget {
   final String value;
   final bool good;
   final bool warn;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -300,7 +315,7 @@ class _MetricChip extends StatelessWidget {
     final Color accent = good
         ? tokens.good
         : (warn ? tokens.warn : tokens.inkMuted);
-    return Container(
+    final Widget body = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: tokens.canvas,
@@ -341,7 +356,21 @@ class _MetricChip extends StatelessWidget {
               ],
             ),
           ),
+          if (onTap != null)
+            Icon(Icons.edit_outlined, size: 16, color: tokens.inkMuted),
         ],
+      ),
+    );
+    final VoidCallback? tap = onTap;
+    if (tap == null) {
+      return body;
+    }
+    return Material(
+      color: const Color(0x00000000),
+      child: InkWell(
+        onTap: tap,
+        borderRadius: BorderRadius.circular(tokens.radius12),
+        child: body,
       ),
     );
   }

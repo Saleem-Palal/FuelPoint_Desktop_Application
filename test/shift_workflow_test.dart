@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:fuel_dispenser/features/shift/data/sqlite_shift_repository.dart';
 import 'package:fuel_dispenser/features/shift/domain/shift_lifecycle.dart';
 import 'package:fuel_dispenser/features/shift/domain/shift_models.dart';
 import 'package:fuel_dispenser/features/station/domain/dispenser_models.dart';
@@ -127,7 +128,7 @@ void main() {
   });
 
   group('expected cash in hand', () {
-    test('is cash sales plus in-cash udhaar recovery', () {
+    test('is cash only plus cash recovery plus cash now', () {
       const ShiftWindowMetrics metrics = ShiftWindowMetrics(
         sales: <HelperSaleRecord>[],
         fuelCashSales: 1000,
@@ -136,9 +137,29 @@ void main() {
         udhaarRecoveryTotal: 200,
         totalLiters: 10,
       );
-      expect(metrics.expectedCashInHand, 1200);
       expect(metrics.totalSale, 5250);
+      expect(metrics.cashOnlySalesFromReadings(5250), 1000);
+      expect(metrics.expectedCashInHandFrom(5250), 1200);
     });
+
+    test(
+      'cash only sales is readings minus udhaar issued minus account tickets',
+      () {
+        const ShiftWindowMetrics metrics = ShiftWindowMetrics(
+          sales: <HelperSaleRecord>[],
+          fuelCashSales: 4434901,
+          udhaarSales: 267897,
+          accountSales: 779904,
+          cashNow: 399485,
+          udhaarRecoveryTotal: 150,
+          udhaarRecoveryAccountTotal: 50,
+          totalLiters: 10,
+        );
+        expect(metrics.accountTicketTotal, 1179389);
+        expect(metrics.cashOnlySalesFromReadings(3633211), 2185925);
+        expect(metrics.expectedCashInHandFrom(3633211), 2585560);
+      },
+    );
   });
 
   group('partial account sale metrics', () {
@@ -174,9 +195,12 @@ void main() {
         ),
       ]);
       expect(metrics.fuelCashSales, 2000);
+      expect(metrics.cashNow, 2000);
+      expect(metrics.cashOnlySalesFromReadings(2989), 0);
       expect(metrics.accountSales, 989);
+      expect(metrics.accountTicketTotal, 2989);
       expect(metrics.totalSale, 2989);
-      expect(metrics.expectedCashInHand, 2000);
+      expect(metrics.expectedCashInHandFrom(2989), 2000);
     });
 
     test('cash-only with cashAmount set uses Cash column not AMOUNT twice', () {
@@ -184,6 +208,7 @@ void main() {
         sale(payment: PaymentMethod.cash, amountPkr: 2989, cashAmount: 2989),
       ]);
       expect(metrics.fuelCashSales, 2989);
+      expect(metrics.cashOnlySalesFromReadings(2989), 2989);
       expect(metrics.accountSales, 0);
       expect(metrics.totalSale, 2989);
     });
@@ -193,8 +218,47 @@ void main() {
         sale(payment: PaymentMethod.easyPaisa, amountPkr: 5000),
       ]);
       expect(metrics.fuelCashSales, 0);
+      expect(metrics.cashNow, 0);
       expect(metrics.accountSales, 5000);
-      expect(metrics.expectedCashInHand, 0);
+      expect(metrics.expectedCashInHandFrom(5000), 0);
+    });
+
+    test('udhaar cash is Cash Now Udhaar and the remainder is credit', () {
+      final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
+        sale(
+          payment: PaymentMethod.udhaar,
+          amountPkr: 3945,
+          cashAmount: 1000,
+          accountAmount: 1500,
+        ),
+      ]);
+      expect(metrics.cashNow, 0);
+      expect(metrics.cashNowUdhaar, 1000);
+      expect(metrics.accountSales, 1500);
+      expect(metrics.udhaarSales, 1445);
+      expect(metrics.totalSale, 3945);
+      expect(metrics.cashOnlySalesFromReadings(3945), 0);
+      expect(metrics.expectedCashInHandFrom(3945), 1000);
+    });
+
+    test('bank cash stays Cash Now Account and still reaches expected cash', () {
+      final ShiftWindowMetrics metrics = metricsForSales(<HelperSaleRecord>[
+        sale(
+          payment: PaymentMethod.bankAccount,
+          amountPkr: 2989,
+          cashAmount: 2000,
+          accountAmount: 989,
+        ),
+        sale(
+          payment: PaymentMethod.udhaar,
+          amountPkr: 3945,
+          cashAmount: 1000,
+          accountAmount: 1500,
+        ),
+      ]);
+      expect(metrics.cashNow, 2000);
+      expect(metrics.cashNowUdhaar, 1000);
+      expect(metrics.expectedCashInHandFrom(2989 + 3945), 3000);
     });
 
     test('test fills stay listed, add liters, and skip cash and count', () {
@@ -209,7 +273,7 @@ void main() {
       expect(metrics.commercialSaleCount, 1);
       expect(metrics.fuelCashSales, 1000);
       expect(metrics.totalLiters, 15);
-      expect(metrics.expectedCashInHand, 1000);
+      expect(metrics.expectedCashInHandFrom(1000), 1000);
     });
   });
 
@@ -217,6 +281,49 @@ void main() {
     test('stores 1 when the owner is elevated', () {
       expect(elevatedByOwnerFlag(true), 1);
       expect(elevatedByOwnerFlag(false), 0);
+    });
+  });
+
+  group('closed shift recovery', () {
+    OperatorShiftRecord closedShift({
+      double expectedCash = 2861350,
+      double udhaarRecoveryTotal = 0,
+      double udhaarRecoveryAccountTotal = 0,
+    }) {
+      return OperatorShiftRecord(
+        shiftId: 'SHF-1',
+        operatorId: 'mgr-1',
+        operatorName: 'Farrukh',
+        role: OperatorRole.operator,
+        startTime: DateTime(2026, 10, 9, 21, 19),
+        endTime: DateTime(2026, 10, 10, 10, 41),
+        expectedCash: expectedCash,
+        actualCash: 2861350,
+        status: OperatorShiftStatus.closed,
+        udhaarRecoveryTotal: udhaarRecoveryTotal,
+        udhaarRecoveryAccountTotal: udhaarRecoveryAccountTotal,
+      );
+    }
+
+    test('does not invent udhaar recovery from expected cash', () {
+      final ShiftWindowMetrics metrics = SqliteShiftRepository.metricsForShift(
+        const <HelperSaleRecord>[],
+        closedShift(),
+      );
+      expect(metrics.udhaarRecoveryTotal, 0);
+      expect(metrics.udhaarRecoveryAccountTotal, 0);
+    });
+
+    test('keeps stored cash and account recoveries on the closed shift', () {
+      final ShiftWindowMetrics metrics = SqliteShiftRepository.metricsForShift(
+        const <HelperSaleRecord>[],
+        closedShift(
+          udhaarRecoveryTotal: 98704,
+          udhaarRecoveryAccountTotal: 1200,
+        ),
+      );
+      expect(metrics.udhaarRecoveryTotal, 98704);
+      expect(metrics.udhaarRecoveryAccountTotal, 1200);
     });
   });
 }

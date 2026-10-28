@@ -12,12 +12,140 @@ class AppBrand {
   static const String name = 'FuelPoint';
   static const String tagline = 'Station Control';
   static const String developer = 'RetroSoft';
-  static const String version = '1.0.0.13';
+  static const String version = '1.0.0.29';
   static const String versionLabel = 'v$version';
 
   /// Newest update first. Each block is numbered from 1.
   static const List<ReleaseNoteUpdate> releaseNoteUpdates =
       <ReleaseNoteUpdate>[
+        ReleaseNoteUpdate(
+          version: '1.0.29',
+          notes: <String>[
+            'Print retries receipt capture so a blank snapshot does not fail',
+            'Tall receipts scale down so they still print',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.28',
+          notes: <String>[
+            'Print captures receipts off-screen so the full slip prints',
+            'Sale and Udhaar settlement slips no longer crash while printing',
+            'Customer and station copies print as separate jobs',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.27',
+          notes: <String>[
+            'Webcam capture of Bank / EasyPaisa transfer proof after Confirm',
+            'Add Proof on the pending Account banner',
+            'Udhaar Settle Bill can attach transfer proof',
+            'A screenshot slip prints when proof is attached',
+            'Continue without a camera if no webcam is plugged in',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.26',
+          notes: <String>[
+            'Print and Confirm light up ready when fueling ends',
+            'Tap stays off until vehicle number is filled',
+            'Udhaar also needs a matched customer before Confirm',
+            'Same Cash / Udhaar / Account tender panel on Sale and Ledger Edit',
+            'Pump speaker slider can go above 100 for louder pump talk',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.25',
+          notes: <String>[
+            'Udhaar Confirm uses Cash Now plus remainder, like Account',
+            'Expected cash includes Cash Now Account and Cash Now Udhaar',
+            'Shift screens and Shift Report PDF show Cash Now Udhaar',
+            'Cash only Sales excludes Account remainder and both Cash Now amounts',
+            'Shift Audit treats a 0.1 L gap or less as a match',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.24',
+          notes: <String>[
+            'Intercom noise cut pulls hiss down without making it louder',
+            'Office speaker ducks flat hiss and keeps spoken words',
+            'Pump speaker tames loud peaks so talk is less harsh',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.23',
+          notes: <String>[
+            'Intercom Settings split into Pump and Office cards',
+            'Pump has its own microphone, speaker, and noise cut',
+            'Office has its own microphone, speaker, and noise cut',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.22',
+          notes: <String>[
+            'Intercom levels in Settings: pump speaker, station speaker, mic, and noise cut',
+            'Speaker test plays a tone or WAV files on a chosen pump',
+            'Udhaar Settle Bill: Cash or Account (Bank / EasyPaisa) with Cash Now split',
+            'Settlement receipt shows Cash Now and Bank/EasyPaisa amounts',
+            'Account overpay shows Baqaya Dene hain on confirm and pending transfer',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.21',
+          notes: <String>[
+            'Expected cash is Cash only Sales + Udhaar Recovery (Cash) + Cash Now',
+            'Cash only Sales is Total Sale minus Udhaar Issued minus Account Payments',
+            'Shift KPIs split Account Payments and Udhaar Recovery by cash and account',
+            'Total Sale follows Readings Amount (net volume × rate)',
+            'Shift Report PDF uses the same cash figures',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.20',
+          notes: <String>[
+            'Sales Ledger opens the last 30 days without crashing',
+            'Page older All Transactions in 30-day blocks',
+            'Rate-Wise table: unit, rate, meters, dispensed, test, net, amount',
+            'Shift totals use meter net so lost tickets still count',
+            'Older closed shifts show the correct Expected cash',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.19',
+          notes: <String>[
+            'Long ledger and shift PDFs no longer hang while generating',
+            'Sales and Purchase ledger PDFs on A4 landscape',
+            'Shift Report PDF paginates tables without a title on every page',
+            'Customer directory and ledger PDFs use the same report layout',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.18',
+          notes: <String>[
+            'PDFs save under Documents/Exported_Reports and open without crash',
+            'Owner can enroll up to 10 fingerprints',
+            'Generate PDF on shift handover and shift summary',
+            'Udhaar settlement no longer crashes before print',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.15',
+          notes: <String>[
+            'Receipt preview for unit slips, pending account, second copy, and Udhaar settlement',
+            'Udhaar settlement thermal receipt (2 copies)',
+            'Shift Report PDF: rate bands, test liters, and Direct Sales',
+            'Confirm and Print highlight when a fill is ready',
+            'Zero-volume abort notice on the unit card',
+          ],
+        ),
+        ReleaseNoteUpdate(
+          version: '1.0.14',
+          notes: <String>[
+            'Push-to-talk intercom on Sale unit cards',
+            'ESP last-10 Token# recover dialog',
+            'Fingerprint login and enrollment',
+            'Per-unit ESP host and port from Sale screen',
+          ],
+        ),
         ReleaseNoteUpdate(
           version: '1.0.13',
           notes: <String>[

@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -7,6 +8,8 @@ import 'dart:ui' as ui;
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:printing/printing.dart';
+
+import 'receipt_proof_raster.dart';
 
 /// Sends a receipt bitmap to a Windows thermal printer as RAW ESC/POS.
 ///
@@ -18,11 +21,24 @@ class WindowsEscPosSpooler {
   static final WindowsEscPosSpooler instance = WindowsEscPosSpooler._();
 
   static const int _dots80mm = 576;
+  static const int _dots58mm = 384;
   static const int _maxRasterRows = 1200;
+
+  /// 80mm until a paper-width setting exists.
+  static int paperWidthDots({bool mm58 = false}) {
+    return mm58 ? _dots58mm : _dots80mm;
+  }
+
+  static int get thermalWidthDots => paperWidthDots();
 
   _Winspool? _api;
 
-  Future<void> printPngs(List<Uint8List> pngs) async {
+  /// Each PNG is its own cut job. [proofImagePath] prints as a separate screenshot slip.
+  Future<void> printPngs(
+    List<Uint8List> pngs, {
+    String? proofImagePath,
+    Uint8List? screenshotPng,
+  }) async {
     if (!Platform.isWindows) {
       throw UnsupportedError('ESC/POS spooler is Windows-only');
     }
@@ -37,6 +53,30 @@ class WindowsEscPosSpooler {
       if (i < pngs.length - 1) {
         await Future<void>.delayed(const Duration(milliseconds: 400));
       }
+    }
+    try {
+      final Uint8List? composed = screenshotPng;
+      if (composed != null && composed.isNotEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        api.writeRaw(
+          printer,
+          await _escPosFromPng(composed, mode: ThermalBitMode.photo),
+          jobName: 'FuelPoint screenshot',
+        );
+        return;
+      }
+      final String proof = proofImagePath?.trim() ?? '';
+      if (proof.isEmpty) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      api.writeRaw(
+        printer,
+        await _escPosFromProofJpeg(proof),
+        jobName: 'FuelPoint screenshot',
+      );
+    } catch (error, stack) {
+      debugPrint('Screenshot copy skipped: $error\n$stack');
     }
   }
 
@@ -69,7 +109,32 @@ class WindowsEscPosSpooler {
     return _Winspool.defaultPrinterName();
   }
 
-  Future<Uint8List> _escPosFromPng(Uint8List png) async {
+  Future<Uint8List> _escPosFromPng(
+    Uint8List png, {
+    ThermalBitMode mode = ThermalBitMode.text,
+  }) async {
+    return mergeEscPosSlip(
+      receiptBody: await _rasterFromPng(png, mode: mode),
+    );
+  }
+
+  Future<Uint8List> _escPosFromProofJpeg(String path) async {
+    final File file = File(path);
+    if (!await file.exists()) {
+      throw StateError('Transfer screenshot missing on disk: $path');
+    }
+    final Uint8List jpeg = await file.readAsBytes();
+    final int maxWidth = thermalWidthDots;
+    final Uint8List body = await Isolate.run(() {
+      return packProofJpegRaster(jpeg, maxWidth: maxWidth);
+    });
+    return mergeEscPosSlip(receiptBody: body);
+  }
+
+  Future<Uint8List> _rasterFromPng(
+    Uint8List png, {
+    ThermalBitMode mode = ThermalBitMode.text,
+  }) async {
     final ui.Codec codec = await ui.instantiateImageCodec(png);
     final ui.FrameInfo frame = await codec.getNextFrame();
     final ui.Image src = frame.image;
@@ -77,7 +142,7 @@ class WindowsEscPosSpooler {
       if (src.width <= 0 || src.height <= 0) {
         throw StateError('Receipt snapshot is empty');
       }
-      final int destW = _dots80mm;
+      final int destW = thermalWidthDots;
       final int destH = (src.height * destW / src.width).round().clamp(1, 8000);
       final ui.PictureRecorder recorder = ui.PictureRecorder();
       final ui.Canvas canvas = ui.Canvas(recorder);
@@ -85,7 +150,7 @@ class WindowsEscPosSpooler {
         src,
         ui.Rect.fromLTWH(0, 0, src.width.toDouble(), src.height.toDouble()),
         ui.Rect.fromLTWH(0, 0, destW.toDouble(), destH.toDouble()),
-        ui.Paint()..filterQuality = ui.FilterQuality.medium,
+        ui.Paint()..filterQuality = ui.FilterQuality.high,
       );
       final ui.Picture picture = recorder.endRecording();
       final ui.Image scaled = await picture.toImage(destW, destH);
@@ -97,7 +162,12 @@ class WindowsEscPosSpooler {
         if (rgba == null) {
           throw StateError('Receipt raster failed');
         }
-        return _packEscPos(rgba.buffer.asUint8List(), destW, destH);
+        return packEscPosRaster(
+          rgba.buffer.asUint8List(),
+          destW,
+          destH,
+          mode: mode,
+        );
       } finally {
         scaled.dispose();
       }
@@ -105,73 +175,71 @@ class WindowsEscPosSpooler {
       src.dispose();
     }
   }
+}
 
-  Uint8List _packEscPos(Uint8List rgba, int width, int height) {
-    final List<int> bits = _ditherToBits(rgba, width, height);
-    final int widthBytes = (width + 7) ~/ 8;
-    final BytesBuilder out = BytesBuilder(copy: false);
-    out.add(const <int>[0x1B, 0x40]);
-    out.add(const <int>[0x1B, 0x61, 0x01]);
-    int row = 0;
-    while (row < height) {
-      final int chunk = math.min(_maxRasterRows, height - row);
-      out.add(const <int>[0x1D, 0x76, 0x30, 0x00]);
-      out.addByte(widthBytes & 0xFF);
-      out.addByte((widthBytes >> 8) & 0xFF);
-      out.addByte(chunk & 0xFF);
-      out.addByte((chunk >> 8) & 0xFF);
-      final Uint8List band = Uint8List(widthBytes * chunk);
-      for (int y = 0; y < chunk; y++) {
-        for (int x = 0; x < width; x++) {
-          if (bits[(row + y) * width + x] == 0) {
-            continue;
-          }
-          band[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
-        }
-      }
-      out.add(band);
-      row += chunk;
-    }
-    out.add(const <int>[0x1B, 0x64, 0x04]);
-    out.add(const <int>[0x1D, 0x56, 0x41, 0x10]);
-    return out.toBytes();
+Uint8List mergeEscPosSlip({
+  required Uint8List receiptBody,
+  Uint8List? proofBody,
+  int feedLines = 3,
+}) {
+  final BytesBuilder out = BytesBuilder(copy: false);
+  out.add(const <int>[0x1B, 0x40]);
+  out.add(const <int>[0x1B, 0x61, 0x01]);
+  out.add(receiptBody);
+  if (proofBody != null && proofBody.isNotEmpty) {
+    out.add(const <int>[0x1B, 0x64, 0x01]);
+    out.add(proofBody);
   }
+  out.add(<int>[0x1B, 0x64, feedLines.clamp(0, 255)]);
+  out.add(const <int>[0x1D, 0x56, 0x41, 0x10]);
+  return out.toBytes();
+}
 
-  List<int> _ditherToBits(Uint8List rgba, int width, int height) {
-    final Float32List gray = Float32List(width * height);
-    for (int i = 0, p = 0; i < gray.length; i++, p += 4) {
-      final int a = rgba[p + 3];
-      if (a < 32) {
-        gray[i] = 255;
-        continue;
-      }
-      gray[i] =
-          (rgba[p] * 0.299) + (rgba[p + 1] * 0.587) + (rgba[p + 2] * 0.114);
-    }
-    final List<int> bits = List<int>.filled(width * height, 0);
-    for (int y = 0; y < height; y++) {
+/// Proof photo already rastered at save time — resize and pack, no second dither.
+Uint8List packProofJpegRaster(Uint8List jpeg, {int maxWidth = 576}) {
+  final ({int width, int height, Uint8List rgba}) prepared =
+      ReceiptProofRaster.preparePhotoThermal(jpeg, maxWidth: maxWidth);
+  return packEscPosRaster(
+    prepared.rgba,
+    prepared.width,
+    prepared.height,
+    mode: ThermalBitMode.photo,
+  );
+}
+
+Uint8List packEscPosRaster(
+  Uint8List rgba,
+  int width,
+  int height, {
+  ThermalBitMode mode = ThermalBitMode.text,
+}) {
+  final List<int> bits = rgbaToThermalBits(rgba, width, height, mode: mode);
+  final int widthBytes = (width + 7) ~/ 8;
+  final BytesBuilder out = BytesBuilder(copy: false);
+  int row = 0;
+  while (row < height) {
+    final int chunk = math.min(
+      WindowsEscPosSpooler._maxRasterRows,
+      height - row,
+    );
+    out.add(const <int>[0x1D, 0x76, 0x30, 0x00]);
+    out.addByte(widthBytes & 0xFF);
+    out.addByte((widthBytes >> 8) & 0xFF);
+    out.addByte(chunk & 0xFF);
+    out.addByte((chunk >> 8) & 0xFF);
+    final Uint8List band = Uint8List(widthBytes * chunk);
+    for (int y = 0; y < chunk; y++) {
       for (int x = 0; x < width; x++) {
-        final int i = y * width + x;
-        final double old = gray[i].clamp(0, 255);
-        final int printed = old < 128 ? 0 : 255;
-        bits[i] = printed == 0 ? 1 : 0;
-        final double err = old - printed;
-        if (x + 1 < width) {
-          gray[i + 1] += err * 7 / 16;
+        if (bits[(row + y) * width + x] == 0) {
+          continue;
         }
-        if (y + 1 < height) {
-          if (x > 0) {
-            gray[i + width - 1] += err * 3 / 16;
-          }
-          gray[i + width] += err * 5 / 16;
-          if (x + 1 < width) {
-            gray[i + width + 1] += err * 1 / 16;
-          }
-        }
+        band[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
       }
     }
-    return bits;
+    out.add(band);
+    row += chunk;
   }
+  return out.toBytes();
 }
 
 final class _DocInfo1 extends Struct {

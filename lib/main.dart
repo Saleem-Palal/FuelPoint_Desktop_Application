@@ -15,11 +15,13 @@ import 'core/theme/dispensr_theme.dart';
 import 'features/dashboard/dashboard_controller.dart';
 import 'providers/auth_provider.dart';
 import 'providers/onboarding_provider.dart';
+import 'features/station/data/webcam_windows.dart';
 import 'services/database_helper.dart';
 import 'services/window_lifecycle_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  ensureWindowsCameraPlugin();
   await WindowLifecycleService.configureDesktopWindow();
   final bool onboarded = await OnboardingPrefs.isCompleted();
   if (onboarded) {

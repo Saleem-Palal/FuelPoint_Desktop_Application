@@ -1,17 +1,23 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:decimal/decimal.dart';
+
 import '../../../core/constants.dart';
 import '../../../core/pdf_file_export.dart';
+import '../../../core/pdf_sheet.dart';
+import '../../../core/pdf_typeface.dart';
+import '../../../services/database_helper.dart';
+import '../../customer/data/sqlite_unified_udhaar_repository.dart';
+import '../../customer/domain/customer_models.dart';
 import '../../station/domain/dispenser_models.dart';
+import '../../station/domain/fuel_precision.dart';
 import '../../station/domain/money_format.dart';
 import '../domain/shift_models.dart';
 import '../domain/shift_report_layout.dart';
@@ -46,38 +52,56 @@ class ShiftSummaryExport {
     'Customer / Vehicle',
   ];
 
-  static const double _saleFontSize = 8;
+  static const List<String> _udhaarHeaders = <String>[
+    'PK / TKN',
+    'DateTime',
+    'Customer / ID',
+    'Liters',
+    'Rate',
+    'Amount',
+    'Cash',
+    'Account',
+    'Udhaar',
+    'Paid',
+    'Remaining',
+    'Vehicle No',
+  ];
 
-  static const Map<int, pw.TableColumnWidth> _saleColumnWidths =
-      <int, pw.TableColumnWidth>{
-        0: pw.FlexColumnWidth(),
-        1: pw.FlexColumnWidth(),
-        2: pw.FlexColumnWidth(),
-        3: pw.FlexColumnWidth(),
-        4: pw.FlexColumnWidth(),
-        5: pw.FlexColumnWidth(),
-        6: pw.FlexColumnWidth(),
-        7: pw.FlexColumnWidth(),
-        8: pw.FlexColumnWidth(),
-        9: pw.FlexColumnWidth(),
-        10: pw.FlexColumnWidth(),
-      };
+  static const Set<int> _udhaarNumeric = <int>{3, 4, 5, 6, 7, 8, 9, 10};
 
-  static const pw.EdgeInsets _cellPad = pw.EdgeInsets.symmetric(
-    horizontal: 2,
-    vertical: 3,
-  );
+  static const List<String> _accountHeaders = <String>[
+    'TKN',
+    'DateTime',
+    'Liters',
+    'Rate',
+    'Amount',
+    'Cash',
+    'Account',
+    'Vehicle No',
+  ];
 
-  Future<File> printPdf(ShiftSummary summary, {bool showUnit5 = false}) async {
-    return savePdf(summary, open: true, showUnit5: showUnit5);
+  static const Set<int> _accountNumeric = <int>{2, 3, 4, 5, 6};
+
+  Future<File> printPdf(
+    ShiftSummary summary, {
+    bool showUnit5 = false,
+    int? unitId,
+  }) async {
+    return savePdf(summary, open: true, showUnit5: showUnit5, unitId: unitId);
   }
 
   Future<File> savePdf(
     ShiftSummary summary, {
     bool open = false,
     bool showUnit5 = false,
+    int? unitId,
   }) async {
-    final Uint8List bytes = await buildPdf(summary, showUnit5: showUnit5);
+    final Uint8List bytes = await buildPdf(
+      summary,
+      showUnit5: showUnit5,
+      unitId: unitId,
+      udhaarLedger: await _udhaarLedgerFor(summary.shift.shiftId),
+    );
     final String stamp = _fileStamp(summary.shift.endTime ?? DateTime.now());
     final File file = await PdfFileExport.save(
       bytes: bytes,
@@ -95,8 +119,13 @@ class ShiftSummaryExport {
   Future<ShiftPdfShareResult> sharePdfViaWhatsApp(
     ShiftSummary summary, {
     bool showUnit5 = false,
+    int? unitId,
   }) async {
-    final File file = await savePdf(summary, showUnit5: showUnit5);
+    final File file = await savePdf(
+      summary,
+      showUnit5: showUnit5,
+      unitId: unitId,
+    );
     final String name = p.basename(file.path);
     try {
       await SharePlus.instance.share(
@@ -118,10 +147,12 @@ class ShiftSummaryExport {
   Future<bool> shareWhatsApp(
     ShiftSummary summary, {
     bool showUnit5 = false,
+    int? unitId,
   }) async {
     final ShiftPdfShareResult result = await sharePdfViaWhatsApp(
       summary,
       showUnit5: showUnit5,
+      unitId: unitId,
     );
     return result.shared;
   }
@@ -151,668 +182,483 @@ class ShiftSummaryExport {
   Future<Uint8List> buildPdf(
     ShiftSummary summary, {
     bool showUnit5 = false,
+    int? unitId,
+    List<UnifiedUdhaarRow> udhaarLedger = const <UnifiedUdhaarRow>[],
   }) async {
-    final _ShiftPdfFonts fonts = await _ShiftPdfFonts.load();
+    await Future<void>.delayed(Duration.zero);
+    final PdfTypeface fonts = await PdfTypeface.load();
     final OperatorShiftRecord shift = summary.shift;
     final ShiftWindowMetrics metrics = summary.metrics;
-    final pw.Document doc = pw.Document(
-      theme: pw.ThemeData.withFont(base: fonts.regular, bold: fonts.bold),
-    );
-    final PdfColor ink = PdfColor.fromInt(0xFF211C1A);
-    final PdfColor muted = PdfColor.fromInt(0xFF6F6560);
-    final PdfColor coral = PdfColor.fromInt(0xFFF0785C);
-    final PdfColor line = PdfColor.fromInt(0xFFEAD9D0);
-    final PdfColor canvas = PdfColor.fromInt(0xFFFBEDE6);
-    final PdfColor bad = PdfColor.fromInt(0xFFB42318);
+    final pw.Document doc = pw.Document(theme: fonts.theme);
     final double? actual = shift.actualCash;
-    final String varianceText = actual == null
-        ? '-'
-        : _varianceCopy(actual - metrics.expectedCashInHand);
     final List<HelperSaleRecord> reportSales = shiftReportSalesChronological(
       metrics.sales,
       showUnit5: showUnit5,
+      unitId: unitId,
     );
     final List<ShiftUnitReading> readings = buildShiftReportReadings(
       shift: shift,
       sales: metrics.sales,
       showUnit5: showUnit5,
+      unitId: unitId,
     );
-    final List<String> auditLines = shiftReportAuditLines(
-      shift: shift,
-      sales: metrics.sales,
-      showUnit5: showUnit5,
-    );
+    final _ReadingsTotals readingTotals = _ReadingsTotals.of(readings);
     final List<ShiftUnitSaleGroup> unitGroups = groupShiftReportSalesByUnit(
       metrics.sales,
       showUnit5: showUnit5,
+      unitId: unitId,
     );
+    final bool showDirectSales = includeShiftReportDirectSales(unitId: unitId);
+    final bool showDispenserSections =
+        unitId == null || !isDirectSaleUnit(unitId);
+    final double reportTotalSale = showDispenserSections
+        ? readingTotals.amountPkr.toDouble()
+        : metrics.totalSale;
+    final double cashOnlySales = metrics.cashOnlySalesFromReadings(
+      reportTotalSale,
+    );
+    final double expectedCash = metrics.expectedCashInHandFrom(reportTotalSale);
+    final String varianceText = actual == null
+        ? '-'
+        : _varianceCopy(actual - expectedCash);
     final List<HelperSaleRecord> directSales = shiftReportDirectSales(
       metrics.directSales,
+      unitId: unitId,
     );
     double reportLiters = 0;
     for (final HelperSaleRecord row in reportSales) {
       reportLiters += row.volumeLiters;
     }
 
-    doc.addPage(
-      pw.MultiPage(
-        pageFormat: _sheetFormat,
-        margin: const pw.EdgeInsets.all(20),
-        theme: pw.ThemeData.withFont(base: fonts.regular, bold: fonts.bold),
-        footer: (pw.Context context) {
-          return pw.Padding(
-            padding: const pw.EdgeInsets.only(top: 8),
-            child: pw.Align(
-              alignment: pw.Alignment.centerRight,
-              child: pw.Text(
-                'Page ${context.pageNumber} of ${context.pagesCount}',
-                style: pw.TextStyle(color: muted, fontSize: 8),
-              ),
-            ),
-          );
-        },
-        build: (pw.Context context) {
-          return <pw.Widget>[
-            pw.Container(
-              width: double.infinity,
-              padding: const pw.EdgeInsets.all(10),
-              decoration: pw.BoxDecoration(
-                color: canvas,
-                border: pw.Border.all(color: line),
-              ),
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: <pw.Widget>[
-                  pw.Text(
-                    _stationTitle.toUpperCase(),
-                    style: pw.TextStyle(
-                      color: coral,
-                      fontSize: 11,
-                      fontWeight: pw.FontWeight.bold,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                  pw.SizedBox(height: 4),
-                  pw.Text(
-                    'Shift Report',
-                    style: pw.TextStyle(
-                      color: ink,
-                      fontSize: 18,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.SizedBox(height: 6),
-                  pw.Wrap(
-                    spacing: 20,
-                    runSpacing: 4,
-                    children: <pw.Widget>[
-                      _headerChip(
-                        ink,
-                        muted,
-                        'Outgoing operator',
-                        shift.operatorName,
-                      ),
-                      _headerChip(ink, muted, 'Shift ID', shift.shiftId),
-                      _headerChip(
-                        ink,
-                        muted,
-                        'Start',
-                        formatDateTime(shift.startTime),
-                      ),
-                      _headerChip(
-                        ink,
-                        muted,
-                        'End',
-                        shift.endTime == null
-                            ? '-'
-                            : formatDateTime(shift.endTime!),
-                      ),
-                      _headerChip(
-                        ink,
-                        muted,
-                        'Duration',
-                        formatShiftDuration(summary.duration),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            pw.SizedBox(height: 12),
-            _sectionLabel(muted, 'FINANCIAL SUMMARY'),
-            pw.SizedBox(height: 6),
-            _kpiPills(
-              ink: ink,
-              muted: muted,
-              line: line,
-              canvas: canvas,
-              items: <List<String>>[
-                <String>['Total Sale', formatTablePkr(metrics.totalSale)],
-                <String>['Udhaar Issued', formatTablePkr(metrics.udhaarSales)],
-                <String>[
-                  'Udhaar Recovery',
-                  formatTablePkr(metrics.udhaarRecoveryCombined),
-                ],
-                <String>[
-                  'Cash / Account',
-                  'Cash: ${formatPkr(metrics.udhaarRecoveryTotal)}  |  Account: ${formatPkr(metrics.udhaarRecoveryAccountTotal)}',
-                ],
-                <String>[
-                  'Account Payments',
-                  formatTablePkr(metrics.accountSales),
-                ],
-                <String>[
-                  'Expected cash in Hand',
-                  formatTablePkr(metrics.expectedCashInHand),
-                ],
-                <String>[
-                  'Actual Cash Collected',
-                  actual == null ? '-' : formatTablePkr(actual),
-                ],
-                <String>['Variance', varianceText],
-              ],
-            ),
-            pw.SizedBox(height: 12),
-            _sectionLabel(muted, 'READINGS'),
-            pw.SizedBox(height: 6),
-            _readingsTable(
-              ink: ink,
-              muted: muted,
-              line: line,
-              canvas: canvas,
-              readings: readings,
-            ),
-            pw.SizedBox(height: 12),
-            _sectionLabel(muted, 'AUDIT REPORT'),
-            pw.SizedBox(height: 6),
-            if (auditLines.isEmpty)
-              pw.Text(
-                'No dispenser units to audit.',
-                style: pw.TextStyle(color: muted, fontSize: 8),
-              )
-            else
-              pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: <pw.Widget>[
-                  for (final String line in auditLines)
-                    pw.Padding(
-                      padding: const pw.EdgeInsets.only(bottom: 3),
-                      child: pw.Text(
-                        pdfSafeText(line),
-                        style: pw.TextStyle(
-                          color: line.contains('MISMATCH') ? bad : ink,
-                          fontSize: 8,
-                          fontWeight: pw.FontWeight.bold,
-                          lineSpacing: 1.2,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            pw.SizedBox(height: 12),
-            _sectionLabel(
-              muted,
-              'ITEMIZED SALES  ·  ${shift.shiftId}  ·  ${shift.operatorName}',
-            ),
-            pw.SizedBox(height: 6),
-            if (unitGroups.isEmpty)
-              pw.Text(
-                'No sales on this shift',
-                style: pw.TextStyle(color: muted, fontSize: 8),
-              )
-            else ...<pw.Widget>[
-              for (int i = 0; i < unitGroups.length; i++) ...<pw.Widget>[
-                if (i > 0) pw.SizedBox(height: 10),
-                _unitSalesTable(
-                  ink: ink,
-                  muted: muted,
-                  line: line,
-                  canvas: canvas,
-                  group: unitGroups[i],
-                ),
-              ],
-            ],
-            pw.SizedBox(height: 12),
-            _sectionLabel(muted, 'DIRECT SALES'),
-            pw.SizedBox(height: 6),
-            _directSalesTable(
-              ink: ink,
-              muted: muted,
-              line: line,
-              canvas: canvas,
-              sales: directSales,
-            ),
-            pw.SizedBox(height: 8),
-            pw.Row(
-              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-              children: <pw.Widget>[
-                pw.Text(
-                  '${reportSales.length} dispenser transaction'
-                  '${reportSales.length == 1 ? '' : 's'}',
-                  style: pw.TextStyle(
-                    color: ink,
-                    fontSize: 9,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-                pw.Text(
-                  'Total liters dispensed  ${formatTableLiters(reportLiters)}',
-                  style: pw.TextStyle(
-                    color: ink,
-                    fontSize: 9,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            if (shift.notes.isNotEmpty) ...<pw.Widget>[
-              pw.SizedBox(height: 10),
-              _kv(ink, muted, 'Handover notes', shift.notes),
-            ],
-          ];
-        },
-      ),
+    final PdfSheet flow = PdfSheet(
+      pageFormat: _sheetFormat,
+      theme: fonts.theme,
+      regular: fonts.regular,
+      bold: fonts.bold,
+      margin: const pw.EdgeInsets.all(20),
     );
-    return doc.save();
-  }
-
-  pw.Widget _sectionLabel(PdfColor muted, String label) {
-    return pw.Text(
-      label,
-      style: pw.TextStyle(
-        color: muted,
-        fontSize: 8,
-        fontWeight: pw.FontWeight.bold,
-        letterSpacing: 0.7,
-      ),
-    );
-  }
-
-  pw.Widget _kpiPills({
-    required PdfColor ink,
-    required PdfColor muted,
-    required PdfColor line,
-    required PdfColor canvas,
-    required List<List<String>> items,
-  }) {
-    pw.Widget rowOf(List<List<String>> cells, {int slots = 3}) {
-      return pw.Row(
-        children: <pw.Widget>[
-          for (int i = 0; i < slots; i++) ...<pw.Widget>[
-            if (i > 0) pw.SizedBox(width: 6),
-            pw.Expanded(
-              child: i < cells.length
-                  ? _kpiPill(
-                      ink: ink,
-                      muted: muted,
-                      line: line,
-                      canvas: canvas,
-                      label: cells[i][0],
-                      value: cells[i][1],
-                    )
-                  : pw.SizedBox(),
-            ),
-          ],
+    flow.banner(
+      kicker: _stationTitle,
+      title: 'Shift Report',
+      chips: <List<String>>[
+        <String>['Outgoing operator', shift.operatorName],
+        <String>['Shift ID', shift.shiftId],
+        <String>['Start', formatDateTime(shift.startTime)],
+        <String>[
+          'End',
+          shift.endTime == null ? '-' : formatDateTime(shift.endTime!),
         ],
-      );
-    }
-
-    return pw.Column(
-      children: <pw.Widget>[
-        rowOf(items.sublist(0, 3)),
-        pw.SizedBox(height: 6),
-        rowOf(items.sublist(3, 6)),
-        pw.SizedBox(height: 6),
-        rowOf(items.sublist(6)),
+        <String>['Duration', formatShiftDuration(summary.duration)],
+        if (unitId != null) <String>['Units', formatUnitLabel(unitId)],
       ],
     );
-  }
-
-  pw.Widget _kpiPill({
-    required PdfColor ink,
-    required PdfColor muted,
-    required PdfColor line,
-    required PdfColor canvas,
-    required String label,
-    required String value,
-  }) {
-    return pw.Container(
-      width: double.infinity,
-      padding: const pw.EdgeInsets.fromLTRB(8, 6, 8, 6),
-      decoration: pw.BoxDecoration(
-        color: canvas,
-        border: pw.Border.all(color: line),
-        borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
-      ),
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: <pw.Widget>[
-          pw.Text(
-            label.toUpperCase(),
-            style: pw.TextStyle(
-              color: muted,
-              fontSize: 7,
-              fontWeight: pw.FontWeight.bold,
-              letterSpacing: 0.4,
-            ),
-          ),
-          pw.SizedBox(height: 2),
-          pw.Text(
-            pdfSafeText(value),
-            style: pw.TextStyle(
-              color: ink,
-              fontSize: 11,
-              fontWeight: pw.FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _readingsTable({
-    required PdfColor ink,
-    required PdfColor muted,
-    required PdfColor line,
-    required PdfColor canvas,
-    required List<ShiftUnitReading> readings,
-  }) {
-    if (readings.isEmpty) {
-      return pw.Text(
-        'No dispenser readings for this shift',
-        style: pw.TextStyle(color: muted, fontSize: 8),
-      );
-    }
-    final List<List<String>> rows = <List<String>>[
-      for (final ShiftUnitReading unit in readings)
-        for (final ShiftRateReadingRow row in unit.rows)
-          <String>[
-            'Unit ${row.unitId}',
-            row.rateLabel,
-            row.opening == null ? '-' : formatMeterReading(row.opening!),
-            row.closing == null ? '-' : formatMeterReading(row.closing!),
-            row.dispensed == null ? '-' : formatTableLiters(row.dispensed!),
-            formatTableLiters(row.testLiters),
-            row.netVolume == null ? '-' : formatTableLiters(row.netVolume!),
-            row.amountPkr == null
-                ? '-'
-                : formatTablePkr(row.amountPkr!.toDouble()),
-          ],
-    ];
-    return _textTable(
-      ink: ink,
-      muted: muted,
-      line: line,
-      canvas: canvas,
-      headers: const <String>[
-        'Unit',
-        'Rate',
-        'Opening',
-        'Closing',
-        'Dispensed',
-        'Test',
-        'Net Volume',
-        'Amount',
+    flow.section('FINANCIAL SUMMARY');
+    flow.kpis(<List<String>>[
+      <String>['Total Sale', formatTablePkr(reportTotalSale)],
+      <String>['Cash only Sales', formatTablePkr(cashOnlySales)],
+      <String>[
+        'Udhaar Issued',
+        '${formatTablePkr(metrics.udhaarSales)}\n'
+            'Cash Now Udhaar: ${formatPkr(metrics.cashNowUdhaar)}',
       ],
-      rows: rows,
-      columnWidths: const <int, pw.TableColumnWidth>{
-        0: pw.FlexColumnWidth(0.9),
-        1: pw.FlexColumnWidth(1.0),
-        2: pw.FlexColumnWidth(1.05),
-        3: pw.FlexColumnWidth(1.05),
-        4: pw.FlexColumnWidth(1.05),
-        5: pw.FlexColumnWidth(0.9),
-        6: pw.FlexColumnWidth(1.15),
-        7: pw.FlexColumnWidth(1.05),
-      },
-      numeric: const <int>{1, 2, 3, 4, 5, 6, 7},
-    );
-  }
-
-  pw.Widget _unitSalesTable({
-    required PdfColor ink,
-    required PdfColor muted,
-    required PdfColor line,
-    required PdfColor canvas,
-    required ShiftUnitSaleGroup group,
-  }) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: <pw.Widget>[
-        pw.Text(
-          'UNIT ${group.unitId}',
-          style: pw.TextStyle(
-            color: ink,
+      <String>[
+        'Udhaar Recovery',
+        '${formatTablePkr(metrics.udhaarRecoveryCombined)}\n'
+            'Cash: ${formatPkr(metrics.udhaarRecoveryTotal)}  |  '
+            'Account: ${formatPkr(metrics.udhaarRecoveryAccountTotal)}',
+      ],
+      <String>[
+        'Account Payments',
+        '${formatTablePkr(metrics.accountTicketTotal)}\n'
+            'Account: ${formatPkr(metrics.accountSales)}  |  '
+            'Cash Now Account: ${formatPkr(metrics.cashNow)}',
+      ],
+      <String>['Expected cash in Hand', formatTablePkr(expectedCash)],
+      <String>[
+        'Actual Cash Collected',
+        actual == null ? '-' : formatTablePkr(actual),
+      ],
+      <String>['Variance', varianceText],
+    ]);
+    if (showDispenserSections) {
+      flow.section('READINGS');
+      final List<List<String>> readingRows = <List<String>>[
+        for (final ShiftUnitReading unit in readings)
+          for (final ShiftRateReadingRow row in unit.rows)
+            <String>[
+              'Unit ${row.unitId}',
+              row.rateLabel,
+              row.opening == null ? '-' : formatMeterReading(row.opening!),
+              row.closing == null ? '-' : formatMeterReading(row.closing!),
+              row.dispensed == null ? '-' : formatTableLiters(row.dispensed!),
+              formatTableLiters(row.testLiters),
+              row.netVolume == null ? '-' : formatTableLiters(row.netVolume!),
+              row.amountPkr == null
+                  ? '-'
+                  : formatTablePkr(row.amountPkr!.toDouble()),
+            ],
+      ];
+      if (readingRows.isNotEmpty) {
+        readingRows.add(<String>[
+          'Total',
+          ' ',
+          ' ',
+          ' ',
+          readingTotals.hasDispensed
+              ? formatTableLiters(readingTotals.dispensed)
+              : '-',
+          formatTableLiters(readingTotals.testLiters),
+          readingTotals.hasNetVolume
+              ? formatTableLiters(readingTotals.netVolume)
+              : '-',
+          formatTablePkr(readingTotals.amountPkr.toDouble()),
+        ]);
+      }
+      if (readingRows.isEmpty) {
+        flow.note('No dispenser readings for this shift');
+      } else {
+        flow.table(
+          headers: const <String>[
+            'Unit',
+            'Rate',
+            'Opening',
+            'Closing',
+            'Dispensed',
+            'Test',
+            'Net Volume',
+            'Amount',
+          ],
+          rows: readingRows,
+          numeric: const <int>{1, 2, 3, 4, 5, 6, 7},
+          flex: const <int, double>{
+            0: 0.9,
+            1: 1,
+            2: 1.05,
+            3: 1.05,
+            4: 1.05,
+            5: 0.9,
+            6: 1.15,
+            7: 1.05,
+          },
+        );
+      }
+      _writeUdhaarSection(
+        flow,
+        ledger: udhaarLedger,
+        sales: <HelperSaleRecord>[...metrics.sales, ...metrics.directSales],
+      );
+      _writeAccountSection(
+        flow,
+        sales: <HelperSaleRecord>[...metrics.sales, ...metrics.directSales],
+        showUnit5: showUnit5,
+        unitId: unitId,
+      );
+      flow.section(
+        'ITEMIZED SALES  ·  ${shift.shiftId}  ·  ${shift.operatorName}',
+      );
+      if (unitGroups.isEmpty) {
+        flow.note('No sales on this shift');
+      } else {
+        for (final ShiftUnitSaleGroup group in unitGroups) {
+          flow.table(
+            caption: unitGroups.length > 1 ? 'UNIT ${group.unitId}' : null,
+            headers: _saleHeaders,
             fontSize: 8,
-            fontWeight: pw.FontWeight.bold,
-            letterSpacing: 0.5,
-          ),
-        ),
-        pw.SizedBox(height: 3),
-        pw.SizedBox(
-          width: double.infinity,
-          child: pw.Table(
-            border: pw.TableBorder.all(color: line, width: 0.5),
-            tableWidth: pw.TableWidth.max,
-            columnWidths: _saleColumnWidths,
-            children: <pw.TableRow>[
-              _headerRow(
-                muted,
-                canvas,
-                _saleHeaders,
-                fontSize: _saleFontSize,
-              ),
+            numeric: const <int>{2, 3, 4, 5, 6, 8, 9},
+            contentDriven: true,
+            padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+            rows: <List<String>>[
               for (final HelperSaleRecord row in group.sales)
-                pw.TableRow(
-                  children: <pw.Widget>[
-                    _cell(
-                      ink,
-                      formatLedgerToken(row.tokenNo),
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      formatShiftTableTime(row.timestamp),
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      formatTableLiters(row.volumeLiters),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      formatTableRate(row.rate),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      formatTablePkr(row.amountPkr),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      formatMeterReading(row.openingMeter),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      formatMeterReading(row.closingMeter),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      shiftSalePaymentLabel(row, short: true),
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      _tender(row.cashTender),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _cell(
-                      ink,
-                      _tender(shiftSaleAccountColumn(row, tenderFallback: true)),
-                      numeric: true,
-                      fontSize: _saleFontSize,
-                    ),
-                    _customerVehicleCell(ink, muted, row),
-                  ],
-                ),
+                _itemizedSaleRow(row),
+              _itemizedTotalRow(group.sales),
             ],
-          ),
-        ),
+          );
+        }
+      }
+    } else {
+      _writeUdhaarSection(
+        flow,
+        ledger: udhaarLedger,
+        sales: <HelperSaleRecord>[...metrics.sales, ...metrics.directSales],
+      );
+      _writeAccountSection(
+        flow,
+        sales: <HelperSaleRecord>[...metrics.sales, ...metrics.directSales],
+        showUnit5: showUnit5,
+        unitId: unitId,
+      );
+    }
+    if (showDirectSales) {
+      flow.section('DIRECT SALES');
+      if (directSales.isEmpty) {
+        flow.note('No direct sales this shift');
+      } else {
+        flow.table(
+          headers: const <String>[
+            'TKN',
+            'DateTime',
+            'Liters',
+            'Rate',
+            'Amount',
+            'Customer',
+          ],
+          numeric: const <int>{2, 3, 4},
+          contentDriven: true,
+          rows: <List<String>>[
+            for (final HelperSaleRecord row in directSales)
+              <String>[
+                formatLedgerToken(row.tokenNo),
+                formatShiftTableTime(row.timestamp),
+                formatTableLiters(row.volumeLiters),
+                formatTableRate(row.rate),
+                formatTablePkr(row.amountPkr),
+                _pdfCustomerName(row.customerName),
+              ],
+          ],
+        );
+      }
+    }
+    flow.gap(8);
+    flow.totals(
+      showDispenserSections
+          ? '${reportSales.length} dispenser transaction${reportSales.length == 1 ? '' : 's'}'
+          : '${directSales.length} direct sale${directSales.length == 1 ? '' : 's'}',
+      'Total liters dispensed  ${formatTableLiters(showDispenserSections ? reportLiters : _directSaleLiters(directSales))}',
+    );
+    if (shift.notes.isNotEmpty) {
+      flow.gap(10);
+      flow.kv('Handover notes', shift.notes);
+    }
+    await flow.write(doc);
+    return doc.save(enableEventLoopBalancing: true);
+  }
+
+  void _writeAccountSection(
+    PdfSheet flow, {
+    required List<HelperSaleRecord> sales,
+    required bool showUnit5,
+    int? unitId,
+  }) {
+    flow.section('ACCOUNT');
+    final List<HelperSaleRecord> rows = shiftReportAccountSales(
+      sales,
+      showUnit5: showUnit5,
+      unitId: unitId,
+    );
+    if (rows.isEmpty) {
+      flow.note('ACCOUNT TRANSACTIONS  ·  No account sales this shift');
+      return;
+    }
+    flow.table(
+      caption: 'ACCOUNT TRANSACTIONS',
+      headers: _accountHeaders,
+      fontSize: 8,
+      numeric: _accountNumeric,
+      contentDriven: true,
+      padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+      rows: <List<String>>[
+        for (final HelperSaleRecord row in rows) _accountDataRow(row),
+        _accountTotalRow(rows),
       ],
     );
   }
 
-  pw.Widget _directSalesTable({
-    required PdfColor ink,
-    required PdfColor muted,
-    required PdfColor line,
-    required PdfColor canvas,
+  List<String> _accountDataRow(HelperSaleRecord row) {
+    return <String>[
+      formatLedgerToken(row.tokenNo),
+      formatShiftTableTime(row.timestamp),
+      formatTableLiters(row.volumeLiters),
+      formatTableRate(row.rate),
+      formatTablePkr(row.amountPkr),
+      _tender(row.cashTender),
+      _tender(shiftSaleAccountColumn(row, tenderFallback: true)),
+      _pdfVehicle(row.vehicleNo),
+    ];
+  }
+
+  List<String> _accountTotalRow(List<HelperSaleRecord> rows) {
+    final ShiftItemizedSaleTotals totals = ShiftItemizedSaleTotals.of(rows);
+    return <String>[
+      'Total',
+      ' ',
+      formatTableLiters(totals.liters),
+      ' ',
+      formatTablePkr(totals.amountPkr.toDouble()),
+      formatTablePkr(totals.cashPkr.toDouble()),
+      formatTablePkr(totals.accountPkr.toDouble()),
+      ' ',
+    ];
+  }
+
+  void _writeUdhaarSection(
+    PdfSheet flow, {
+    required List<UnifiedUdhaarRow> ledger,
     required List<HelperSaleRecord> sales,
   }) {
-    if (sales.isEmpty) {
-      return pw.Text(
-        'No direct sales this shift',
-        style: pw.TextStyle(color: muted, fontSize: 8),
-      );
+    flow.section('UDHAAR');
+    final List<ShiftUdhaarLine> recovery = <ShiftUdhaarLine>[
+      for (final UnifiedUdhaarRow row in shiftUdhaarRecoveryRows(ledger))
+        ShiftUdhaarLine.of(
+          row,
+          sale: shiftSaleForUdhaarToken(row.tokenLabel, sales),
+        ),
+    ];
+    final List<ShiftUdhaarLine> issued = <ShiftUdhaarLine>[
+      for (final UnifiedUdhaarRow row in shiftUdhaarIssuedRows(ledger))
+        ShiftUdhaarLine.of(
+          row,
+          sale: shiftSaleForUdhaarToken(row.tokenLabel, sales),
+        ),
+    ];
+    _writeUdhaarTable(
+      flow,
+      caption: 'UDHAAR RECOVERY',
+      emptyNote: 'No udhaar recoveries this shift',
+      lines: recovery,
+    );
+    _writeUdhaarTable(
+      flow,
+      caption: 'UDHAAR ISSUED',
+      emptyNote: 'No udhaar issued this shift',
+      lines: issued,
+    );
+  }
+
+  void _writeUdhaarTable(
+    PdfSheet flow, {
+    required String caption,
+    required String emptyNote,
+    required List<ShiftUdhaarLine> lines,
+  }) {
+    if (lines.isEmpty) {
+      flow.note('$caption  ·  $emptyNote');
+      return;
     }
-    return _textTable(
-      ink: ink,
-      muted: muted,
-      line: line,
-      canvas: canvas,
-      headers: const <String>[
-        'TKN',
-        'DateTime',
-        'Liters',
-        'Rate',
-        'Amount',
-        'Customer',
-      ],
+    flow.table(
+      caption: caption,
+      headers: _udhaarHeaders,
+      fontSize: 7,
+      numeric: _udhaarNumeric,
+      contentDriven: true,
+      padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 3),
       rows: <List<String>>[
-        for (final HelperSaleRecord row in sales)
-          <String>[
-            formatLedgerToken(row.tokenNo),
-            formatShiftTableTime(row.timestamp),
-            formatTableLiters(row.volumeLiters),
-            formatTableRate(row.rate),
-            formatTablePkr(row.amountPkr),
-            _pdfCustomerName(row.customerName),
-          ],
-      ],
-      columnWidths: const <int, pw.TableColumnWidth>{
-        0: pw.FlexColumnWidth(1.4),
-        1: pw.FlexColumnWidth(1.0),
-        2: pw.FlexColumnWidth(1.0),
-        3: pw.FlexColumnWidth(1.0),
-        4: pw.FlexColumnWidth(1.2),
-        5: pw.FlexColumnWidth(1.6),
-      },
-      numeric: const <int>{2, 3, 4},
-    );
-  }
-
-  pw.Widget _textTable({
-    required PdfColor ink,
-    required PdfColor muted,
-    required PdfColor line,
-    required PdfColor canvas,
-    required List<String> headers,
-    required List<List<String>> rows,
-    required Map<int, pw.TableColumnWidth> columnWidths,
-    required Set<int> numeric,
-  }) {
-    return pw.Table(
-      border: pw.TableBorder.all(color: line, width: 0.5),
-      columnWidths: columnWidths,
-      children: <pw.TableRow>[
-        _headerRow(muted, canvas, headers),
-        for (final List<String> row in rows)
-          pw.TableRow(
-            children: <pw.Widget>[
-              for (int i = 0; i < row.length; i++)
-                _cell(ink, row[i], numeric: numeric.contains(i)),
-            ],
-          ),
+        for (final ShiftUdhaarLine line in lines) _udhaarDataRow(line),
+        _udhaarTotalRow(lines),
       ],
     );
   }
 
-  pw.TableRow _headerRow(
-    PdfColor muted,
-    PdfColor canvas,
-    List<String> headers, {
-    double fontSize = 7,
-  }) {
-    return pw.TableRow(
-      decoration: pw.BoxDecoration(color: canvas),
-      children: <pw.Widget>[
-        for (final String header in headers)
-          pw.Padding(
-            padding: _cellPad,
-            child: pw.Text(
-              header,
-              style: pw.TextStyle(
-                color: muted,
-                fontSize: fontSize,
-                fontWeight: pw.FontWeight.bold,
-              ),
-            ),
-          ),
-      ],
-    );
+  List<String> _udhaarDataRow(ShiftUdhaarLine line) {
+    final UnifiedUdhaarRow row = line.row;
+    return <String>[
+      _udhaarKeyCell(row),
+      formatShiftTableTime(row.at),
+      _udhaarCustomerCell(row),
+      line.hasFuel ? formatTableLiters(row.liters) : '-',
+      line.hasFuel ? formatTableRate(row.rate) : '-',
+      formatTablePkr(line.amountPkr),
+      _tender(line.cashPkr),
+      _tender(line.accountPkr),
+      _tender(row.udhaarPkr),
+      _tender(row.paidPkr),
+      formatTablePkr(row.remainingPkr),
+      _pdfVehicle(row.vehicle),
+    ];
   }
 
-  pw.Widget _cell(
-    PdfColor ink,
-    String text, {
-    bool numeric = false,
-    double fontSize = 7,
-  }) {
-    return pw.Padding(
-      padding: _cellPad,
-      child: pw.Text(
-        pdfSafeText(text == '—' ? '-' : text),
-        textAlign: numeric ? pw.TextAlign.right : pw.TextAlign.left,
-        style: pw.TextStyle(color: ink, fontSize: fontSize),
-      ),
-    );
+  List<String> _udhaarTotalRow(List<ShiftUdhaarLine> lines) {
+    final ShiftUdhaarTableTotals totals = ShiftUdhaarTableTotals.of(lines);
+    return <String>[
+      'Total',
+      ' ',
+      ' ',
+      formatTableLiters(totals.liters),
+      ' ',
+      formatTablePkr(totals.amountPkr.toDouble()),
+      formatTablePkr(totals.cashPkr.toDouble()),
+      formatTablePkr(totals.accountPkr.toDouble()),
+      formatTablePkr(totals.udhaarPkr.toDouble()),
+      formatTablePkr(totals.paidPkr.toDouble()),
+      ' ',
+      ' ',
+    ];
   }
 
-  pw.Widget _customerVehicleCell(
-    PdfColor ink,
-    PdfColor muted,
-    HelperSaleRecord row,
-  ) {
+  String _udhaarKeyCell(UnifiedUdhaarRow row) {
+    final String token = (row.tokenLabel ?? '').trim();
+    if (token.isEmpty) {
+      return row.primaryKey;
+    }
+    return '${row.primaryKey} / $token';
+  }
+
+  String _udhaarCustomerCell(UnifiedUdhaarRow row) {
+    final String name = row.customerName.trim().isEmpty
+        ? '-'
+        : row.customerName.trim();
+    final String id = row.customerId.trim();
+    if (id.isEmpty) {
+      return name;
+    }
+    return '$name / $id';
+  }
+
+  String _pdfVehicle(String vehicle) {
+    final String text = displayVehicleNo(vehicle);
+    return text == '—' ? '-' : text;
+  }
+
+  Future<List<UnifiedUdhaarRow>> _udhaarLedgerFor(String shiftId) async {
+    try {
+      final List<Map<String, Object?>> rows = await DatabaseHelper.instance
+          .queryUnifiedUdhaarLedger(shiftId: shiftId);
+      return rows.map(SqliteUnifiedUdhaarRepository.fromRow).toList();
+    } catch (error) {
+      debugPrint('Shift PDF udhaar ledger failed: $error');
+      return const <UnifiedUdhaarRow>[];
+    }
+  }
+
+  List<String> _itemizedSaleRow(HelperSaleRecord row) {
+    return <String>[
+      formatLedgerToken(row.tokenNo),
+      formatShiftTableTime(row.timestamp),
+      formatTableLiters(row.volumeLiters),
+      formatTableRate(row.rate),
+      formatTablePkr(row.amountPkr),
+      formatMeterReading(row.openingMeter),
+      formatMeterReading(row.closingMeter),
+      shiftSalePaymentLabel(row, short: true),
+      _tender(row.cashTender),
+      _tender(shiftSaleAccountColumn(row, tenderFallback: true)),
+      _saleParty(row),
+    ];
+  }
+
+  List<String> _itemizedTotalRow(List<HelperSaleRecord> sales) {
+    final ShiftItemizedSaleTotals totals = ShiftItemizedSaleTotals.of(sales);
+    return <String>[
+      'Total',
+      ' ',
+      formatTableLiters(totals.liters),
+      ' ',
+      formatTablePkr(totals.amountPkr.toDouble()),
+      ' ',
+      ' ',
+      ' ',
+      formatTablePkr(totals.cashPkr.toDouble()),
+      formatTablePkr(totals.accountPkr.toDouble()),
+      ' ',
+    ];
+  }
+
+  String _saleParty(HelperSaleRecord row) {
     final String customer = _pdfCustomerName(row.customerName);
-    final String vehicle = pdfSafeText(displayVehicleNo(row.vehicleNo));
-    final bool hasVehicle = vehicle != '-' && vehicle != '—';
-    return pw.Padding(
-      padding: _cellPad,
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: <pw.Widget>[
-          pw.Text(
-            customer,
-            style: pw.TextStyle(color: ink, fontSize: _saleFontSize),
-          ),
-          if (hasVehicle)
-            pw.Text(
-              vehicle,
-              style: pw.TextStyle(color: muted, fontSize: _saleFontSize - 1),
-            ),
-        ],
-      ),
-    );
+    final String vehicle = displayVehicleNo(row.vehicleNo);
+    if (vehicle == '-' || vehicle == '—') {
+      return customer;
+    }
+    return '$customer / $vehicle';
   }
 
   String _pdfCustomerName(String name) {
@@ -823,7 +669,7 @@ class ShiftSummaryExport {
         trimmed.toLowerCase() == 'walk-in') {
       return 'Walk-in';
     }
-    return pdfSafeText(trimmed);
+    return trimmed;
   }
 
   String _tender(double value) {
@@ -831,67 +677,12 @@ class ShiftSummaryExport {
     return text == '—' ? '-' : text;
   }
 
-  pw.Widget _headerChip(
-    PdfColor ink,
-    PdfColor muted,
-    String label,
-    String value,
-  ) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: <pw.Widget>[
-        pw.Text(
-          label.toUpperCase(),
-          style: pw.TextStyle(
-            color: muted,
-            fontSize: 7,
-            fontWeight: pw.FontWeight.bold,
-            letterSpacing: 0.5,
-          ),
-        ),
-        pw.Text(
-          pdfSafeText(value),
-          style: pw.TextStyle(
-            color: ink,
-            fontSize: 10,
-            fontWeight: pw.FontWeight.bold,
-          ),
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _kv(PdfColor ink, PdfColor muted, String label, String value) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.only(bottom: 6),
-      child: pw.Row(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: <pw.Widget>[
-          pw.SizedBox(
-            width: 120,
-            child: pw.Text(
-              label.toUpperCase(),
-              style: pw.TextStyle(
-                color: muted,
-                fontSize: 8,
-                fontWeight: pw.FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-          pw.Expanded(
-            child: pw.Text(
-              pdfSafeText(value),
-              style: pw.TextStyle(
-                color: ink,
-                fontSize: 9,
-                fontWeight: pw.FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+  double _directSaleLiters(List<HelperSaleRecord> sales) {
+    double liters = 0;
+    for (final HelperSaleRecord row in sales) {
+      liters += row.volumeLiters;
+    }
+    return liters;
   }
 
   String _fileStamp(DateTime time) {
@@ -914,31 +705,57 @@ class ShiftSummaryExport {
   }
 }
 
-class _ShiftPdfFonts {
-  const _ShiftPdfFonts({required this.regular, required this.bold});
+class _ReadingsTotals {
+  const _ReadingsTotals({
+    required this.dispensed,
+    required this.testLiters,
+    required this.netVolume,
+    required this.amountPkr,
+    required this.hasDispensed,
+    required this.hasNetVolume,
+  });
 
-  final pw.Font regular;
-  final pw.Font bold;
+  final double dispensed;
+  final double testLiters;
+  final double netVolume;
+  final int amountPkr;
+  final bool hasDispensed;
+  final bool hasNetVolume;
 
-  static Future<_ShiftPdfFonts> load() async {
-    try {
-      return _ShiftPdfFonts(
-        regular: await PdfGoogleFonts.robotoRegular(),
-        bold: await PdfGoogleFonts.robotoBold(),
-      );
-    } catch (error) {
-      debugPrint('PdfGoogleFonts unavailable, using bundled Roboto: $error');
-      final ByteData regularData = await rootBundle.load(
-        'assets/fonts/Roboto-Regular.ttf',
-      );
-      final ByteData boldData = await rootBundle.load(
-        'assets/fonts/Roboto-Bold.ttf',
-      );
-      return _ShiftPdfFonts(
-        regular: pw.Font.ttf(regularData),
-        bold: pw.Font.ttf(boldData),
-      );
+  static _ReadingsTotals of(List<ShiftUnitReading> readings) {
+    Decimal dispensed = Decimal.zero;
+    Decimal testLiters = Decimal.zero;
+    Decimal netVolume = Decimal.zero;
+    int amountPkr = 0;
+    bool hasDispensed = false;
+    bool hasNetVolume = false;
+    for (final ShiftUnitReading unit in readings) {
+      for (final ShiftRateReadingRow row in unit.rows) {
+        final double? dispensedLiters = row.dispensed;
+        if (dispensedLiters != null) {
+          dispensed = truncateFuel(dispensed + parseDecimal(dispensedLiters));
+          hasDispensed = true;
+        }
+        testLiters = truncateFuel(testLiters + parseDecimal(row.testLiters));
+        final double? net = row.netVolume;
+        if (net != null) {
+          netVolume = truncateFuel(netVolume + parseDecimal(net));
+          hasNetVolume = true;
+        }
+        final int? amount = row.amountPkr;
+        if (amount != null) {
+          amountPkr += amount;
+        }
+      }
     }
+    return _ReadingsTotals(
+      dispensed: dispensed.toDouble(),
+      testLiters: testLiters.toDouble(),
+      netVolume: netVolume.toDouble(),
+      amountPkr: amountPkr,
+      hasDispensed: hasDispensed,
+      hasNetVolume: hasNetVolume,
+    );
   }
 }
 

@@ -1,6 +1,92 @@
-FuelPoint Station OS  v1.0.0.13
+FuelPoint Station OS  v1.0.0.29
 Release notes
 Publisher: RetroSoft
+
+Update 1.0.29
+1. Print retries receipt capture so a blank snapshot does not fail
+2. Tall receipts scale down so they still print
+
+Update 1.0.28
+1. Print captures receipts off-screen so the full slip prints
+2. Sale and Udhaar settlement slips no longer crash while printing
+3. Customer and station copies print as separate jobs
+
+Update 1.0.27
+1. Webcam capture of Bank / EasyPaisa transfer proof after Confirm
+2. Add Proof on the pending Account banner
+3. Udhaar Settle Bill can attach transfer proof
+4. A screenshot slip prints when proof is attached
+5. Continue without a camera if no webcam is plugged in
+
+Update 1.0.26
+1. Print and Confirm light up ready when fueling ends
+2. Tap stays off until vehicle number is filled
+3. Udhaar also needs a matched customer before Confirm
+4. Same Cash / Udhaar / Account tender panel on Sale and Ledger Edit
+5. Pump speaker slider can go above 100 for louder pump talk
+
+Update 1.0.25
+1. Udhaar Confirm uses Cash Now plus remainder, like Account
+2. Expected cash includes Cash Now Account and Cash Now Udhaar
+3. Shift screens and Shift Report PDF show Cash Now Udhaar
+4. Cash only Sales excludes Account remainder and both Cash Now amounts
+5. Shift Audit treats a 0.1 L gap or less as a match
+
+Update 1.0.24
+1. Intercom noise cut pulls hiss down without making it louder
+2. Office speaker ducks flat hiss and keeps spoken words
+3. Pump speaker tames loud peaks so talk is less harsh
+
+Update 1.0.23
+1. Intercom Settings split into Pump and Office cards
+2. Pump has its own microphone, speaker, and noise cut
+3. Office has its own microphone, speaker, and noise cut
+
+Update 1.0.22
+1. Intercom levels in Settings: pump speaker, station speaker, mic, and noise cut
+2. Speaker test plays a tone or WAV files on a chosen pump
+3. Udhaar Settle Bill: Cash or Account (Bank / EasyPaisa) with Cash Now split
+4. Settlement receipt shows Cash Now and Bank/EasyPaisa amounts
+5. Account overpay shows Baqaya Dene hain on confirm and pending transfer
+
+Update 1.0.21
+1. Expected cash is Cash only Sales + Udhaar Recovery (Cash) + Cash Now
+2. Cash only Sales is Total Sale minus Udhaar Issued minus Account Payments
+3. Shift KPIs split Account Payments and Udhaar Recovery by cash and account
+4. Total Sale follows Readings Amount (net volume × rate)
+5. Shift Report PDF uses the same cash figures
+
+Update 1.0.20
+1. Sales Ledger opens the last 30 days without crashing
+2. Page older All Transactions in 30-day blocks
+3. Rate-Wise table: unit, rate, meters, dispensed, test, net, amount
+4. Shift totals use meter net so lost tickets still count
+5. Older closed shifts show the correct Expected cash
+
+Update 1.0.19
+1. Long ledger and shift PDFs no longer hang while generating
+2. Sales and Purchase ledger PDFs on A4 landscape
+3. Shift Report PDF paginates tables without a title on every page
+4. Customer directory and ledger PDFs use the same report layout
+
+Update 1.0.18
+1. PDFs save under Documents/Exported_Reports and open without crash
+2. Owner can enroll up to 10 fingerprints
+3. Generate PDF on shift handover and shift summary
+4. Udhaar settlement no longer crashes before print
+
+Update 1.0.15
+1. Receipt preview for unit slips, pending account, second copy, and Udhaar settlement
+2. Udhaar settlement thermal receipt (2 copies)
+3. Shift Report PDF: rate bands, test liters, and Direct Sales
+4. Confirm and Print highlight when a fill is ready
+5. Zero-volume abort notice on the unit card
+
+Update 1.0.14
+1. Push-to-talk intercom on Sale unit cards
+2. ESP last-10 Token# recover dialog
+3. Fingerprint login and enrollment
+4. Per-unit ESP host and port from Sale screen
 
 Update 1.0.13
 1. Direct Sale Card: manual liters and rate, Unit Direct, deducts stock only

@@ -171,6 +171,8 @@ class SqliteShiftRepository {
       notes: shift.notes,
       openingMeters: ShiftMeterSnapshot.encode(shift.openingMeters),
       closingMeters: ShiftMeterSnapshot.encode(shift.closingMeters),
+      udhaarRecoveryCash: shift.udhaarRecoveryTotal,
+      udhaarRecoveryAccount: shift.udhaarRecoveryAccountTotal,
     );
   }
 
@@ -208,6 +210,8 @@ class SqliteShiftRepository {
         notes: pending.notes,
         openingMeters: ShiftMeterSnapshot.encode(pending.openingMeters),
         closingMeters: ShiftMeterSnapshot.encode(closingMeters),
+        udhaarRecoveryCash: pending.udhaarRecoveryTotal,
+        udhaarRecoveryAccount: pending.udhaarRecoveryAccountTotal,
         executor: txn,
       );
       final int pk = await _db.insertShift(
@@ -234,32 +238,15 @@ class SqliteShiftRepository {
   static ShiftWindowMetrics metricsForShift(
     List<HelperSaleRecord> sales,
     OperatorShiftRecord shift, {
-    double udhaarRecoveryTotal = 0,
+    double? udhaarRecoveryTotal,
+    double? udhaarRecoveryAccountTotal,
   }) {
-    return _metricsForShift(
-      sales,
-      shift,
-      udhaarRecoveryTotal: udhaarRecoveryTotal,
-    );
-  }
-
-  static ShiftWindowMetrics _metricsForShift(
-    List<HelperSaleRecord> sales,
-    OperatorShiftRecord shift, {
-    double udhaarRecoveryTotal = 0,
-  }) {
-    final ShiftWindowMetrics fromSales = metricsForSales(
+    return metricsForSales(
       salesForOutgoingOperator(sales, shift),
-      udhaarRecoveryTotal: udhaarRecoveryTotal,
+      udhaarRecoveryTotal: udhaarRecoveryTotal ?? shift.udhaarRecoveryTotal,
+      udhaarRecoveryAccountTotal:
+          udhaarRecoveryAccountTotal ?? shift.udhaarRecoveryAccountTotal,
     );
-    if (udhaarRecoveryTotal > 0) {
-      return fromSales;
-    }
-    final double inferred = shift.expectedCash - fromSales.fuelCashSales;
-    if (inferred <= 0) {
-      return fromSales;
-    }
-    return metricsForSales(fromSales.sales, udhaarRecoveryTotal: inferred);
   }
 
   static OperatorProfile _operatorFromRow(Map<String, Object?> row) {
@@ -317,6 +304,8 @@ class SqliteShiftRepository {
           : null,
       notes: '${row['NOTES'] ?? ''}',
       status: status,
+      udhaarRecoveryTotal: _asDouble(row['UDHAAR_RECOVERY_CASH']),
+      udhaarRecoveryAccountTotal: _asDouble(row['UDHAAR_RECOVERY_ACCOUNT']),
       openingMeters: ShiftMeterSnapshot.decode(
         row['OPENING_METERS'] as String?,
       ),

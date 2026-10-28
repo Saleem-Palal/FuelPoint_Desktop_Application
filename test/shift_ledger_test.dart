@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fuel_dispenser/features/shift/domain/shift_models.dart';
+import 'package:fuel_dispenser/features/station/data/sales_ledger_repository.dart';
 import 'package:fuel_dispenser/features/station/data/sales_transaction_repository.dart';
 import 'package:fuel_dispenser/features/station/data/transaction_store.dart';
 import 'package:fuel_dispenser/features/station/domain/dispenser_models.dart';
@@ -15,6 +16,8 @@ SaleTransaction _sale({
   DateTime? timestamp,
   PaymentMethod payment = PaymentMethod.cash,
   bool isTest = false,
+  double opening = 0,
+  double closing = 0,
 }) {
   return SaleTransaction(
     tokenNo: tokenNo,
@@ -25,6 +28,8 @@ SaleTransaction _sale({
     rate: 280,
     meterCount: 1,
     timestamp: timestamp ?? DateTime(2026, 9, 8, 10),
+    openingMeter: opening,
+    closingMeter: closing,
     shiftId: shiftId,
     payment: payment,
     isTest: isTest,
@@ -392,6 +397,46 @@ void main() {
         <int>[100001, 100002],
       );
       expect(slice.rows.where((SaleTransaction row) => row.isTest).length, 1);
+    });
+
+    test('amount is net meter volume times rate and leaves test out', () {
+      final List<SaleTransaction> source = <SaleTransaction>[
+        _sale(
+          shiftId: 'SHF-1',
+          liters: 10,
+          pkr: 2800,
+          tokenNo: 100001,
+          opening: 100,
+          closing: 110,
+          timestamp: DateTime(2026, 9, 8, 10),
+        ),
+        _sale(
+          shiftId: 'SHF-1',
+          liters: 5,
+          pkr: 1400,
+          tokenNo: 100002,
+          opening: 115,
+          closing: 120,
+          timestamp: DateTime(2026, 9, 8, 11),
+        ),
+        _sale(
+          shiftId: 'SHF-1',
+          liters: 3,
+          pkr: 840,
+          tokenNo: 100003,
+          opening: 120,
+          closing: 123,
+          isTest: true,
+          timestamp: DateTime(2026, 9, 8, 12),
+        ),
+      ];
+      final SalesLedgerSnapshot slice = shiftWiseLedgerSnapshot(
+        source: source,
+        search: '100003',
+      );
+
+      expect(slice.rows, hasLength(1));
+      expect(slice.totalAmountPkr, 5600);
     });
   });
 

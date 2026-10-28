@@ -12,9 +12,11 @@ import '../../../features/access/presentation/owner_access_gate.dart';
 import '../../../features/access/domain/operator_credential.dart';
 import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/domain/shift_report_layout.dart';
 import '../../../features/shift/presentation/shift_hardware.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
 import '../../../features/station/domain/money_format.dart';
+import '../../../providers/settings_provider.dart';
 import 'add_profile_dialogs.dart';
 import 'active_shift_banner.dart';
 import 'shift_close_actions.dart';
@@ -186,12 +188,25 @@ class OperatorShiftsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ShiftWorkspaceState workspace = ref.watch(shiftWorkspaceProvider);
+    final bool showUnit5 = ref.watch(
+      settingsProvider.select((SettingsState settings) => settings.showUnit5),
+    );
+    final OperatorShiftRecord? liveShift = workspace.activeShift;
+    final double bannerExpectedCash = liveShift == null
+        ? 0
+        : workspace.activeMetrics.expectedCashInHandFrom(
+            shiftReadingsTotalSale(
+              shift: liveShift,
+              sales: workspace.activeMetrics.sales,
+              showUnit5: showUnit5,
+            ),
+          );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         ActiveShiftBanner(
           shift: workspace.activeShift,
-          expectedCash: workspace.activeMetrics.expectedCashInHand,
+          expectedCash: bannerExpectedCash,
           onManualEndShift: workspace.canEndShift
               ? () {
                   unawaited(promptManualEndShift(context, ref));
@@ -621,6 +636,22 @@ class _ActiveShiftCard extends ConsumerWidget {
     final OperatorTallyPane pane = ref.watch(
       shiftWorkspaceProvider.select((ShiftWorkspaceState s) => s.tallyPane),
     );
+    final bool showUnit5 = ref.watch(
+      settingsProvider.select((SettingsState settings) => settings.showUnit5),
+    );
+    final double readingsTotalSale = open == null
+        ? 0
+        : shiftReadingsTotalSale(
+            shift: open,
+            sales: metrics.sales,
+            showUnit5: showUnit5,
+          );
+    final double cashOnlySales = metrics.cashOnlySalesFromReadings(
+      readingsTotalSale,
+    );
+    final double expectedCash = metrics.expectedCashInHandFrom(
+      readingsTotalSale,
+    );
 
     return ShiftPanelCard(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -629,7 +660,7 @@ class _ActiveShiftCard extends ConsumerWidget {
         children: <Widget>[
           if (open == null)
             Text(
-              'No open shift — tap an operator to start. Expected cash is fuel cash + cash udhaar recovery (account recoveries stay off the drawer).',
+              'No open shift — tap an operator to start. Expected cash is ${ShiftWindowMetrics.expectedCashFormula}.',
               style: TextStyle(
                 fontFamily: 'Roboto',
                 fontWeight: FontWeight.w500,
@@ -680,21 +711,21 @@ class _ActiveShiftCard extends ConsumerWidget {
               children: <Widget>[
                 Expanded(
                   child: ShiftKpiCard(
-                    label: 'Operator',
-                    value: open.operatorName,
-                    hint: operatorRoleLabel(open.role),
-                    icon: Icons.person_outline,
-                    tint: tokens.coral,
+                    label: 'Total Sale',
+                    value: formatPkr(readingsTotalSale),
+                    hint: ShiftWindowMetrics.totalSaleFormula,
+                    icon: Icons.local_gas_station_outlined,
+                    tint: tokens.good,
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ShiftKpiCard(
-                    label: 'Total Sale',
-                    value: formatPkr(metrics.totalSale),
-                    hint: ShiftWindowMetrics.totalSaleFormula,
-                    icon: Icons.local_gas_station_outlined,
-                    tint: tokens.good,
+                    label: 'Cash only Sales',
+                    value: formatPkr(cashOnlySales),
+                    hint: ShiftWindowMetrics.cashOnlySalesHint,
+                    icon: Icons.payments_outlined,
+                    tint: tokens.coral,
                   ),
                 ),
               ],
@@ -706,32 +737,27 @@ class _ActiveShiftCard extends ConsumerWidget {
                   child: ShiftKpiCard(
                     label: 'Udhaar Issued',
                     value: formatPkr(metrics.udhaarSales),
-                    hint: ShiftWindowMetrics.udhaarIssuedHint,
+                    hint:
+                        '${ShiftWindowMetrics.udhaarIssuedHint}\n${formatUdhaarCashNow(metrics)}',
                     icon: Icons.receipt_long_outlined,
                     tint: tokens.warn,
                   ),
                 ),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: ShiftKpiCard(
-                    label: 'Account Payments',
-                    value: formatPkr(metrics.accountSales),
-                    hint: ShiftWindowMetrics.accountPaymentsHint,
-                    icon: Icons.account_balance_outlined,
-                    tint: tokens.coral,
-                  ),
-                ),
+                Expanded(child: ShiftUdhaarRecoveryCard(metrics: metrics)),
               ],
             ),
             const SizedBox(height: 8),
             Row(
               children: <Widget>[
-                Expanded(child: ShiftUdhaarRecoveryCard(metrics: metrics)),
+                Expanded(
+                  child: ShiftAccountPaymentsCard(metrics: metrics),
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ShiftKpiCard(
                     label: 'Expected Cash in Hand',
-                    value: formatPkr(metrics.expectedCashInHand),
+                    value: formatPkr(expectedCash),
                     hint: ShiftWindowMetrics.expectedCashFormula,
                     icon: Icons.payments_outlined,
                     tint: tokens.warn,
@@ -965,63 +991,65 @@ class _HistoricalShiftTable extends StatelessWidget {
             ],
             rows: <DataRow>[
               for (final OperatorShiftRecord row in rows)
-                DataRow(
-                  cells: <DataCell>[
-                    DataCell(
-                      Text(
-                        row.shiftId,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: tokens.coralPressed,
-                        ),
-                      ),
-                    ),
-                    DataCell(Text(row.operatorName)),
-                    DataCell(Text(operatorRoleLabel(row.role))),
-                    DataCell(
-                      Text(
-                        formatDateTime(row.startTime),
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                    DataCell(
-                      Text(
-                        row.endTime == null
-                            ? '—'
-                            : formatDateTime(row.endTime!),
-                        style: TextStyle(color: tokens.inkMuted),
-                      ),
-                    ),
-                    DataCell(
-                      Text(
-                        formatTablePkr(row.expectedCash),
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    DataCell(
-                      Text(
-                        row.actualCash == null
-                            ? '—'
-                            : formatTablePkr(row.actualCash!),
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    DataCell(_DiscrepancyCell(value: row.discrepancy)),
-                    DataCell(
-                      DsStatusPill(
-                        label: shiftStatusLabel(row.status),
-                        foreground: tokens.inkMuted,
-                        background: tokens.line.withValues(alpha: 0.55),
-                        border: tokens.line,
-                        dot: false,
-                      ),
-                    ),
-                  ],
-                ),
+                _historicalRow(row, tokens),
             ],
           ),
         );
       },
+    );
+  }
+
+  DataRow _historicalRow(OperatorShiftRecord row, DispensrTokens tokens) {
+    final double expected = row.expectedCash;
+    final double discrepancy = row.discrepancy;
+    return DataRow(
+      cells: <DataCell>[
+        DataCell(
+          Text(
+            row.shiftId,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: tokens.coralPressed,
+            ),
+          ),
+        ),
+        DataCell(Text(row.operatorName)),
+        DataCell(Text(operatorRoleLabel(row.role))),
+        DataCell(
+          Text(
+            formatDateTime(row.startTime),
+            style: TextStyle(color: tokens.inkMuted),
+          ),
+        ),
+        DataCell(
+          Text(
+            row.endTime == null ? '—' : formatDateTime(row.endTime!),
+            style: TextStyle(color: tokens.inkMuted),
+          ),
+        ),
+        DataCell(
+          Text(
+            formatTablePkr(expected),
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        DataCell(
+          Text(
+            row.actualCash == null ? '—' : formatTablePkr(row.actualCash!),
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        DataCell(_DiscrepancyCell(value: discrepancy)),
+        DataCell(
+          DsStatusPill(
+            label: shiftStatusLabel(row.status),
+            foreground: tokens.inkMuted,
+            background: tokens.line.withValues(alpha: 0.55),
+            border: tokens.line,
+            dot: false,
+          ),
+        ),
+      ],
     );
   }
 }

@@ -90,6 +90,8 @@ class CustomerSettlement {
     this.cashierName = 'Amir R.',
     this.cashierId = 'AR',
     this.shiftId = '',
+    this.ledgerId = '',
+    this.proofImagePath = '',
   });
 
   final int id;
@@ -107,6 +109,8 @@ class CustomerSettlement {
   final String cashierName;
   final String cashierId;
   final String shiftId;
+  final String ledgerId;
+  final String proofImagePath;
 
   bool get isPartial => remainingBalance > 0.004;
 
@@ -127,6 +131,11 @@ class CustomerSettlement {
   String get receiptPaymentLabel {
     final String base = tenderLabel;
     return isPartial ? 'Partial · $base' : base;
+  }
+
+  String get operatorReceiptLabel {
+    final String name = cashierName.trim();
+    return name.isEmpty ? '—' : name;
   }
 }
 
@@ -167,6 +176,22 @@ class CustomerLedgerLine {
   final CustomerSettlement? settlement;
 
   bool get isSale => kind == CustomerLedgerKind.sale;
+
+  double? get settlementCashPkr {
+    final CustomerSettlement? row = settlement;
+    if (isSale || row == null) {
+      return null;
+    }
+    return row.cashAmountPkr;
+  }
+
+  double? get settlementAccountPkr {
+    final CustomerSettlement? row = settlement;
+    if (isSale || row == null) {
+      return null;
+    }
+    return row.accountAmountPkr;
+  }
 
   String get tokenLabel {
     final int? token = tokenNo;
@@ -303,6 +328,7 @@ class UnifiedUdhaarRow {
     this.udhaarPkr = 0,
     this.paidPkr = 0,
     this.status = 'Unpaid',
+    this.proofImagePath = '',
   });
 
   final String primaryKey;
@@ -320,6 +346,7 @@ class UnifiedUdhaarRow {
   final double udhaarPkr;
   final double paidPkr;
   final String status;
+  final String proofImagePath;
 
   bool get isSale => type == UnifiedUdhaarType.sale;
 }
@@ -330,14 +357,24 @@ String encodeSettlementDescription({
   required double cashAmountPkr,
   required double accountAmountPkr,
   String notes = '',
+  String cashierName = '',
+  String proofImagePath = '',
 }) {
-  return <String>[
+  final String cleanedNotes = notes.trim().replaceAll('|', ' ');
+  final String cashier = cashierName.trim().replaceAll('|', ' ');
+  final String proof = proofImagePath.trim().replaceAll('|', ' ');
+  final List<String> parts = <String>[
     receiptNo,
     paymentMode.ledgerPill,
     cashAmountPkr.toStringAsFixed(2),
     accountAmountPkr.toStringAsFixed(2),
-    notes.trim(),
-  ].join('|');
+    cashier,
+    cleanedNotes,
+  ];
+  if (proof.isNotEmpty) {
+    parts.add(proof);
+  }
+  return parts.join('|');
 }
 
 class SettlementTender {
@@ -347,6 +384,8 @@ class SettlementTender {
     required this.cashAmountPkr,
     required this.accountAmountPkr,
     required this.notes,
+    this.cashierName = '',
+    this.proofImagePath = '',
   });
 
   final String receiptNo;
@@ -354,6 +393,17 @@ class SettlementTender {
   final double cashAmountPkr;
   final double accountAmountPkr;
   final String notes;
+  final String cashierName;
+  final String proofImagePath;
+}
+
+bool _looksLikeSettlementProof(String value) {
+  final String lower = value.trim().toLowerCase().replaceAll('\\', '/');
+  return lower.endsWith('.jpg') ||
+      lower.endsWith('.jpeg') ||
+      lower.endsWith('.png') ||
+      lower.contains('receipt_proofs') ||
+      lower.contains('proof_');
 }
 
 SettlementTender parseSettlementDescription(
@@ -378,12 +428,29 @@ SettlementTender parseSettlementDescription(
       ? double.tryParse(parts[3].trim())
       : null;
   if (encodedCash != null && encodedAccount != null) {
+    final List<String> rest = parts.length > 4
+        ? parts.sublist(4)
+        : <String>[];
+    String proof = '';
+    if (rest.isNotEmpty && _looksLikeSettlementProof(rest.last)) {
+      proof = rest.removeLast().trim();
+    }
+    String cashier = '';
+    String notes = '';
+    if (rest.length >= 2) {
+      cashier = rest.first.trim();
+      notes = rest.sublist(1).join('|').trim();
+    } else if (rest.length == 1) {
+      notes = rest.first.trim();
+    }
     return SettlementTender(
       receiptNo: parts[0].trim(),
       paymentMode: mode,
       cashAmountPkr: encodedCash,
       accountAmountPkr: encodedAccount,
-      notes: parts.length > 4 ? parts.sublist(4).join('|').trim() : '',
+      cashierName: cashier,
+      notes: notes,
+      proofImagePath: proof,
     );
   }
   final bool account = mode.isAccount;
@@ -471,9 +538,15 @@ CustomerSettlement settlementFromLedgerRow(
     cashAmountPkr: parsed.cashAmountPkr,
     accountAmountPkr: parsed.accountAmountPkr,
     notes: parsed.notes,
-    cashierName: cashierName,
+    cashierName: cashierName.trim().isEmpty || cashierName == 'Operator'
+        ? (parsed.cashierName.isEmpty ? cashierName : parsed.cashierName)
+        : cashierName,
+    proofImagePath: row.proofImagePath.trim().isNotEmpty
+        ? row.proofImagePath.trim()
+        : parsed.proofImagePath,
     cashierId: cashierId,
     shiftId: shiftIdFromUdhaarPrimaryKey(row.primaryKey),
+    ledgerId: row.primaryKey,
   );
 }
 

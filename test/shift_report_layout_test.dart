@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:fuel_dispenser/features/customer/domain/customer_models.dart';
 import 'package:fuel_dispenser/features/shift/domain/shift_models.dart';
 import 'package:fuel_dispenser/features/shift/domain/shift_report_layout.dart';
 import 'package:fuel_dispenser/features/station/domain/dispenser_models.dart';
@@ -101,6 +102,50 @@ void main() {
         1,
         4,
       ]);
+    });
+
+    test('unit filter keeps one dispenser and drops direct sales', () {
+      final List<HelperSaleRecord> sales = <HelperSaleRecord>[
+        _sale(
+          tokenNo: 1,
+          unitId: 1,
+          timestamp: DateTime(2026, 9, 28, 9),
+          opening: 100,
+          closing: 110,
+        ),
+        _sale(
+          tokenNo: 2,
+          unitId: 2,
+          timestamp: DateTime(2026, 9, 28, 10),
+          opening: 50,
+          closing: 60,
+        ),
+        _sale(
+          tokenNo: 600001,
+          unitId: kDirectSaleUnitId,
+          timestamp: DateTime(2026, 9, 28, 11),
+          opening: 0,
+          closing: 0,
+        ),
+      ];
+
+      final List<ShiftUnitSaleGroup> unit1 = groupShiftReportSalesByUnit(
+        sales,
+        unitId: 1,
+      );
+      expect(unit1.map((ShiftUnitSaleGroup g) => g.unitId), <int>[1]);
+      expect(shiftReportDirectSales(sales, unitId: 1), isEmpty);
+      expect(includeShiftReportDirectSales(unitId: 1), isFalse);
+
+      expect(
+        groupShiftReportSalesByUnit(sales, unitId: kDirectSaleUnitId),
+        isEmpty,
+      );
+      expect(
+        shiftReportDirectSales(sales, unitId: kDirectSaleUnitId).single.tokenNo,
+        600001,
+      );
+      expect(includeShiftReportDirectSales(unitId: null), isTrue);
     });
 
     test('omits Unit 5 unless settings enable it', () {
@@ -240,6 +285,7 @@ void main() {
       expect(second.closing, 140);
       expect(second.dispensed, 20);
       expect(second.amountPkr, 5200);
+      expect(shiftReadingsAmountPkr(readings), 10326);
     });
 
     test('test liters stay in dispensed and leave net volume and amount', () {
@@ -318,6 +364,18 @@ void main() {
       expect(lines, <String>['UNIT 1: PASS']);
     });
 
+    test('PASS when meter exceeds sales by 0.1 L', () {
+      final List<String> lines = shiftReportAuditLines(
+        shift: _shift(
+          openingMeters: const <int, double>{1: 80},
+          closingMeters: const <int, double>{1: 80.1},
+        ),
+        sales: const <HelperSaleRecord>[],
+      );
+
+      expect(lines, isEmpty);
+    });
+
     test('MISMATCH copy includes liter delta when meter exceeds sales', () {
       final List<String> lines = shiftReportAuditLines(
         shift: _shift(
@@ -385,6 +443,227 @@ void main() {
         ).map((HelperSaleRecord row) => row.tokenNo),
         <int>[600001, 600002],
       );
+    });
+  });
+
+  group('itemized sale totals', () {
+    test('sums liters, amount, cash, and account for the unit table', () {
+      final DateTime time = DateTime(2026, 9, 28, 9);
+      final ShiftItemizedSaleTotals totals =
+          ShiftItemizedSaleTotals.of(<HelperSaleRecord>[
+            _sale(
+              tokenNo: 1,
+              unitId: 1,
+              timestamp: time,
+              opening: 100,
+              closing: 110,
+              liters: 10,
+            ).copyWith(
+              payment: PaymentMethod.cash,
+              amountPkr: 2500,
+              cashAmount: 2500,
+            ),
+            _sale(
+              tokenNo: 2,
+              unitId: 1,
+              timestamp: time,
+              opening: 110,
+              closing: 120,
+              liters: 5,
+            ).copyWith(
+              payment: PaymentMethod.bankAccount,
+              amountPkr: 1500,
+              cashAmount: 400,
+              accountAmount: 1100,
+            ),
+            _sale(
+              tokenNo: 3,
+              unitId: 1,
+              timestamp: time,
+              opening: 120,
+              closing: 122,
+              liters: 2,
+              isTest: true,
+            ).copyWith(amountPkr: 0, cashAmount: 0),
+          ]);
+
+      expect(totals.liters, 17);
+      expect(totals.amountPkr, 4000);
+      expect(totals.cashPkr, 2900);
+      expect(totals.accountPkr, 1100);
+    });
+  });
+
+  group('shift account sales table', () {
+    test('keeps bank and EasyPaisa tickets only', () {
+      final DateTime time = DateTime(2026, 10, 16, 9);
+      final List<HelperSaleRecord> sales = <HelperSaleRecord>[
+        _sale(
+          tokenNo: 1,
+          unitId: 1,
+          timestamp: time,
+          opening: 100,
+          closing: 110,
+        ).copyWith(payment: PaymentMethod.cash, amountPkr: 2500),
+        _sale(
+          tokenNo: 2,
+          unitId: 1,
+          timestamp: time,
+          opening: 110,
+          closing: 120,
+        ).copyWith(
+          payment: PaymentMethod.bankAccount,
+          amountPkr: 3000,
+          cashAmount: 500,
+          accountAmount: 2500,
+        ),
+        _sale(
+          tokenNo: 3,
+          unitId: 1,
+          timestamp: time,
+          opening: 120,
+          closing: 130,
+        ).copyWith(
+          payment: PaymentMethod.easyPaisa,
+          amountPkr: 1500,
+          accountAmount: 1500,
+        ),
+        _sale(
+          tokenNo: 4,
+          unitId: 1,
+          timestamp: time,
+          opening: 130,
+          closing: 140,
+          isTest: true,
+        ).copyWith(payment: PaymentMethod.bankAccount),
+      ];
+
+      final List<HelperSaleRecord> account = shiftReportAccountSales(sales);
+      expect(account.map((HelperSaleRecord row) => row.tokenNo), <int>[2, 3]);
+    });
+  });
+
+  group('shift udhaar tables', () {
+    final DateTime at = DateTime(2026, 10, 16, 9);
+
+    UnifiedUdhaarRow issued({
+      String key = '0001/01-01',
+      String token = 'TKN-000010',
+      double liters = 10,
+      double amount = 2000,
+      double udhaar = 1500,
+      double remaining = 1500,
+    }) {
+      return UnifiedUdhaarRow(
+        primaryKey: key,
+        type: UnifiedUdhaarType.sale,
+        at: at,
+        customerName: 'Ahmad',
+        customerId: '01',
+        amountPkr: amount,
+        remainingPkr: remaining,
+        tokenLabel: token,
+        liters: liters,
+        rate: 256.32,
+        udhaarPkr: udhaar,
+      );
+    }
+
+    UnifiedUdhaarRow recovery({
+      String key = '0001/01-02',
+      double paid = 500,
+      double cash = 300,
+      double account = 200,
+      double remaining = 1000,
+    }) {
+      return UnifiedUdhaarRow(
+        primaryKey: key,
+        type: UnifiedUdhaarType.settlement,
+        at: at.add(const Duration(hours: 1)),
+        customerName: 'Ahmad',
+        customerId: '01',
+        amountPkr: paid,
+        remainingPkr: remaining,
+        paidPkr: paid,
+        description: encodeSettlementDescription(
+          receiptNo: 'REC-0001',
+          paymentMode: SettlementPaymentMode.cash,
+          cashAmountPkr: cash,
+          accountAmountPkr: account,
+        ),
+      );
+    }
+
+    test('splits issued sales from recoveries', () {
+      final List<UnifiedUdhaarRow> rows = <UnifiedUdhaarRow>[
+        issued(),
+        recovery(),
+      ];
+      expect(shiftUdhaarIssuedRows(rows).single.primaryKey, '0001/01-01');
+      expect(shiftUdhaarRecoveryRows(rows).single.primaryKey, '0001/01-02');
+    });
+
+    test('issued line uses ticket cash, account, and full amount', () {
+      final HelperSaleRecord sale =
+          _sale(
+            tokenNo: 10,
+            unitId: 1,
+            timestamp: at,
+            opening: 100,
+            closing: 110,
+            liters: 10,
+          ).copyWith(
+            payment: PaymentMethod.udhaar,
+            amountPkr: 2563,
+            cashAmount: 500,
+            accountAmount: 200,
+          );
+      final ShiftUdhaarLine line = ShiftUdhaarLine.of(
+        issued(amount: 1863, udhaar: 1863),
+        sale: shiftSaleForUdhaarToken('TKN-000010', <HelperSaleRecord>[sale]),
+      );
+      expect(line.amountPkr, 2563);
+      expect(line.cashPkr, 500);
+      expect(line.accountPkr, 200);
+      expect(line.row.udhaarPkr, 1863);
+      expect(line.hasFuel, isTrue);
+    });
+
+    test('recovery line reads cash and account from the settlement', () {
+      final ShiftUdhaarLine line = ShiftUdhaarLine.of(recovery());
+      expect(line.amountPkr, 500);
+      expect(line.cashPkr, 300);
+      expect(line.accountPkr, 200);
+      expect(line.hasFuel, isFalse);
+    });
+
+    test('totals sum money columns and skip remaining', () {
+      final ShiftUdhaarTableTotals totals =
+          ShiftUdhaarTableTotals.of(<ShiftUdhaarLine>[
+            ShiftUdhaarLine.of(
+              issued(amount: 1500, udhaar: 1500, liters: 10),
+              sale:
+                  _sale(
+                    tokenNo: 10,
+                    unitId: 1,
+                    timestamp: at,
+                    opening: 100,
+                    closing: 110,
+                    liters: 10,
+                  ).copyWith(
+                    payment: PaymentMethod.udhaar,
+                    amountPkr: 2000,
+                    cashAmount: 500,
+                  ),
+            ),
+            ShiftUdhaarLine.of(recovery()),
+          ]);
+      expect(totals.liters, 10);
+      expect(totals.amountPkr, 2500);
+      expect(totals.cashPkr, 800);
+      expect(totals.accountPkr, 200);
+      expect(totals.udhaarPkr, 1500);
+      expect(totals.paidPkr, 500);
     });
   });
 

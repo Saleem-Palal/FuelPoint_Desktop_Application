@@ -14,13 +14,11 @@ import '../../../../features/station/domain/fuel_precision.dart';
 import '../../../../features/station/domain/money_format.dart';
 import '../../../../features/station/domain/sale_fulfillment.dart';
 import '../../../../features/station/presentation/station_providers.dart';
+import '../proof_capture_dialog.dart';
 import 'generate_receipt.dart';
 import 'receipt_preview_widget.dart';
 
-Future<void> showEspLastTenDialog(
-  BuildContext context, {
-  required int unitId,
-}) {
+Future<void> showEspLastTenDialog(BuildContext context, {required int unitId}) {
   return showDialog<void>(
     context: context,
     builder: (BuildContext context) {
@@ -82,6 +80,7 @@ Future<void> recoverEspSaleInteractively({
         vehicleNo: choice.vehicleNo,
         customerId: choice.customerId,
         cashNow: choice.cashNow,
+        accountNow: choice.accountNow,
       );
   if (!context.mounted) {
     return;
@@ -92,10 +91,21 @@ Future<void> recoverEspSaleInteractively({
     );
     return;
   }
+  SaleTransaction latest = saved;
+  if (latest.needsAccountProof) {
+    latest = await maybeCaptureAccountProof(context: context, txn: latest);
+  }
+  if (!context.mounted) {
+    return;
+  }
   await spoolSaleReceipt(
     context: context,
-    txn: saved,
+    txn: latest,
     kind: ReceiptPrintKind.live,
+    baqayaPkr: accountOverpayBaqaya(
+      saleAmount: row.amountPkr,
+      accountNow: choice.accountNow,
+    ),
   );
 }
 
@@ -218,6 +228,7 @@ class _RecoverPaymentChoice {
     required this.vehicleNo,
     required this.customerId,
     required this.cashNow,
+    this.accountNow = 0,
   });
 
   final PaymentMethod payment;
@@ -225,6 +236,7 @@ class _RecoverPaymentChoice {
   final String vehicleNo;
   final String customerId;
   final double cashNow;
+  final double accountNow;
 }
 
 class _RecoverPaymentDialog extends ConsumerStatefulWidget {
@@ -301,6 +313,10 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
     if (_syncingSplit) {
       return;
     }
+    if (_udhaarSelected) {
+      setState(() {});
+      return;
+    }
     _syncingSplit = true;
     final int sale = _saleRupees;
     final int cash = (int.tryParse(_cashNow.text.trim()) ?? 0).clamp(0, sale);
@@ -314,16 +330,32 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
     if (_syncingSplit) {
       return;
     }
+    if (_udhaarSelected) {
+      setState(() {});
+      return;
+    }
     _syncingSplit = true;
     final int sale = _saleRupees;
-    final int account = (int.tryParse(_accountNow.text.trim()) ?? 0).clamp(
-      0,
-      sale,
-    );
-    _setSplitText(_accountNow, account);
-    _setSplitText(_cashNow, sale - account);
+    final int account = int.tryParse(_accountNow.text.trim()) ?? 0;
+    if (account > sale) {
+      _setSplitText(_cashNow, 0);
+    } else {
+      final int next = account < 0 ? 0 : account;
+      _setSplitText(_accountNow, next);
+      _setSplitText(_cashNow, sale - next);
+    }
     _syncingSplit = false;
     setState(() {});
+  }
+
+  int get _baqayaRupees {
+    if (!_accountSelected) {
+      return 0;
+    }
+    return accountOverpayBaqaya(
+      saleAmount: _saleRupees.toDouble(),
+      accountNow: double.tryParse(_accountNow.text.trim()) ?? 0,
+    );
   }
 
   void _onCustomerIdChanged() {
@@ -345,8 +377,22 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
       _payment == PaymentMethod.bankAccount ||
       _payment == PaymentMethod.easyPaisa;
 
+  bool get _udhaarSelected => _payment == PaymentMethod.udhaar;
+
+  bool get _showSplit => _accountSelected || _udhaarSelected;
+
+  int get _cashRupees => int.tryParse(_cashNow.text.trim()) ?? 0;
+
+  int get _accountRupees => int.tryParse(_accountNow.text.trim()) ?? 0;
+
+  int get _udhaarRemainder => udhaarCreditRupees(
+    saleAmount: _saleRupees.toDouble(),
+    cashAmount: _cashRupees.toDouble(),
+    accountAmount: _accountRupees.toDouble(),
+  );
+
   void _submit() {
-    if (_payment == PaymentMethod.udhaar && _matchedCustomer() == null) {
+    if (_udhaarSelected && _matchedCustomer() == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a valid customer ID for Udhaar')),
       );
@@ -358,7 +404,8 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
         customerName: _matchedCustomer()?.name ?? _customer.text,
         vehicleNo: _vehicle.text,
         customerId: _matchedCustomer()?.id ?? '',
-        cashNow: double.tryParse(_cashNow.text.trim()) ?? 0,
+        cashNow: _cashRupees.toDouble(),
+        accountNow: _accountRupees.toDouble(),
       ),
     );
   }
@@ -402,7 +449,13 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
                     label: const Text('Udhaar'),
                     selected: _payment == PaymentMethod.udhaar,
                     onSelected: (_) {
-                      setState(() => _payment = PaymentMethod.udhaar);
+                      setState(() {
+                        _payment = PaymentMethod.udhaar;
+                        _syncingSplit = true;
+                        _cashNow.clear();
+                        _accountNow.clear();
+                        _syncingSplit = false;
+                      });
                     },
                   ),
                   ChoiceChip(
@@ -427,7 +480,7 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
                   ),
                 ],
               ),
-              if (_accountSelected) ...<Widget>[
+              if (_showSplit) ...<Widget>[
                 const SizedBox(height: 10),
                 Row(
                   children: <Widget>[
@@ -458,6 +511,24 @@ class _RecoverPaymentDialogState extends ConsumerState<_RecoverPaymentDialog> {
                     ),
                   ],
                 ),
+                if (_baqayaRupees > 0) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Baqaya Dene hain  ${formatPkr(_baqayaRupees.toDouble())}',
+                    style: TextStyle(
+                      color: tokens.warn,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+                if (_udhaarSelected)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Account goes to pending for proof. Remainder ${formatPkr(_udhaarRemainder.toDouble())} is Udhaar.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
               ],
               const SizedBox(height: 10),
               TextField(

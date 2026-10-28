@@ -3,6 +3,8 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  audio_decoder
+  camera_windows
   connectivity_plus
   printing
   screen_retriever_windows

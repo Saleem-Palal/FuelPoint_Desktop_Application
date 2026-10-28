@@ -1,11 +1,16 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/theme/dispensr_theme.dart';
 import '../../../../core/widgets/segment_lcd.dart';
+import '../../../../features/station/data/receipt_proof_raster.dart';
+import '../../../../features/station/data/receipt_widget_capture.dart';
 import '../../../../features/station/domain/dispenser_models.dart';
+import '../../../../features/station/domain/fuel_precision.dart';
 import '../../../../features/station/domain/money_format.dart';
 import '../../../../features/station/domain/receipt_footer_settings.dart';
 import '../../../../providers/settings_provider.dart';
@@ -17,64 +22,66 @@ class UnitReceiptOverlay extends StatefulWidget {
     required this.txn,
     required this.onDismiss,
     this.printKind = ReceiptPrintKind.live,
+    this.baqayaPkr = 0,
   });
 
   final SaleTransaction txn;
   final VoidCallback onDismiss;
   final ReceiptPrintKind printKind;
+  final int baqayaPkr;
 
   @override
   State<UnitReceiptOverlay> createState() => _UnitReceiptOverlayState();
 }
 
 class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
-  final GlobalKey _previewKey = GlobalKey();
-  bool _stationCapture = false;
-  bool _forPrint = false;
-
   ReceiptTicket get ticket => ReceiptTicket.fromTransaction(widget.txn);
 
   bool get _twoCopies => widget.txn.payment.printsTwoCopies;
-
-  String? get _copyBanner {
-    return ReceiptCopy.bannerFor(
-      payment: widget.txn.payment,
-      stationCopy: _stationCapture,
-      kind: widget.printKind,
-      recovered: widget.txn.isRecoveredSale,
-    );
-  }
 
   Future<void> _printThenClose() async {
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
     final ReceiptTicket slip = ticket;
     late final Uint8List customerPng;
     late final Uint8List stationPng;
+    Uint8List? screenshotPng;
     try {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _forPrint = true;
-      });
-      await WidgetsBinding.instance.endOfFrame;
-      await WidgetsBinding.instance.endOfFrame;
-      customerPng = await ReceiptGenerator.instance.capturePreview(_previewKey);
+      customerPng = await captureReceiptWidget(
+        context: context,
+        child: buildSaleReceiptSlip(
+          txn: widget.txn,
+          stationCopy: false,
+          kind: widget.printKind,
+          baqayaPkr: widget.baqayaPkr,
+        ),
+      );
       if (_twoCopies) {
         if (!mounted) {
           return;
         }
-        setState(() {
-          _stationCapture = true;
-        });
-        await WidgetsBinding.instance.endOfFrame;
-        await WidgetsBinding.instance.endOfFrame;
-        stationPng = await ReceiptGenerator.instance.capturePreview(
-          _previewKey,
+        stationPng = await captureReceiptWidget(
+          context: context,
+          child: buildSaleReceiptSlip(
+            txn: widget.txn,
+            stationCopy: true,
+            kind: widget.printKind,
+            baqayaPkr: widget.baqayaPkr,
+          ),
         );
       } else {
         stationPng = customerPng;
       }
+      if (!mounted) {
+        return;
+      }
+      screenshotPng = await captureScreenshotCopyPng(
+        context: context,
+        facts: ScreenshotCopyFacts.fromSale(widget.txn),
+        proofImagePath: widget.txn.proofImagePath,
+      );
     } catch (error, stack) {
       debugPrint('Receipt snapshot failed: $error\n$stack');
       if (!mounted) {
@@ -93,14 +100,25 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
             customerPng: customerPng,
             stationPng: stationPng,
             ticket: slip,
+            screenshotPng: screenshotPng,
+            proofImagePath: widget.txn.proofImagePath,
           );
           messenger.showSnackBar(
-            const SnackBar(content: Text('2 copies sent to printer')),
+            SnackBar(
+              content: Text(ReceiptCopy.printedSlipsMessage(widget.txn)),
+            ),
           );
         } else {
-          await ReceiptGenerator.instance.printCapturedPng(customerPng, slip);
+          await ReceiptGenerator.instance.printCapturedPng(
+            customerPng,
+            slip,
+            screenshotPng: screenshotPng,
+            proofImagePath: widget.txn.proofImagePath,
+          );
           messenger.showSnackBar(
-            const SnackBar(content: Text('Receipt sent to printer')),
+            SnackBar(
+              content: Text(ReceiptCopy.printedSlipsMessage(widget.txn)),
+            ),
           );
         }
       } catch (error, stack) {
@@ -133,19 +151,10 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-              child: ThermalReceiptCapture(
-                captureKey: _previewKey,
-                child: ThermalReceiptView(
-                  ticket: ticket,
-                  copyBanner: _copyBanner,
-                  forPrint: _forPrint,
-                  details: saleReceiptDetails(widget.txn),
-                  handwritingLines: ReceiptCopy.handwritingLinesFor(
-                    payment: widget.txn.payment,
-                    stationCopy: _stationCapture,
-                    kind: widget.printKind,
-                  ),
-                ),
+              child: ThermalPrintLook(
+                txn: widget.txn,
+                printKind: widget.printKind,
+                stationCopy: widget.txn.proofImagePath.trim().isNotEmpty,
               ),
             ),
           ),
@@ -171,6 +180,120 @@ class _UnitReceiptOverlayState extends State<UnitReceiptOverlay> {
   }
 }
 
+/// Station-copy preview: crisp grayscale receipt PNG stacked over the
+/// Bayer-dithered proof photo — the same dual-segment layout the spooler prints.
+class ThermalPrintLook extends StatefulWidget {
+  const ThermalPrintLook({
+    super.key,
+    required this.txn,
+    this.proofJpeg,
+    this.printKind = ReceiptPrintKind.live,
+    this.stationCopy = true,
+  });
+
+  final SaleTransaction txn;
+  final Uint8List? proofJpeg;
+  final ReceiptPrintKind printKind;
+  final bool stationCopy;
+
+  @override
+  State<ThermalPrintLook> createState() => _ThermalPrintLookState();
+}
+
+class _ThermalPrintLookState extends State<ThermalPrintLook> {
+  Uint8List? _mono;
+  Object? _error;
+  int _buildGen = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_rebuild());
+    });
+  }
+
+  @override
+  void didUpdateWidget(ThermalPrintLook oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.txn.tokenNo != widget.txn.tokenNo ||
+        oldWidget.txn.proofImagePath != widget.txn.proofImagePath ||
+        oldWidget.proofJpeg != widget.proofJpeg ||
+        oldWidget.stationCopy != widget.stationCopy) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_rebuild());
+      });
+    }
+  }
+
+  Future<void> _rebuild() async {
+    final int gen = ++_buildGen;
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || gen != _buildGen) {
+        return;
+      }
+      final Uint8List receiptPng = await captureReceiptWidget(
+        context: context,
+        child: buildSaleReceiptSlip(
+          txn: widget.txn,
+          stationCopy: widget.stationCopy,
+          kind: widget.printKind,
+        ),
+      );
+      final Uint8List mono = await compute(composeThermalPreviewJob, <Object?>[
+        Uint8List.fromList(receiptPng),
+        null,
+      ]);
+      if (!mounted || gen != _buildGen) {
+        return;
+      }
+      setState(() {
+        _mono = mono;
+        _error = null;
+      });
+    } catch (error, stack) {
+      debugPrint('Thermal print preview failed: $error\n$stack');
+      if (!mounted || gen != _buildGen) {
+        return;
+      }
+      setState(() {
+        _error = error;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: const Color(0xFFFFFFFF),
+      child: _mono == null
+          ? Center(
+              child: _error == null
+                  ? const CircularProgressIndicator()
+                  : Text(
+                      'Could not build thermal preview.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: ReceiptCopy.latinFontFamily,
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+            )
+          : FittedBox(
+              fit: BoxFit.contain,
+              child: Image.memory(
+                _mono!,
+                gaplessPlayback: true,
+                filterQuality: FilterQuality.medium,
+              ),
+            ),
+    );
+  }
+}
+
 class ThermalReceiptCapture extends StatelessWidget {
   const ThermalReceiptCapture({
     super.key,
@@ -183,10 +306,7 @@ class ThermalReceiptCapture extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return FittedBox(
-      fit: BoxFit.contain,
-      child: RepaintBoundary(key: captureKey, child: child),
-    );
+    return RepaintBoundary(key: captureKey, child: child);
   }
 }
 
@@ -197,7 +317,72 @@ class ThermalReceiptDetail {
   final String value;
 }
 
-List<ThermalReceiptDetail> saleReceiptDetails(SaleTransaction txn) {
+Widget buildSaleReceiptSlip({
+  required SaleTransaction txn,
+  required bool stationCopy,
+  ReceiptPrintKind kind = ReceiptPrintKind.live,
+  int baqayaPkr = 0,
+}) {
+  return ThermalReceiptView(
+    ticket: ReceiptTicket.fromTransaction(txn),
+    details: saleReceiptDetails(txn, baqayaPkr: baqayaPkr),
+    forPrint: true,
+    showFooter: ReceiptCopy.showFooterFor(
+      payment: txn.payment,
+      stationCopy: stationCopy,
+    ),
+    copyBanner: ReceiptCopy.bannerFor(
+      payment: txn.payment,
+      stationCopy: stationCopy,
+      kind: kind,
+      recovered: txn.isRecoveredSale,
+    ),
+    handwritingLines: saleReceiptHandwriting(
+      txn: txn,
+      stationCopy: stationCopy,
+      kind: kind,
+    ),
+    proofImage: saleProofPreviewImage(txn, stationCopy: stationCopy),
+  );
+}
+
+List<String> saleReceiptHandwriting({
+  required SaleTransaction txn,
+  required bool stationCopy,
+  ReceiptPrintKind kind = ReceiptPrintKind.live,
+}) {
+  if (txn.proofImagePath.trim().isNotEmpty) {
+    return const <String>[];
+  }
+  return ReceiptCopy.handwritingLinesFor(
+    payment: txn.payment,
+    stationCopy: stationCopy,
+    kind: kind,
+  );
+}
+
+ImageProvider? saleProofPreviewImage(
+  SaleTransaction txn, {
+  required bool stationCopy,
+}) {
+  if (!stationCopy) {
+    return null;
+  }
+  final String path = txn.proofImagePath.trim();
+  if (path.isEmpty) {
+    return null;
+  }
+  final File file = File(path);
+  if (!file.existsSync()) {
+    return null;
+  }
+  return FileImage(file);
+}
+
+List<ThermalReceiptDetail> saleReceiptDetails(
+  SaleTransaction txn, {
+  int baqayaPkr = 0,
+}) {
   final List<ThermalReceiptDetail> rows = <ThermalReceiptDetail>[
     ThermalReceiptDetail(label: 'Customer', value: txn.customerName),
     ThermalReceiptDetail(
@@ -219,6 +404,7 @@ List<ThermalReceiptDetail> saleReceiptDetails(SaleTransaction txn) {
   switch (txn.payment) {
     case PaymentMethod.bankAccount:
     case PaymentMethod.easyPaisa:
+      final int cashBack = baqayaPkr > 0 ? baqayaPkr : txn.receiptBaqayaPkr;
       rows.add(
         ThermalReceiptDetail(
           label: 'Account',
@@ -228,8 +414,42 @@ List<ThermalReceiptDetail> saleReceiptDetails(SaleTransaction txn) {
       rows.add(
         ThermalReceiptDetail(label: 'Cash', value: formatPkr(txn.cashAmount)),
       );
+      if (cashBack > 0) {
+        rows.add(
+          ThermalReceiptDetail(
+            label: 'Baqaya Dene hain',
+            value: formatPkr(cashBack.toDouble()),
+          ),
+        );
+      }
+      break;
     case PaymentMethod.cash:
+      break;
     case PaymentMethod.udhaar:
+      final double accountShown = txn.accountAmount + txn.pendingAccountAmount;
+      if (roundRupees(txn.cashAmount) > 0 || roundRupees(accountShown) > 0) {
+        rows.add(
+          ThermalReceiptDetail(label: 'Cash', value: formatPkr(txn.cashAmount)),
+        );
+        rows.add(
+          ThermalReceiptDetail(
+            label: 'Account',
+            value: formatPkr(accountShown),
+          ),
+        );
+        rows.add(
+          ThermalReceiptDetail(
+            label: 'Udhaar',
+            value: formatPkr(
+              udhaarCreditRupees(
+                saleAmount: txn.amountPkr,
+                cashAmount: txn.cashAmount,
+                accountAmount: accountShown,
+              ).toDouble(),
+            ),
+          ),
+        );
+      }
       break;
   }
   rows.add(ThermalReceiptDetail(label: 'Operator', value: txn.cashierName));
@@ -246,73 +466,417 @@ Future<void> spoolSaleReceipt({
   required BuildContext context,
   required SaleTransaction txn,
   ReceiptPrintKind kind = ReceiptPrintKind.live,
+  int baqayaPkr = 0,
 }) async {
-  final OverlayState overlay = Overlay.of(context, rootOverlay: true);
-  final GlobalKey previewKey = GlobalKey();
-  bool stationCapture = false;
-  late final OverlayEntry entry;
-  entry = OverlayEntry(
-    builder: (BuildContext context) {
-      return Positioned(
-        left: -2400,
-        top: 0,
-        child: Material(
-          color: Colors.transparent,
-          child: ThermalReceiptCapture(
-            captureKey: previewKey,
-            child: ThermalReceiptView(
-              ticket: ReceiptTicket.fromTransaction(txn),
-              details: saleReceiptDetails(txn),
-              forPrint: true,
-              copyBanner: ReceiptCopy.bannerFor(
-                payment: txn.payment,
-                stationCopy: stationCapture,
-                kind: kind,
-                recovered: txn.isRecoveredSale,
-              ),
-              handwritingLines: ReceiptCopy.handwritingLinesFor(
-                payment: txn.payment,
-                stationCopy: stationCapture,
-                kind: kind,
-              ),
-            ),
-          ),
-        ),
-      );
-    },
+  final Uint8List customerPng = await captureReceiptWidget(
+    context: context,
+    child: buildSaleReceiptSlip(
+      txn: txn,
+      stationCopy: false,
+      kind: kind,
+      baqayaPkr: baqayaPkr,
+    ),
   );
-  overlay.insert(entry);
-  try {
-    await WidgetsBinding.instance.endOfFrame;
-    await WidgetsBinding.instance.endOfFrame;
-    await WidgetsBinding.instance.endOfFrame;
-    final Uint8List customerPng = await ReceiptGenerator.instance
-        .capturePreview(previewKey);
-    Uint8List stationPng = customerPng;
-    if (txn.payment.printsTwoCopies && kind == ReceiptPrintKind.live) {
-      stationCapture = true;
-      entry.markNeedsBuild();
-      await WidgetsBinding.instance.endOfFrame;
-      await WidgetsBinding.instance.endOfFrame;
-      stationPng = await ReceiptGenerator.instance.capturePreview(previewKey);
+  Uint8List stationPng = customerPng;
+  if (txn.payment.printsTwoCopies && kind == ReceiptPrintKind.live) {
+    if (!context.mounted) {
+      return;
     }
-    final ReceiptTicket slip = ReceiptTicket.fromTransaction(txn);
-    if (txn.payment.printsTwoCopies) {
-      await ReceiptGenerator.instance.printDualCopies(
-        customerPng: customerPng,
-        stationPng: stationPng,
-        ticket: slip,
-      );
-    } else {
-      await ReceiptGenerator.instance.printCapturedPng(customerPng, slip);
-    }
-  } finally {
-    entry.remove();
+    stationPng = await captureReceiptWidget(
+      context: context,
+      child: buildSaleReceiptSlip(
+        txn: txn,
+        stationCopy: true,
+        kind: kind,
+        baqayaPkr: baqayaPkr,
+      ),
+    );
+  }
+  if (!context.mounted) {
+    return;
+  }
+  final ReceiptTicket slip = ReceiptTicket.fromTransaction(txn);
+  final Uint8List? screenshotPng = await captureScreenshotCopyPng(
+    context: context,
+    facts: ScreenshotCopyFacts.fromSale(txn),
+    proofImagePath: txn.proofImagePath,
+  );
+  if (txn.payment.printsTwoCopies) {
+    await ReceiptGenerator.instance.printDualCopies(
+      customerPng: customerPng,
+      stationPng: stationPng,
+      ticket: slip,
+      screenshotPng: screenshotPng,
+      proofImagePath: txn.proofImagePath,
+    );
+  } else {
+    await ReceiptGenerator.instance.printCapturedPng(
+      customerPng,
+      slip,
+      screenshotPng: screenshotPng,
+      proofImagePath: txn.proofImagePath,
+    );
   }
 }
 
+bool receiptPreviewEnabled(BuildContext context) {
+  return ProviderScope.containerOf(
+    context,
+  ).read(settingsProvider).showReceiptPreview;
+}
+
+String printedSaleReceiptMessage({
+  required SaleTransaction txn,
+  required ReceiptPrintKind kind,
+}) {
+  switch (kind) {
+    case ReceiptPrintKind.live:
+      return ReceiptCopy.printedSlipsMessage(txn);
+    case ReceiptPrintKind.secondCopy:
+      return txn.thermalSlipCount > 1
+          ? 'Second copy — ${txn.thermalSlipCount} slips sent to printer'
+          : 'Second copy sent to printer';
+    case ReceiptPrintKind.editedCopy:
+      return 'Edited copy sent to printer';
+  }
+}
+
+/// Shows the on-screen receipt when Settings → Show receipt preview is on.
+/// Otherwise captures off-screen and sends straight to the printer.
+Future<void> presentSaleReceipt({
+  required BuildContext context,
+  required SaleTransaction txn,
+  ReceiptPrintKind kind = ReceiptPrintKind.live,
+  String? title,
+  int baqayaPkr = 0,
+}) async {
+  if (!receiptPreviewEnabled(context)) {
+    await spoolSaleReceipt(
+      context: context,
+      txn: txn,
+      kind: kind,
+      baqayaPkr: baqayaPkr,
+    );
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(printedSaleReceiptMessage(txn: txn, kind: kind)),
+      ),
+    );
+    return;
+  }
+  await showDialog<void>(
+    context: context,
+    builder: (BuildContext context) {
+      return SaleReceiptPreviewDialog(
+        txn: txn,
+        printKind: kind,
+        title: title,
+        baqayaPkr: baqayaPkr,
+      );
+    },
+  );
+}
+
+class SaleReceiptPreviewDialog extends StatefulWidget {
+  const SaleReceiptPreviewDialog({
+    super.key,
+    required this.txn,
+    this.printKind = ReceiptPrintKind.live,
+    this.title,
+    this.baqayaPkr = 0,
+  });
+
+  final SaleTransaction txn;
+  final ReceiptPrintKind printKind;
+  final String? title;
+  final int baqayaPkr;
+
+  @override
+  State<SaleReceiptPreviewDialog> createState() =>
+      _SaleReceiptPreviewDialogState();
+}
+
+class _SaleReceiptPreviewDialogState extends State<SaleReceiptPreviewDialog> {
+  final GlobalKey _previewKey = GlobalKey();
+  bool _busy = false;
+  bool _stationCapture = false;
+  bool _forPrint = false;
+
+  ReceiptTicket get _ticket => ReceiptTicket.fromTransaction(widget.txn);
+
+  bool get _twoCopies => widget.txn.payment.printsTwoCopies;
+
+  Future<void> _print() async {
+    if (_busy) {
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _forPrint = true;
+    });
+    try {
+      final Uint8List customerPng = await captureReceiptWidget(
+        context: context,
+        child: buildSaleReceiptSlip(
+          txn: widget.txn,
+          stationCopy: false,
+          kind: widget.printKind,
+          baqayaPkr: widget.baqayaPkr,
+        ),
+      );
+      Uint8List stationPng = customerPng;
+      if (_twoCopies) {
+        if (!mounted) {
+          return;
+        }
+        stationPng = await captureReceiptWidget(
+          context: context,
+          child: buildSaleReceiptSlip(
+            txn: widget.txn,
+            stationCopy: true,
+            kind: widget.printKind,
+            baqayaPkr: widget.baqayaPkr,
+          ),
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      final Uint8List? screenshotPng = await captureScreenshotCopyPng(
+        context: context,
+        facts: ScreenshotCopyFacts.fromSale(widget.txn),
+        proofImagePath: widget.txn.proofImagePath,
+      );
+      if (_twoCopies) {
+        await ReceiptGenerator.instance.printDualCopies(
+          customerPng: customerPng,
+          stationPng: stationPng,
+          ticket: _ticket,
+          screenshotPng: screenshotPng,
+          proofImagePath: widget.txn.proofImagePath,
+        );
+      } else {
+        await ReceiptGenerator.instance.printCapturedPng(
+          customerPng,
+          _ticket,
+          screenshotPng: screenshotPng,
+          proofImagePath: widget.txn.proofImagePath,
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            printedSaleReceiptMessage(txn: widget.txn, kind: widget.printKind),
+          ),
+        ),
+      );
+    } catch (error, stack) {
+      debugPrint('Receipt preview print failed: $error\n$stack');
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _forPrint = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not print receipt. $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    return Dialog(
+      backgroundColor: tokens.card,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(tokens.radius20),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420, maxHeight: 720),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      widget.title ??
+                          'Receipt ${formatLedgerToken(widget.txn.tokenNo)}',
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: tokens.ink,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: _busy ? null : () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Center(
+                    child: ThermalReceiptCapture(
+                      captureKey: _previewKey,
+                      child: ThermalReceiptView(
+                        ticket: _ticket,
+                        forPrint: _forPrint,
+                        showFooter: ReceiptCopy.showFooterFor(
+                          payment: widget.txn.payment,
+                          stationCopy: _stationCapture,
+                        ),
+                        copyBanner: ReceiptCopy.bannerFor(
+                          payment: widget.txn.payment,
+                          stationCopy: _stationCapture,
+                          kind: widget.printKind,
+                          recovered: widget.txn.isRecoveredSale,
+                        ),
+                        details: saleReceiptDetails(
+                          widget.txn,
+                          baqayaPkr: widget.baqayaPkr,
+                        ),
+                        handwritingLines: saleReceiptHandwriting(
+                          txn: widget.txn,
+                          stationCopy: _stationCapture,
+                          kind: widget.printKind,
+                        ),
+                        proofImage: saleProofPreviewImage(
+                          widget.txn,
+                          stationCopy: _stationCapture,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: DsPillButton(
+                      label: 'Cancel',
+                      variant: DsPillVariant.outline,
+                      onPressed: _busy
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DsPillButton(
+                      label: _busy ? 'Printing…' : 'Print',
+                      icon: Icons.print_outlined,
+                      onPressed: _busy ? null : _print,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+ThermalReceiptView screenshotCopyReceipt({
+  required ScreenshotCopyFacts facts,
+  ImageProvider? proofImage,
+  bool forPrint = false,
+}) {
+  return ThermalReceiptView.custom(
+    dateLabel: '',
+    timeLabel: '',
+    badge: '',
+    referenceLabel: '',
+    referenceValue: '',
+    showLcd: false,
+    forPrint: forPrint,
+    padToCashHeight: false,
+    showProofFrame: true,
+    showDateTime: false,
+    showFooter: false,
+    proofMinHeight: 520,
+    copyBanner: ReceiptCopy.screenshotCopyBanner,
+    proofImage: proofImage,
+    details: <ThermalReceiptDetail>[
+      ThermalReceiptDetail(label: 'TKN', value: facts.tokenLabel),
+      ThermalReceiptDetail(label: 'Customer Name', value: facts.customerName),
+      ThermalReceiptDetail(
+        label: 'Account Amount',
+        value: formatPkr(facts.accountAmountPkr),
+      ),
+      ThermalReceiptDetail(label: 'Operator', value: facts.operatorName),
+    ],
+  );
+}
+
+Future<Uint8List?> captureScreenshotCopyPng({
+  required BuildContext context,
+  required ScreenshotCopyFacts facts,
+  Uint8List? proofBytes,
+  String proofImagePath = '',
+}) async {
+  Uint8List? bytes = proofBytes;
+  if (bytes == null) {
+    final String path = proofImagePath.trim();
+    if (path.isEmpty) {
+      return null;
+    }
+    final File file = File(path);
+    if (!file.existsSync()) {
+      return null;
+    }
+    bytes = await file.readAsBytes();
+  }
+  if (bytes.isEmpty) {
+    return null;
+  }
+  if (!context.mounted) {
+    return null;
+  }
+  final MemoryImage proof = MemoryImage(bytes);
+  try {
+    await precacheImage(proof, context);
+  } catch (error, stack) {
+    debugPrint('Screenshot precache skipped: $error\n$stack');
+  }
+  if (!context.mounted) {
+    return null;
+  }
+  return captureReceiptWidget(
+    context: context,
+    child: screenshotCopyReceipt(
+      facts: facts,
+      proofImage: proof,
+      forPrint: true,
+    ),
+  );
+}
+
 /// Compact thermal slip. Sale tickets keep the LCD; other slips can hide it.
-class ThermalReceiptView extends ConsumerWidget {
+class ThermalReceiptView extends StatelessWidget {
   ThermalReceiptView({
     Key? key,
     required ReceiptTicket ticket,
@@ -324,6 +888,11 @@ class ThermalReceiptView extends ConsumerWidget {
     String? copyBanner,
     List<ThermalReceiptDetail>? details,
     List<String> handwritingLines = const <String>[],
+    ImageProvider? proofImage,
+    bool padToCashHeight = true,
+    bool showProofFrame = false,
+    bool showDateTime = true,
+    bool showFooter = true,
   }) : this.custom(
          key: key,
          dateLabel: ticket.dateLabel,
@@ -338,6 +907,12 @@ class ThermalReceiptView extends ConsumerWidget {
          rate: ticket.rate,
          copyBanner: copyBanner,
          handwritingLines: handwritingLines,
+         proofImage: proofImage,
+         padToCashHeight: padToCashHeight,
+         showProofFrame: showProofFrame,
+         showDateTime: showDateTime,
+         showFooter: showFooter,
+         proofMinHeight: 280,
          details:
              details ??
              <ThermalReceiptDetail>[
@@ -379,6 +954,12 @@ class ThermalReceiptView extends ConsumerWidget {
     this.rate = '',
     this.copyBanner,
     this.handwritingLines = const <String>[],
+    this.proofImage,
+    this.padToCashHeight = true,
+    this.showProofFrame = false,
+    this.showDateTime = true,
+    this.showFooter = true,
+    this.proofMinHeight = 280,
   });
 
   static const double width = 456;
@@ -424,16 +1005,26 @@ class ThermalReceiptView extends ConsumerWidget {
   final String? copyBanner;
   final List<ThermalReceiptDetail> details;
   final List<String> handwritingLines;
+  final ImageProvider? proofImage;
+  final bool padToCashHeight;
+  final bool showProofFrame;
+  final bool showDateTime;
+  final bool showFooter;
+  final double proofMinHeight;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final ReceiptFooterSettings footer = ref.watch(
-      settingsProvider.select(
-        (SettingsState settings) => settings.receiptFooter,
-      ),
-    );
+  Widget build(BuildContext context) {
+    final ReceiptFooterSettings? pinned = ReceiptPrintFooter.maybeOf(context);
+    if (pinned != null) {
+      return _slip(pinned);
+    }
+    return _ThermalReceiptWatching(slip: this);
+  }
+
+  Widget _slip(ReceiptFooterSettings footer) {
     final Color paper = forPrint ? const Color(0xFFFFFFFF) : _paper;
     final String banner = (copyBanner ?? '').trim();
+    final ImageProvider? proof = proofImage;
     return SizedBox(
       width: width,
       child: Container(
@@ -451,6 +1042,7 @@ class ThermalReceiptView extends ConsumerWidget {
                 ],
         ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             const _SquareDashEdge(),
@@ -459,6 +1051,7 @@ class ThermalReceiptView extends ConsumerWidget {
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
                 child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
                     _UrduText(
@@ -471,9 +1064,9 @@ class ThermalReceiptView extends ConsumerWidget {
                     if (banner.isEmpty)
                       const SizedBox(height: _headerGap)
                     else ...<Widget>[
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 10),
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.only(bottom: 8),
                         child: Text(
                           banner,
                           textAlign: TextAlign.center,
@@ -490,75 +1083,77 @@ class ThermalReceiptView extends ConsumerWidget {
                         ),
                       ),
                     ],
-                    Row(
-                      children: <Widget>[
-                        Expanded(
-                          child: Text(
-                            'Date  $dateLabel',
+                    if (showDateTime) ...<Widget>[
+                      Row(
+                        children: <Widget>[
+                          Expanded(
+                            child: Text(
+                              'Date  $dateLabel',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: ReceiptCopy.latinFontFamily,
+                                fontWeight: FontWeight.w600,
+                                fontSize: _latinSize,
+                                color: _ink,
+                              ),
+                            ),
+                          ),
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              color: _steel,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            badge,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontFamily: ReceiptCopy.latinFontFamily,
                               fontWeight: FontWeight.w600,
                               fontSize: _latinSize,
-                              color: _ink,
+                              color: _steel,
                             ),
                           ),
-                        ),
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: const BoxDecoration(
-                            color: _steel,
-                            shape: BoxShape.circle,
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: <Widget>[
+                          Expanded(
+                            child: Text(
+                              'Time  $timeLabel',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: ReceiptCopy.latinFontFamily,
+                                fontWeight: FontWeight.w600,
+                                fontSize: _latinSize,
+                                color: _ink,
+                              ),
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          badge,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontFamily: ReceiptCopy.latinFontFamily,
-                            fontWeight: FontWeight.w600,
-                            fontSize: _latinSize,
-                            color: _steel,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: <Widget>[
-                        Expanded(
-                          child: Text(
-                            'Time  $timeLabel',
+                          Text(
+                            '$referenceLabel  $referenceValue',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontFamily: ReceiptCopy.latinFontFamily,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w500,
                               fontSize: _latinSize,
                               color: _ink,
                             ),
                           ),
-                        ),
-                        Text(
-                          '$referenceLabel  $referenceValue',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontFamily: ReceiptCopy.latinFontFamily,
-                            fontWeight: FontWeight.w500,
-                            fontSize: _latinSize,
-                            color: _ink,
-                          ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      ),
+                    ],
                     ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        minHeight: _cashMiddleMinHeight,
+                      constraints: BoxConstraints(
+                        minHeight: padToCashHeight ? _cashMiddleMinHeight : 0,
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -582,7 +1177,50 @@ class ThermalReceiptView extends ConsumerWidget {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    if (handwritingLines.isNotEmpty) ...<Widget>[
+                    if (proof != null || showProofFrame) ...<Widget>[
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: paper,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: _ink, width: 1.6),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: proof == null
+                                ? SizedBox(
+                                    width: double.infinity,
+                                    height: proofMinHeight,
+                                    child: const ColoredBox(
+                                      color: Color(0xFFF3F3F3),
+                                    ),
+                                  )
+                                : Image(
+                                    image: proof,
+                                    fit: BoxFit.fitWidth,
+                                    width: double.infinity,
+                                    alignment: Alignment.topCenter,
+                                    filterQuality: forPrint
+                                        ? FilterQuality.none
+                                        : FilterQuality.medium,
+                                    errorBuilder:
+                                        (
+                                          BuildContext context,
+                                          Object error,
+                                          StackTrace? stack,
+                                        ) {
+                                          return SizedBox(
+                                            height: proofMinHeight,
+                                            width: double.infinity,
+                                          );
+                                        },
+                                  ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ] else if (handwritingLines.isNotEmpty) ...<Widget>[
                       for (final String line in handwritingLines)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 6),
@@ -599,15 +1237,17 @@ class ThermalReceiptView extends ConsumerWidget {
                         ),
                       const SizedBox(height: 4),
                     ],
-                    const _DashRule(color: Color(0x55211C1A)),
-                    const SizedBox(height: 8),
-                    for (int i = 0; i < footer.lines.length; i++) ...<Widget>[
-                      if (i > 0) const SizedBox(height: 2),
-                      _ReceiptFooterLine(
-                        text: footer.lines[i],
-                        fontSize: footer.fontSize,
-                        lineHeight: footer.lineHeight,
-                      ),
+                    if (showFooter) ...<Widget>[
+                      const _DashRule(color: Color(0x55211C1A)),
+                      const SizedBox(height: 8),
+                      for (int i = 0; i < footer.lines.length; i++) ...<Widget>[
+                        if (i > 0) const SizedBox(height: 2),
+                        _ReceiptFooterLine(
+                          text: footer.lines[i],
+                          fontSize: footer.fontSize,
+                          lineHeight: footer.lineHeight,
+                        ),
+                      ],
                     ],
                   ],
                 ),
@@ -618,6 +1258,22 @@ class ThermalReceiptView extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+class _ThermalReceiptWatching extends ConsumerWidget {
+  const _ThermalReceiptWatching({required this.slip});
+
+  final ThermalReceiptView slip;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ReceiptFooterSettings footer = ref.watch(
+      settingsProvider.select(
+        (SettingsState settings) => settings.receiptFooter,
+      ),
+    );
+    return slip._slip(footer);
   }
 }
 

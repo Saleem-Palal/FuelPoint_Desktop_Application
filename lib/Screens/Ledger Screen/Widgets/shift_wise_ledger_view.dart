@@ -104,7 +104,6 @@ class ShiftLedgerPager extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final DispensrTokens tokens = DispensrTokens.of(context);
     if (shifts.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -114,8 +113,49 @@ class ShiftLedgerPager extends ConsumerWidget {
     );
     final int index = resolveShiftIndex(shifts, selectedId);
     final int safeIndex = index < 0 ? 0 : index;
-    final bool canPrev = safeIndex > 0;
-    final bool canNext = safeIndex < shifts.length - 1;
+
+    return LedgerPagerControls(
+      page: safeIndex + 1,
+      pageCount: shifts.length,
+      previousTooltip: 'Previous shift',
+      nextTooltip: 'Next shift',
+      onPrevious: () {
+        ref.read(ledgerQueryProvider.notifier).stepShift(-1, shifts);
+      },
+      onNext: () {
+        ref.read(ledgerQueryProvider.notifier).stepShift(1, shifts);
+      },
+    );
+  }
+}
+
+/// Previous / next control shared by Shift-Wise and All Transactions.
+class LedgerPagerControls extends StatelessWidget {
+  const LedgerPagerControls({
+    super.key,
+    required this.page,
+    required this.pageCount,
+    required this.onPrevious,
+    required this.onNext,
+    this.previousTooltip = 'Previous',
+    this.nextTooltip = 'Next',
+  });
+
+  /// 1-based page shown to the operator.
+  final int page;
+  final int pageCount;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+  final String previousTooltip;
+  final String nextTooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final int count = pageCount < 1 ? 1 : pageCount;
+    final int current = page < 1 ? 1 : (page > count ? count : page);
+    final bool canPrev = current > 1;
+    final bool canNext = current < count;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -123,15 +163,13 @@ class ShiftLedgerPager extends ConsumerWidget {
         _PagerArrow(
           icon: Icons.chevron_left,
           enabled: canPrev,
-          tooltip: 'Previous shift',
-          onPressed: () {
-            ref.read(ledgerQueryProvider.notifier).stepShift(-1, shifts);
-          },
+          tooltip: previousTooltip,
+          onPressed: onPrevious,
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Text(
-            '${safeIndex + 1} of ${shifts.length}',
+            '$current of $count',
             style: TextStyle(
               fontFamily: 'Roboto',
               fontWeight: FontWeight.w600,
@@ -143,10 +181,8 @@ class ShiftLedgerPager extends ConsumerWidget {
         _PagerArrow(
           icon: Icons.chevron_right,
           enabled: canNext,
-          tooltip: 'Next shift',
-          onPressed: () {
-            ref.read(ledgerQueryProvider.notifier).stepShift(1, shifts);
-          },
+          tooltip: nextTooltip,
+          onPressed: onNext,
         ),
       ],
     );

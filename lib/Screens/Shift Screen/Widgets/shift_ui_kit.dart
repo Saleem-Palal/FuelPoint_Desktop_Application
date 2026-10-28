@@ -62,6 +62,96 @@ class ShiftKpiCard extends StatelessWidget {
 String formatUdhaarRecoverySplit(ShiftWindowMetrics metrics) {
   return 'Cash: ${formatPkr(metrics.udhaarRecoveryTotal)}  |  Account: ${formatPkr(metrics.udhaarRecoveryAccountTotal)}';
 }
+
+String formatAccountPaymentsSplit(ShiftWindowMetrics metrics) {
+  return 'Account: ${formatPkr(metrics.accountSales)}  |  Cash Now Account: ${formatPkr(metrics.cashNow)}';
+}
+
+String formatUdhaarCashNow(ShiftWindowMetrics metrics) {
+  return 'Cash Now Udhaar: ${formatPkr(metrics.cashNowUdhaar)}';
+}
+
+class ShiftAccountPaymentsCard extends StatelessWidget {
+  const ShiftAccountPaymentsCard({super.key, required this.metrics});
+
+  final ShiftWindowMetrics metrics;
+
+  @override
+  Widget build(BuildContext context) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: tokens.card,
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        border: Border.all(color: tokens.line),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: tokens.coral.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.account_balance_outlined,
+              color: tokens.coral,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  'ACCOUNT PAYMENTS',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 9,
+                    letterSpacing: 0.8,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  formatPkr(metrics.accountTicketTotal),
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 20,
+                    height: 1.15,
+                    color: colors.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  formatAccountPaymentsSplit(metrics),
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w600,
+                    fontSize: 11,
+                    color: tokens.inkMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class ShiftUdhaarRecoveryCard extends StatelessWidget {
   const ShiftUdhaarRecoveryCard({super.key, required this.metrics});
 

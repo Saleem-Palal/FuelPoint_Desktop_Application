@@ -66,6 +66,9 @@ class SalesTransactionRepository {
           'IS_TEST': txn.isTest ? 1 : 0,
           'DRUM_QTY': txn.drumQty,
           'SALE_TYPE': txn.saleType,
+          'PROOF_IMAGE_PATH': txn.proofImagePath.trim().isEmpty
+              ? null
+              : txn.proofImagePath.trim(),
         },
         operatorId: operatorId,
         operatorName: operatorName,
@@ -78,6 +81,11 @@ class SalesTransactionRepository {
         creditShiftId: creditShiftId,
         creditDescription: txn.fuelType,
         creditVehicle: txn.vehicleNo,
+        creditAmount: udhaarCreditRupees(
+          saleAmount: txn.amountPkr,
+          cashAmount: txn.cashAmount,
+          accountAmount: txn.accountAmount + txn.pendingAccountAmount,
+        ).toDouble(),
       );
     } catch (error, stack) {
       debugPrint('SalesTransactionRepository.insert failed: $error\n$stack');
@@ -280,6 +288,9 @@ class SalesTransactionRepository {
     bool edited = true,
     int? drumQty,
     String? saleType,
+    String? creditCustomerId,
+    String? creditShiftId,
+    String? creditDescription,
   }) async {
     final String resolvedCustomer = customerName.trim();
     final String resolvedVehicle = vehicleNo.trim();
@@ -294,6 +305,12 @@ class SalesTransactionRepository {
       edited: edited,
       drumQty: drumQty,
       saleType: saleType,
+      creditCustomerId: payment == PaymentMethod.udhaar
+          ? creditCustomerId
+          : null,
+      creditCustomerName: resolvedCustomer,
+      creditShiftId: creditShiftId,
+      creditDescription: creditDescription,
     );
   }
 
@@ -324,7 +341,11 @@ class SalesTransactionRepository {
       pendingAccountAmount: pendingAccountAmount,
       drumQty: drumQty,
       saleType: saleType,
-      saleAmount: txn.amountPkr,
+      saleAmount: udhaarCreditRupees(
+        saleAmount: txn.amountPkr,
+        cashAmount: cashAmount,
+        accountAmount: accountAmount + pendingAccountAmount,
+      ).toDouble(),
       volumeLiters: txn.volumeLiters,
       rate: txn.rate,
       creditCustomerId: creditCustomerId,
@@ -407,7 +428,19 @@ class SalesTransactionRepository {
       isTest: _asInt(row['IS_TEST']) != 0,
       drumQty: _asInt(row['DRUM_QTY']),
       saleType: (row['SALE_TYPE'] as String?)?.trim() ?? '',
+      proofImagePath: (row['PROOF_IMAGE_PATH'] as String?)?.trim() ?? '',
     );
+  }
+
+  Future<SaleTransaction?> setProofImagePath({
+    required int tokenNo,
+    required String? path,
+  }) async {
+    await _db.updateSaleProofImagePath(
+      token: formatLedgerToken(tokenNo),
+      path: path,
+    );
+    return byToken(tokenNo);
   }
 
   static String shiftIdFromRow(Object? raw) {

@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/domain/shift_report_layout.dart';
+import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/money_format.dart';
 import 'shift_ui_kit.dart';
 
@@ -76,12 +78,25 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
     return double.tryParse(raw);
   }
 
+  double get _expectedCash {
+    final OperatorShiftRecord shift = widget.shift;
+    return widget.metrics.expectedCashInHandFrom(
+      shiftReadingsTotalSale(
+        shift: shift,
+        sales: widget.metrics.sales,
+        showUnit5:
+            shift.openingMeters.containsKey(kOptionalDispenserUnitId) ||
+            shift.closingMeters.containsKey(kOptionalDispenserUnitId),
+      ),
+    );
+  }
+
   double? get _discrepancy {
     final double? actual = _actualCash;
     if (actual == null) {
       return null;
     }
-    return actual - widget.metrics.expectedCashInHand;
+    return actual - _expectedCash;
   }
 
   bool get _canConfirm {
@@ -165,7 +180,7 @@ class _ShiftSettlementDialogState extends State<ShiftSettlementDialog> {
             children: <Widget>[
               _ReadOnlyField(
                 label: 'Expected Cash in Hand (PKR)',
-                value: formatPkr(widget.metrics.expectedCashInHand),
+                value: formatPkr(_expectedCash),
                 hint: ShiftWindowMetrics.expectedCashFormula,
               ),
               const SizedBox(height: 10),

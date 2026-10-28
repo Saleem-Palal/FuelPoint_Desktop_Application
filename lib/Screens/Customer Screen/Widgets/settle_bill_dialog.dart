@@ -3,8 +3,10 @@ import 'package:flutter/services.dart';
 
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/customer/domain/customer_models.dart';
+import '../../../features/station/domain/dispenser_models.dart';
 import '../../../features/station/domain/fuel_precision.dart';
 import '../../../features/station/domain/money_format.dart';
+import '../../Sale Screen/Widgets/proof_capture_dialog.dart';
 
 enum _SettlePill { cash, account }
 
@@ -17,6 +19,7 @@ class SettleBillDraft {
     required this.cashAmountPkr,
     required this.accountAmountPkr,
     required this.notes,
+    this.proofImagePath = '',
   });
 
   final double amountPkr;
@@ -24,24 +27,27 @@ class SettleBillDraft {
   final double cashAmountPkr;
   final double accountAmountPkr;
   final String notes;
+  final String proofImagePath;
 }
 
 Future<SettleBillDraft?> showSettleBillDialog(
   BuildContext context, {
   required CustomerAccount account,
+  CustomerSettlement? existing,
 }) {
   return showDialog<SettleBillDraft>(
     context: context,
     builder: (BuildContext context) {
-      return _SettleBillDialog(account: account);
+      return _SettleBillDialog(account: account, existing: existing);
     },
   );
 }
 
 class _SettleBillDialog extends StatefulWidget {
-  const _SettleBillDialog({required this.account});
+  const _SettleBillDialog({required this.account, this.existing});
 
   final CustomerAccount account;
+  final CustomerSettlement? existing;
 
   @override
   State<_SettleBillDialog> createState() => _SettleBillDialogState();
@@ -58,20 +64,66 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
   _SettlePill _pill = _SettlePill.cash;
   _SettleRail _rail = _SettleRail.bank;
   bool _saving = false;
+  String _proofImagePath = '';
+  late final int _proofFileToken;
+
+  bool get _editing => widget.existing != null;
 
   double get _outstanding {
-    final double value = widget.account.outstanding;
+    final CustomerSettlement? existing = widget.existing;
+    final double value = existing == null
+        ? widget.account.outstanding
+        : widget.account.outstanding + existing.amountPkr;
     return value < 0 ? 0 : value;
   }
 
   @override
   void initState() {
     super.initState();
-    final String full = _outstanding.round().toString();
-    _amount = TextEditingController(text: full);
-    _cashNow = TextEditingController(text: '0');
-    _accountNow = TextEditingController(text: full);
-    _notes = TextEditingController();
+    final CustomerSettlement? existing = widget.existing;
+    if (existing == null) {
+      final String full = _outstanding.round().toString();
+      _amount = TextEditingController(text: full);
+      _cashNow = TextEditingController(text: '0');
+      _accountNow = TextEditingController(text: full);
+      _notes = TextEditingController();
+      _proofFileToken =
+          (DateTime.now().millisecondsSinceEpoch % 900000000) + 100000000;
+      return;
+    }
+    _proofImagePath = existing.proofImagePath;
+    _notes = TextEditingController(text: existing.notes);
+    final bool hasAccount = existing.accountAmountPkr > 0.004;
+    if (hasAccount) {
+      _pill = _SettlePill.account;
+      _rail = existing.paymentMode == SettlementPaymentMode.easyPaisa
+          ? _SettleRail.easyPaisa
+          : _SettleRail.bank;
+      _amount = TextEditingController(
+        text: existing.amountPkr.round().toString(),
+      );
+      _cashNow = TextEditingController(
+        text: existing.cashAmountPkr.round().toString(),
+      );
+      _accountNow = TextEditingController(
+        text: existing.accountAmountPkr.round().toString(),
+      );
+    } else {
+      _pill = _SettlePill.cash;
+      _amount = TextEditingController(
+        text: existing.amountPkr.round().toString(),
+      );
+      _cashNow = TextEditingController(text: '0');
+      _accountNow = TextEditingController(
+        text: existing.amountPkr.round().toString(),
+      );
+    }
+    final int? receiptDigits = int.tryParse(
+      existing.receiptNo.replaceAll(RegExp(r'\D'), ''),
+    );
+    _proofFileToken =
+        receiptDigits ??
+        ((DateTime.now().millisecondsSinceEpoch % 900000000) + 100000000);
   }
 
   @override
@@ -134,8 +186,36 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
         cashAmountPkr: cash,
         accountAmountPkr: account,
         notes: _notes.text.trim(),
+        proofImagePath: _proofImagePath,
       ),
     );
+  }
+
+  Future<void> _addProof() async {
+    if (_saving) {
+      return;
+    }
+    final String? path = await showProofImageCaptureDialog(
+      context: context,
+      title: 'Capture transfer proof · Udhaar Recovery',
+      fileTokenNo: _proofFileToken,
+      facts: ScreenshotCopyFacts(
+        tokenLabel: 'Recovery',
+        customerName: widget.account.profile.name,
+        accountAmountPkr: _pill == _SettlePill.account
+            ? _parse(_accountNow)
+            : _parse(_amount),
+        operatorName: 'Operator',
+        dateLabel: formatDateOnly(DateTime.now()),
+        timeLabel: formatClock(DateTime.now()),
+      ),
+    );
+    if (!mounted || path == null || path.trim().isEmpty) {
+      return;
+    }
+    setState(() {
+      _proofImagePath = path.trim();
+    });
   }
 
   @override
@@ -166,7 +246,7 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Text(
-                'Settle Bill',
+                _editing ? 'Edit Settlement' : 'Settle Bill',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w700,
@@ -399,12 +479,25 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
                   alignLabelWithHint: true,
                 ),
               ),
+              if (_proofImagePath.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(
+                  'Transfer proof attached',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: tokens.good,
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               Row(
                 children: <Widget>[
                   Expanded(
                     child: DsPillButton(
                       label: 'Cancel',
+                      compact: true,
                       variant: DsPillVariant.outline,
                       onPressed: _saving
                           ? null
@@ -414,9 +507,25 @@ class _SettleBillDialogState extends State<_SettleBillDialog> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: DsPillButton(
-                      label: partial
-                          ? 'Confirm Partial'
-                          : 'Confirm Settlement',
+                      label: _proofImagePath.isEmpty
+                          ? 'Add Proof'
+                          : 'Retake Proof',
+                      compact: true,
+                      icon: Icons.photo_camera_outlined,
+                      variant: DsPillVariant.outline,
+                      onPressed: _saving
+                          ? null
+                          : () {
+                              _addProof();
+                            },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DsPillButton(
+                      label: _editing ? 'Save' : 'Confirm & Print',
+                      compact: true,
+                      icon: Icons.print_outlined,
                       onPressed: _saving ? null : _confirm,
                     ),
                   ),

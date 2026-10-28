@@ -19,6 +19,9 @@ import '../../features/station/domain/money_format.dart';
 import '../../features/station/domain/receipt_footer_settings.dart';
 import '../../features/station/presentation/purchase_providers.dart';
 import '../../features/station/presentation/station_providers.dart';
+import '../../features/station/domain/intercom_audio_settings.dart';
+import '../../features/station/presentation/intercom_audio_settings_provider.dart';
+import '../../features/station/presentation/intercom_speaker_test.dart';
 import '../../providers/operators_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../services/database_helper.dart';
@@ -406,6 +409,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               enabled: !settings.busy,
                             ),
                             const SizedBox(height: 10),
+                            const _IntercomAudioCard(),
+                            const SizedBox(height: 10),
                             _ReceiptFooterCard(
                               settings: settings,
                               enabled: !settings.busy,
@@ -441,6 +446,312 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IntercomAudioCard extends ConsumerWidget {
+  const _IntercomAudioCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final IntercomAudioSettings settings = ref.watch(
+      intercomAudioSettingsProvider,
+    );
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final IntercomAudioSettingsNotifier levels = ref.read(
+      intercomAudioSettingsProvider.notifier,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _SectionCard(
+          title: 'Pump',
+          subtitle: 'Microphone, speaker, and hiss at the unit.',
+          icon: Icons.campaign_outlined,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                _IntercomSlider(
+                  label: 'Microphone',
+                  hint: 'How loud the helper is sent to the office.',
+                  value: settings.pumpMicLevel,
+                  tokens: tokens,
+                  onChanged: levels.setPumpMicLevel,
+                ),
+                _IntercomSlider(
+                  label: 'Speaker',
+                  hint:
+                      'Same as the walkie-talkie. 100 is full level on the pump speaker.',
+                  value: settings.pumpVolume,
+                  max: 150,
+                  tokens: tokens,
+                  onChanged: levels.setPumpVolume,
+                ),
+                _IntercomSlider(
+                  label: 'Noise cut',
+                  hint:
+                      'Does not change the pump speaker. That speaker plays '
+                      'your voice straight through.',
+                  value: settings.pumpNoiseCut,
+                  tokens: tokens,
+                  onChanged: levels.setPumpNoiseCut,
+                ),
+                const _IntercomSpeakerTestPanel(),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        _SectionCard(
+          title: 'Office',
+          subtitle: 'Microphone, speaker, and hiss on this computer.',
+          icon: Icons.headset_mic_outlined,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                _IntercomSlider(
+                  label: 'Microphone',
+                  hint:
+                      'Stored office level. Windows voice processing sets '
+                      'how loud you are. The pump Speaker is the volume.',
+                  value: settings.micLevel,
+                  tokens: tokens,
+                  onChanged: levels.setMicLevel,
+                ),
+                _IntercomSlider(
+                  label: 'Speaker',
+                  hint: 'How loud the helper is on this computer.',
+                  value: settings.stationVolume,
+                  tokens: tokens,
+                  onChanged: levels.setStationVolume,
+                ),
+                _IntercomSlider(
+                  label: 'Noise cut',
+                  hint:
+                      'Cuts hiss on this computer. Turn it up until the hiss '
+                      'drops. Too high and quiet words drop out.',
+                  value: settings.officeNoiseCut,
+                  tokens: tokens,
+                  onChanged: levels.setOfficeNoiseCut,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _IntercomSpeakerTestPanel extends ConsumerWidget {
+  const _IntercomSpeakerTestPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final IntercomSpeakerTestState test = ref.watch(
+      intercomSpeakerTestProvider,
+    );
+    final IntercomSpeakerTest player = ref.read(
+      intercomSpeakerTestProvider.notifier,
+    );
+    final bool showUnit5 = ref.watch(
+      settingsProvider.select((SettingsState settings) => settings.showUnit5),
+    );
+    final bool online = ref.watch(
+      stationControllerProvider.select(
+        (StationState station) => station.endpoint(test.unitId).connected,
+      ),
+    );
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final List<int> units = <int>[
+      1,
+      2,
+      3,
+      4,
+      if (showUnit5 || test.unitId == 5) 5,
+    ];
+    final TextStyle label = TextStyle(
+      fontFamily: 'Roboto',
+      fontWeight: FontWeight.w600,
+      fontSize: 13,
+      color: tokens.ink,
+    );
+    final TextStyle hint = TextStyle(
+      fontFamily: 'Roboto',
+      fontSize: 11,
+      color: tokens.inkMuted,
+    );
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text('Speaker test', style: label),
+          const SizedBox(height: 4),
+          Text(
+            'Choose WAV files, or a folder of them. With nothing chosen, '
+            'Play sends a 6 second tone to that pump speaker.',
+            style: hint,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: <Widget>[
+              Text('Unit', style: label),
+              const SizedBox(width: 12),
+              DropdownButton<int>(
+                value: test.unitId,
+                items: <DropdownMenuItem<int>>[
+                  for (final int unitId in units)
+                    DropdownMenuItem<int>(
+                      value: unitId,
+                      child: Text(formatUnitLabel(unitId)),
+                    ),
+                ],
+                onChanged: test.playing
+                    ? null
+                    : (int? unitId) {
+                        if (unitId != null) {
+                          player.selectUnit(unitId);
+                        }
+                      },
+              ),
+            ],
+          ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: <Widget>[
+              OutlinedButton(
+                onPressed: test.playing ? null : () => player.pickFiles(),
+                child: const Text('Choose files'),
+              ),
+              OutlinedButton(
+                onPressed: test.playing ? null : () => player.pickDirectory(),
+                child: const Text('Choose folder'),
+              ),
+              if (test.files.isNotEmpty)
+                TextButton(
+                  onPressed: test.playing ? null : player.clearFiles,
+                  child: const Text('Clear'),
+                ),
+            ],
+          ),
+          if (test.files.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                test.files.map(_speakerFileName).join(', '),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: hint,
+              ),
+            ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: test.playing
+                ? OutlinedButton(
+                    onPressed: player.stop,
+                    child: const Text('Stop'),
+                  )
+                : FilledButton(
+                    onPressed: online ? () => player.play() : null,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: tokens.coralPressed,
+                      foregroundColor: tokens.card,
+                    ),
+                    child: const Text('Play'),
+                  ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            online ? test.status : 'Unit ${test.unitId} is offline.',
+            style: hint,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _speakerFileName(String path) {
+  final String normalized = path.replaceAll('\\', '/');
+  final int slash = normalized.lastIndexOf('/');
+  return slash < 0 ? normalized : normalized.substring(slash + 1);
+}
+
+class _IntercomSlider extends StatelessWidget {
+  const _IntercomSlider({
+    required this.label,
+    required this.hint,
+    required this.value,
+    required this.tokens,
+    required this.onChanged,
+    this.max = 100,
+  });
+
+  final String label;
+  final String hint;
+  final int value;
+  final int max;
+  final DispensrTokens tokens;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    color: tokens.ink,
+                  ),
+                ),
+              ),
+              Text(
+                '$value',
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: tokens.ink,
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: value.clamp(0, max).toDouble(),
+            min: 0,
+            max: max.toDouble(),
+            divisions: max ~/ 5,
+            activeColor: tokens.coralPressed,
+            label: '$value',
+            onChanged: (double next) => onChanged(next.round()),
+          ),
+          Text(
+            hint,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontSize: 11,
+              color: tokens.inkMuted,
+            ),
+          ),
         ],
       ),
     );
@@ -748,8 +1059,11 @@ class _SaleFloorCardState extends ConsumerState<_SaleFloorCard> {
                 ),
               ),
               subtitle: Text(
-                'Off by default. When off, Print on a unit sends the slip '
-                'straight to the printer.',
+                'Off by default. When on, Print shows a receipt preview '
+                'for unit slips, pending account, second copy, edited copy, '
+                'and Udhaar settlement. When off, those jobs go straight '
+                'to the printer, and account proof capture hides the '
+                'print preview pane.',
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   fontSize: 11,

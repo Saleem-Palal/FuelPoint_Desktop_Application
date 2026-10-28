@@ -5,12 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/pdf_file_export.dart';
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/access/data/fingerprint_helper_client.dart';
 import '../../../features/access/presentation/operator_fingerprint_watch.dart';
 import '../../../features/shift/data/shift_summary_export.dart';
 import '../../../features/shift/domain/shift_lifecycle.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/domain/shift_report_layout.dart';
 import '../../../features/shift/presentation/shift_providers.dart';
 import '../../../features/station/domain/money_format.dart';
 import '../../../providers/settings_provider.dart';
@@ -464,6 +466,14 @@ class _ShiftReconciliationOverlayState
   }
 
   Future<void> _export(ReconciliationSnapshot snapshot) async {
+    final bool allowed = await confirmLargePdfExport(
+      context,
+      transactionCount:
+          snapshot.metrics.sales.length + snapshot.metrics.directSales.length,
+    );
+    if (!allowed || !mounted) {
+      return;
+    }
     setState(() {
       _busy = true;
     });
@@ -550,10 +560,20 @@ class _ShiftReconciliationOverlayState
     }
     final OperatorShiftRecord? live = ref.watch(activeShiftNotifierProvider);
     final DispensrTokens tokens = DispensrTokens.of(context);
+    final bool showUnit5 = ref.watch(
+      settingsProvider.select((SettingsState settings) => settings.showUnit5),
+    );
+    final double expectedCash = snapshot.metrics.expectedCashInHandFrom(
+      shiftReadingsTotalSale(
+        shift: snapshot.shift,
+        sales: snapshot.metrics.sales,
+        showUnit5: showUnit5,
+      ),
+    );
     final double? actual = _actualCashOf();
     final double? variance = actual == null
         ? null
-        : actual - snapshot.metrics.expectedCashInHand;
+        : actual - expectedCash;
     final Color varianceColor = variance == null
         ? tokens.inkMuted
         : variance < 0
@@ -607,6 +627,7 @@ class _ShiftReconciliationOverlayState
                             tokens: tokens,
                             snapshot: snapshot,
                             live: live,
+                            expectedCash: expectedCash,
                             variance: variance,
                             varianceColor: varianceColor,
                             actualController: _actual,
@@ -687,6 +708,7 @@ class _ReconciliationBody extends StatelessWidget {
     required this.tokens,
     required this.snapshot,
     required this.live,
+    required this.expectedCash,
     required this.variance,
     required this.varianceColor,
     required this.actualController,
@@ -702,6 +724,7 @@ class _ReconciliationBody extends StatelessWidget {
   final DispensrTokens tokens;
   final ReconciliationSnapshot snapshot;
   final OperatorShiftRecord? live;
+  final double expectedCash;
   final double? variance;
   final Color varianceColor;
   final TextEditingController actualController;
@@ -860,7 +883,7 @@ class _ReconciliationBody extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        formatPkr(metrics.expectedCashInHand),
+                        formatPkr(expectedCash),
                         style: TextStyle(
                           fontFamily: 'Roboto',
                           fontWeight: FontWeight.w700,

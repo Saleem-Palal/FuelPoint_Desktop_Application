@@ -11,17 +11,40 @@ final dispenserMonitorProvider =
     );
 
 class DispenserMonitorController extends Notifier<DispenserMonitorState> {
+  Timer? _clock;
+  bool _screenOpen = false;
+
   @override
   DispenserMonitorState build() {
-    final Timer ticker = Timer.periodic(const Duration(milliseconds: 400), (_) {
-      state = state.copyWith(clock: DateTime.now());
+    ref.onDispose(() {
+      _clock?.cancel();
+      _clock = null;
     });
-    ref.onDispose(ticker.cancel);
     return DispenserMonitorState.empty();
   }
 
-  /// Socket-operator callback. Never writes [StationState], so Sale UI is idle.
+  /// TX/RX lamps and the wire log run only while Dispenser Monitor is open.
+  void setScreenOpen(bool open) {
+    if (open == _screenOpen) {
+      return;
+    }
+    _screenOpen = open;
+    _clock?.cancel();
+    _clock = null;
+    if (!open) {
+      return;
+    }
+    _clock = Timer.periodic(const Duration(milliseconds: 400), (_) {
+      state = state.copyWith(clock: DateTime.now());
+    });
+  }
+
+  /// Socket-operator callback. The frame list is copied only while Dispenser
+  /// Monitor is open, so Sale does not pay for the wire log.
   void ingestWire(DispenserWireFrame frame) {
+    if (!_screenOpen) {
+      return;
+    }
     _patchLinkActivity(frame);
     if (state.paused) {
       return;
@@ -45,12 +68,10 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
     if (pingAt != null && now.difference(pingAt) < const Duration(seconds: 5)) {
       latency = now.difference(pingAt).inMilliseconds;
     }
-    final Map<int, UnitDiagnosticSnapshot> diagnostics =
-        Map<int, UnitDiagnosticSnapshot>.from(state.diagnostics);
-    diagnostics[packet.unitId] = previous.copyWith(
+    final UnitDiagnosticSnapshot next = previous.copyWith(
       rssiDbm: packet.rssiDbm ?? previous.rssiDbm,
       latencyMs: latency,
-      lastRxAt: now,
+      lastRxAt: _screenOpen ? now : previous.lastRxAt,
       espToBoardLink: packet.espToBoardLink ?? previous.espToBoardLink,
       pendingTxCount: packet.pendingTxCount ?? previous.pendingTxCount,
     );
@@ -58,6 +79,13 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
     if (latency != null) {
       gatewayMs = latency;
     }
+    if (_sameDiagnostic(previous, next) &&
+        gatewayMs == state.gatewayLatencyMs) {
+      return;
+    }
+    final Map<int, UnitDiagnosticSnapshot> diagnostics =
+        Map<int, UnitDiagnosticSnapshot>.from(state.diagnostics);
+    diagnostics[packet.unitId] = next;
     state = state.copyWith(
       diagnostics: diagnostics,
       gatewayLatencyMs: gatewayMs,
@@ -117,9 +145,24 @@ class DispenserMonitorController extends Notifier<DispenserMonitorState> {
   }
 
   void _patchUnit(int unitId, UnitDiagnosticSnapshot next) {
+    final UnitDiagnosticSnapshot previous = state.diagnosticFor(unitId);
+    if (_sameDiagnostic(previous, next)) {
+      return;
+    }
     final Map<int, UnitDiagnosticSnapshot> diagnostics =
         Map<int, UnitDiagnosticSnapshot>.from(state.diagnostics);
     diagnostics[unitId] = next;
     state = state.copyWith(diagnostics: diagnostics);
+  }
+
+  bool _sameDiagnostic(UnitDiagnosticSnapshot a, UnitDiagnosticSnapshot b) {
+    return a.rssiDbm == b.rssiDbm &&
+        a.latencyMs == b.latencyMs &&
+        a.lastPingAt == b.lastPingAt &&
+        a.lastRxAt == b.lastRxAt &&
+        a.lastTxAt == b.lastTxAt &&
+        a.socketOpenedAt == b.socketOpenedAt &&
+        a.espToBoardLink == b.espToBoardLink &&
+        a.pendingTxCount == b.pendingTxCount;
   }
 }

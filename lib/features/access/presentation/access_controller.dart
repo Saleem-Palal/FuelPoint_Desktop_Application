@@ -16,6 +16,7 @@ class AccessState {
     required this.busy,
     required this.autoLockMinutes,
     this.fingerprintEnrolled = false,
+    this.fingerprintCount = 0,
     this.errorMessage,
   });
 
@@ -26,14 +27,18 @@ class AccessState {
   /// Idle minutes before owner access auto-locks. `0` disables the timer.
   final int autoLockMinutes;
 
-  /// True when a DPAPI-wrapped owner FMD is stored. Not the live session.
+  /// True when at least one owner finger is stored.
   final bool fingerprintEnrolled;
+
+  /// How many owner fingers are stored. Zero when none are enrolled.
+  final int fingerprintCount;
   final String? errorMessage;
 
   AccessState copyWith({
     bool? isOwnerElevated,
     bool? busy,
     bool? fingerprintEnrolled,
+    int? fingerprintCount,
     int? autoLockMinutes,
     String? errorMessage,
     bool clearError = false,
@@ -42,6 +47,7 @@ class AccessState {
       isOwnerElevated: isOwnerElevated ?? this.isOwnerElevated,
       busy: busy ?? this.busy,
       fingerprintEnrolled: fingerprintEnrolled ?? this.fingerprintEnrolled,
+      fingerprintCount: fingerprintCount ?? this.fingerprintCount,
       autoLockMinutes: autoLockMinutes ?? this.autoLockMinutes,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
@@ -177,8 +183,11 @@ class AccessController extends Notifier<AccessState> {
 
   Future<void> refreshFingerprintEnrollment() async {
     try {
-      final bool enrolled = await _db.hasOwnerFingerprint();
-      state = state.copyWith(fingerprintEnrolled: enrolled);
+      final List<String> fingers = await _db.readOwnerFingerprintFmds();
+      state = state.copyWith(
+        fingerprintEnrolled: fingers.isNotEmpty,
+        fingerprintCount: fingers.length,
+      );
     } catch (error, stack) {
       debugPrint(
         'AccessController.refreshFingerprintEnrollment failed: $error\n$stack',
@@ -227,6 +236,7 @@ class AccessController extends Notifier<AccessState> {
         state = state.copyWith(
           busy: false,
           fingerprintEnrolled: false,
+          fingerprintCount: 0,
           errorMessage: 'No owner fingerprint is enrolled.',
         );
         return false;

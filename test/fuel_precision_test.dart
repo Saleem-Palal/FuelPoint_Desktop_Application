@@ -24,6 +24,15 @@ void main() {
       expect(roundRupees(Decimal.parse('-10.5')), -11);
     });
 
+    test('shift audit treats 0.1 L or less as a match', () {
+      expect(volumesMatchForShiftAudit(10, 9.9), isTrue);
+      expect(volumesMatchForShiftAudit(10, 10), isTrue);
+      expect(volumesMatchForShiftAudit(10, 10.1), isTrue);
+      expect(volumesMatchForShiftAudit(10, 10.11), isFalse);
+      expect(volumesMatchForShiftAudit(0.1, 0), isTrue);
+      expect(volumesMatchForShiftAudit(0.11, 0), isFalse);
+    });
+
     test('saleLitersMatchMeter ignores 13th-place meter delta noise', () {
       expect(
         saleLitersMatchMeter(

@@ -81,14 +81,15 @@ class _OwnerPinVerificationModalState
     }
     try {
       await session.start();
-      final String? stored = await DatabaseHelper.instance
-          .readOwnerFingerprintFmd();
-      if (!mounted || _watchStopped || stored == null) {
+      final List<String> stored = await DatabaseHelper.instance
+          .readOwnerFingerprintFmds();
+      if (!mounted || _watchStopped || stored.isEmpty) {
         return;
       }
-      final FingerprintVerifyResult result = await session.verify(<String>[
+      final FingerprintVerifyResult result = await session.verify(
         stored,
-      ], timeoutMs: 120000);
+        timeoutMs: 120000,
+      );
       if (!mounted || _watchStopped) {
         return;
       }

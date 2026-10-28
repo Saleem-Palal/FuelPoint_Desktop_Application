@@ -45,6 +45,9 @@ class SegmentLcd extends StatelessWidget {
     this.showSideNub = false,
     this.labelStroke = false,
     this.gapBeforeLast = 0,
+    this.valueWeight = FontWeight.w400,
+    this.labelGap = 8,
+    this.tightValues = false,
   });
 
   static const String saleAmountMask = '88888888';
@@ -162,8 +165,11 @@ class SegmentLcd extends StatelessWidget {
       ],
       digitWidth: 0,
       labelSize: 8,
-      valueSize: 20,
+      valueSize: 39.9,
+      valueWeight: FontWeight.w700,
       labelWeight: FontWeight.w400,
+      labelGap: 3,
+      tightValues: true,
       glass: offlineAmber(offline),
       active: offlineActive(offline),
       ghost: offlineGhost(offline),
@@ -171,7 +177,7 @@ class SegmentLcd extends StatelessWidget {
       bezelWidth: 4,
       frameRadius: 8,
       glassRadius: 2,
-      glassPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      glassPadding: const EdgeInsets.fromLTRB(4, 0, 4, 0),
       dividerAfterFirst: false,
       emphasizeFirst: false,
       expand: true,
@@ -259,6 +265,9 @@ class SegmentLcd extends StatelessWidget {
   final bool showSideNub;
   final bool labelStroke;
   final double gapBeforeLast;
+  final FontWeight valueWeight;
+  final double labelGap;
+  final bool tightValues;
 
   @override
   Widget build(BuildContext context) {
@@ -286,7 +295,9 @@ class SegmentLcd extends StatelessWidget {
         child: Column(
           mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
           mainAxisAlignment: expand
-              ? MainAxisAlignment.spaceEvenly
+              ? (lines.length == 1
+                    ? MainAxisAlignment.center
+                    : MainAxisAlignment.spaceEvenly)
               : MainAxisAlignment.center,
           children: <Widget>[
             for (int i = 0; i < lines.length; i++) ...<Widget>[
@@ -311,6 +322,9 @@ class SegmentLcd extends StatelessWidget {
                         ? valueSize
                         : (emphasizeFirst ? valueSize * 0.86 : valueSize)),
                 labelWeight: labelWeight,
+                valueWeight: valueWeight,
+                labelGap: labelGap,
+                tightValues: tightValues,
                 active: active,
                 ghost: ghost,
                 valueUnlit: valueUnlit ?? ghost,
@@ -358,6 +372,9 @@ class _SegmentLcdRow extends StatelessWidget {
     required this.labelSize,
     required this.valueSize,
     required this.labelWeight,
+    required this.valueWeight,
+    required this.labelGap,
+    required this.tightValues,
     required this.active,
     required this.ghost,
     required this.valueUnlit,
@@ -371,6 +388,9 @@ class _SegmentLcdRow extends StatelessWidget {
   final double labelSize;
   final double valueSize;
   final FontWeight labelWeight;
+  final FontWeight valueWeight;
+  final double labelGap;
+  final bool tightValues;
   final Color active;
   final Color ghost;
   final Color valueUnlit;
@@ -402,9 +422,14 @@ class _SegmentLcdRow extends StatelessWidget {
     );
     final TextStyle valueStyle = TextStyle(
       fontFamily: 'DSEG7Classic',
+      fontWeight: valueWeight,
       fontSize: valueSize,
-      height: 1.0,
+      height: tightValues ? 0.86 : 1.0,
       color: active,
+    );
+    const TextHeightBehavior tightHeight = TextHeightBehavior(
+      applyHeightToFirstAscent: false,
+      applyHeightToLastDescent: false,
     );
     final String labelGhost = List<String>.filled(label.length, '~').join();
     final String live = _liveDigits;
@@ -431,7 +456,7 @@ class _SegmentLcdRow extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(width: 8),
+        SizedBox(width: labelGap),
         Expanded(
           child: FittedBox(
             fit: BoxFit.scaleDown,
@@ -445,12 +470,14 @@ class _SegmentLcdRow extends StatelessWidget {
                   unlit,
                   textAlign: TextAlign.right,
                   maxLines: 1,
+                  textHeightBehavior: tightValues ? tightHeight : null,
                   style: valueStyle.copyWith(color: valueUnlit),
                 ),
                 Text(
                   live,
                   textAlign: TextAlign.right,
                   maxLines: 1,
+                  textHeightBehavior: tightValues ? tightHeight : null,
                   style: valueStyle,
                 ),
               ],

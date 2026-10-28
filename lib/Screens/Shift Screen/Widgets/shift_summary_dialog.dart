@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/pdf_file_export.dart';
 import '../../../core/theme/dispensr_theme.dart';
 import '../../../features/shift/data/shift_summary_export.dart';
 import '../../../features/shift/domain/shift_models.dart';
+import '../../../features/shift/domain/shift_report_layout.dart';
 import '../../../features/station/domain/money_format.dart';
 import '../../../providers/settings_provider.dart';
 import 'shift_ui_kit.dart';
@@ -36,6 +38,15 @@ class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
   bool get _showUnit5 => ref.read(settingsProvider).showUnit5;
 
   Future<void> _print() async {
+    final bool allowed = await confirmLargePdfExport(
+      context,
+      transactionCount:
+          widget.summary.metrics.sales.length +
+          widget.summary.metrics.directSales.length,
+    );
+    if (!allowed || !mounted) {
+      return;
+    }
     setState(() {
       _busy = true;
     });
@@ -67,6 +78,15 @@ class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
   }
 
   Future<void> _whatsApp() async {
+    final bool allowed = await confirmLargePdfExport(
+      context,
+      transactionCount:
+          widget.summary.metrics.sales.length +
+          widget.summary.metrics.directSales.length,
+    );
+    if (!allowed || !mounted) {
+      return;
+    }
     setState(() {
       _busy = true;
     });
@@ -104,9 +124,19 @@ class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
     final DispensrTokens tokens = DispensrTokens.of(context);
     final OperatorShiftRecord shift = widget.summary.shift;
     final ShiftWindowMetrics metrics = widget.summary.metrics;
-    final Color discColor = shift.discrepancy < 0
+    final double expectedCash = metrics.expectedCashInHandFrom(
+      shiftReadingsTotalSale(
+        shift: shift,
+        sales: metrics.sales,
+        showUnit5: _showUnit5,
+      ),
+    );
+    final double discrepancy = shift.actualCash == null
+        ? shift.discrepancy
+        : shift.actualCash! - expectedCash;
+    final Color discColor = discrepancy < 0
         ? tokens.bad
-        : shift.discrepancy > 0
+        : discrepancy > 0
         ? tokens.good
         : tokens.ink;
 
@@ -190,8 +220,16 @@ class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
               value: formatPkr(metrics.udhaarSales),
             ),
             _SummaryRow(
+              label: 'Cash Now Udhaar',
+              value: formatPkr(metrics.cashNowUdhaar),
+            ),
+            _SummaryRow(
               label: 'Account payments',
               value: formatPkr(metrics.accountSales),
+            ),
+            _SummaryRow(
+              label: 'Cash Now Account',
+              value: formatPkr(metrics.cashNow),
             ),
             _SummaryRow(
               label: 'Udhaar recovery',
@@ -203,7 +241,7 @@ class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
             ),
             _SummaryRow(
               label: 'Expected cash',
-              value: formatPkr(shift.expectedCash),
+              value: formatPkr(expectedCash),
             ),
             _SummaryRow(
               label: 'Actual cash',
@@ -213,7 +251,7 @@ class _ShiftSummaryDialogState extends ConsumerState<ShiftSummaryDialog> {
             ),
             _SummaryRow(
               label: 'Discrepancy',
-              value: formatSignedPkr(shift.discrepancy),
+              value: formatSignedPkr(discrepancy),
               valueColor: discColor,
             ),
           ],

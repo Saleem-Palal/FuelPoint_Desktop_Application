@@ -15,6 +15,7 @@ import 'confirm_payment_dialog.dart';
 import 'esp_last_ten_dialog.dart';
 import 'fuel_nozzle_graphic.dart';
 import 'helper_duty_dialog.dart';
+import 'unit_intercom_bar.dart';
 
 class DispenserUnitData {
   const DispenserUnitData({
@@ -162,82 +163,118 @@ class DispenserUnitsWidget extends ConsumerWidget {
 
     return Material(
       color: Colors.transparent,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        clipBehavior: Clip.none,
-        padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
-        decoration: BoxDecoration(
-          color: tokens.card,
-          borderRadius: BorderRadius.circular(tokens.radius20),
-          border: Border.all(
-            color: isSelected ? _selectedBorder : _idleBorder,
-            width: isSelected ? 2.5 : 1,
-          ),
-          boxShadow: isSelected
-              ? <BoxShadow>[
-                  ...tokens.cardShadow,
-                  BoxShadow(
-                    color: _selectedBorder.withValues(alpha: 0.28),
-                    blurRadius: 18,
-                    offset: const Offset(0, 6),
-                    spreadRadius: -6,
-                  ),
-                ]
-              : tokens.cardShadow,
-        ),
+      child: _UnitCardFrame(
+        isSelected: isSelected,
+        tokens: tokens,
         child: Opacity(
           opacity: espDown ? 0.9 : 1,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              _Header(data: data, tokens: tokens, onSelect: onSelect),
-              InkWell(
-                onTap: onSelect,
-                borderRadius: BorderRadius.circular(tokens.radius12),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 10, 6, 0),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
-                    const SizedBox(height: 10),
-                    _LcdWithNozzle(
-                      unitId: data.unitId,
-                      runLabel: runLabel,
-                      runFg: runFg,
-                      runBg: runBg,
-                      runBorder: runBorder,
+                    _Header(data: data, tokens: tokens, onSelect: onSelect),
+                    InkWell(
+                      onTap: onSelect,
+                      borderRadius: BorderRadius.circular(tokens.radius12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          const SizedBox(height: 10),
+                          _LcdWithNozzle(
+                            unitId: data.unitId,
+                            runLabel: runLabel,
+                            runFg: runFg,
+                            runBg: runBg,
+                            runBorder: runBorder,
+                          ),
+                          Divider(color: colors.outline, height: 1),
+                          const SizedBox(height: 8),
+                          _LastTransaction(data: data, tokens: tokens),
+                        ],
+                      ),
                     ),
-                    Divider(color: colors.outline, height: 1),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 180),
+                      child: notice == null
+                          ? const SizedBox.shrink()
+                          : Padding(
+                              key: const ValueKey<String>('abort'),
+                              padding: const EdgeInsets.only(top: 8),
+                              child: _AbortBanner(
+                                message: notice,
+                                tokens: tokens,
+                              ),
+                            ),
+                    ),
                     const SizedBox(height: 8),
-                    _LastTransaction(data: data, tokens: tokens),
+                    UnitIntercomBar(unitId: data.unitId),
                   ],
                 ),
               ),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
-                child: notice == null
-                    ? const SizedBox.shrink()
-                    : Padding(
-                        key: const ValueKey<String>('abort'),
-                        padding: const EdgeInsets.only(top: 8),
-                        child: _AbortBanner(message: notice, tokens: tokens),
-                      ),
-              ),
-              const SizedBox(height: 8),
-              IgnorePointer(
-                ignoring:
-                    shouldEnforceStationGuards &&
-                    espDown &&
-                    !data.isCycleComplete,
-                child: ConfirmPaymentSheet(
-                  key: ValueKey<int>(data.unitId),
-                  unitId: data.unitId,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+                child: IgnorePointer(
+                  ignoring:
+                      shouldEnforceStationGuards &&
+                      espDown &&
+                      !data.isCycleComplete,
+                  child: ConfirmPaymentSheet(
+                    key: ValueKey<int>(data.unitId),
+                    unitId: data.unitId,
+                  ),
                 ),
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _UnitCardFrame extends StatelessWidget {
+  const _UnitCardFrame({
+    required this.isSelected,
+    required this.tokens,
+    required this.child,
+  });
+
+  final bool isSelected;
+  final DispensrTokens tokens;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color border = isSelected
+        ? DispenserUnitsWidget._selectedBorder
+        : DispenserUnitsWidget._idleBorder;
+    return Container(
+      clipBehavior: Clip.none,
+      decoration: BoxDecoration(
+        color: tokens.card,
+        borderRadius: BorderRadius.circular(tokens.radius20),
+        border: Border.all(color: border, width: isSelected ? 2.5 : 1),
+        boxShadow: <BoxShadow>[
+          ...tokens.cardShadow,
+          if (isSelected)
+            BoxShadow(
+              color: DispenserUnitsWidget._selectedBorder.withValues(
+                alpha: 0.28,
+              ),
+              blurRadius: 18,
+              offset: const Offset(0, 6),
+              spreadRadius: -6,
+            ),
+        ],
+      ),
+      child: child,
     );
   }
 }
@@ -577,10 +614,7 @@ class _Header extends ConsumerWidget {
                       tokens: tokens,
                       onPressed: () {
                         unawaited(
-                          showEspLastTenDialog(
-                            context,
-                            unitId: data.unitId,
-                          ),
+                          showEspLastTenDialog(context, unitId: data.unitId),
                         );
                       },
                     ),
@@ -687,33 +721,29 @@ class _FdxOkButton extends ConsumerWidget {
         (StationState station) => station.unit(unitId).isDispensing,
       ),
     );
-    final Color ink = dispensing ? tokens.inkMuted : tokens.ink;
-    return Tooltip(
-      message: dispensing ? 'Dispensing' : 'Reset',
-      child: Material(
-        color: tokens.canvas,
-        shape: CircleBorder(side: BorderSide(color: tokens.line)),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: dispensing
-              ? null
-              : () {
-                  ref
-                      .read(stationControllerProvider.notifier)
-                      .resetFdxBoard(unitId);
-                },
-          child: SizedBox(
-            width: 26,
-            height: 26,
-            child: Center(
-              child: Text(
-                'OK',
-                style: TextStyle(
-                  fontFamily: 'Roboto',
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
-                  color: ink,
-                ),
+    return Material(
+      color: tokens.canvas,
+      shape: CircleBorder(side: BorderSide(color: tokens.line)),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: dispensing
+            ? null
+            : () {
+                ref
+                    .read(stationControllerProvider.notifier)
+                    .resetFdxBoard(unitId);
+              },
+        child: SizedBox(
+          width: 26,
+          height: 26,
+          child: Center(
+            child: Text(
+              'OK',
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                color: dispensing ? tokens.inkMuted : tokens.ink,
               ),
             ),
           ),
@@ -974,7 +1004,7 @@ class _LcdWithNozzleState extends ConsumerState<_LcdWithNozzle>
         Padding(
           padding: const EdgeInsets.only(right: FuelNozzleGraphic.width - 10),
           child: SizedBox(
-            height: 42,
+            height: 48,
             child: SegmentLcd.meter(
               offline: lcdOffline,
               lines: <SegmentLcdLine>[

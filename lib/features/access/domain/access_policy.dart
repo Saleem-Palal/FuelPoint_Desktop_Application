@@ -9,7 +9,7 @@ bool get shouldEnforceStationGuards => !kDebugMode;
 
 /// Flip to `true` to exercise Owner Access lock (PIN + fingerprint) during
 /// `flutter run`. Release / MSIX always enforce the lock.
-const bool enableOwnerLockInDebug = true;
+const bool enableOwnerLockInDebug = false;
 
 /// Owner Master PIN gate, Lock Owner Access, and idle auto-lock.
 /// Always on in the release MSIX so client demos include the lock workflow.
@@ -32,6 +32,9 @@ class AccessPolicy {
   }
 
   static bool destinationRequiresOwner(int index) {
+    if (index == ShellDestinations.intercomTest) {
+      return false;
+    }
     return !isOperatorUnlockedDestination(index);
   }
 }

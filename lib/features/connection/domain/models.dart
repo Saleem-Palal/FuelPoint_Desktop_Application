@@ -32,6 +32,7 @@ class NetworkSnapshot {
     required this.onWifi,
     this.wifiName,
     this.wifiIp,
+    this.localIps = const <String>[],
     this.summary = 'Unknown',
     this.onDispenserAp = false,
     this.onOfficeLan = false,
@@ -41,6 +42,9 @@ class NetworkSnapshot {
   final bool onWifi;
   final String? wifiName;
   final String? wifiIp;
+
+  /// IPv4 addresses on this PC. Used when Windows will not report the Wi-Fi name.
+  final List<String> localIps;
   final String summary;
   final bool onDispenserAp;
   final bool onOfficeLan;
@@ -52,14 +56,47 @@ class NetworkSnapshot {
   );
 }
 
-/// Tenda office LAN: SSID `System` or any 192.168.0.x address (Ethernet counts).
-bool isOnOfficeLan({String? wifiName, String? wifiIp}) {
-  final String ssid = (wifiName ?? '').replaceAll('"', '').trim().toLowerCase();
-  if (ssid == 'system') {
+/// True when this PC is on [officeSsid].
+///
+/// `System` also accepts any 192.168.0.x address on Wi-Fi or Ethernet, so the
+/// Sale banner stays clear when Windows hides the SSID but the Tenda LAN is up.
+/// Any other station network matches the Wi-Fi name only.
+bool isOnOfficeLan({
+  String? wifiName,
+  String? wifiIp,
+  String officeSsid = 'System',
+  Iterable<String>? localIps,
+}) {
+  final String expected = officeSsid.replaceAll('"', '').trim().toLowerCase();
+  final String ssid = (wifiName ?? '')
+      .replaceAll('"', '')
+      .trim()
+      .toLowerCase();
+  if (expected.isNotEmpty && ssid == expected) {
     return true;
   }
-  final String ip = (wifiIp ?? '').trim();
-  return ip.startsWith('192.168.0.');
+  if (expected == 'system' && ssid.contains('system')) {
+    return true;
+  }
+  if (expected != 'system') {
+    return false;
+  }
+  if (_isSystemLanIp(wifiIp)) {
+    return true;
+  }
+  if (localIps == null) {
+    return false;
+  }
+  for (final String ip in localIps) {
+    if (_isSystemLanIp(ip)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _isSystemLanIp(String? ip) {
+  return (ip ?? '').trim().startsWith('192.168.0.');
 }
 
 class LogLine {

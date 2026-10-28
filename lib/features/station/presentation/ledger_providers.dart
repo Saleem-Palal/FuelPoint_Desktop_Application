@@ -2,11 +2,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../shift/data/sqlite_shift_repository.dart';
 import '../../shift/domain/shift_models.dart';
 import '../../shift/presentation/shift_providers.dart';
 import '../data/purchase_repository.dart';
 import '../data/sales_ledger_repository.dart';
-import '../data/sales_transaction_repository.dart';
 import '../data/transaction_store.dart';
 import '../domain/dispenser_models.dart';
 import '../domain/shift_ledger_models.dart';
@@ -15,7 +15,7 @@ import 'station_providers.dart';
 
 enum LedgerTab { sales, purchases }
 
-enum SalesLedgerMode { allTransactions, shiftWise }
+enum SalesLedgerMode { allTransactions, shiftWise, rateWise }
 
 @immutable
 class LedgerQuery {
@@ -29,6 +29,7 @@ class LedgerQuery {
     this.purchaseFrom,
     this.purchaseTo,
     this.selectedShiftId,
+    this.salesPage = 0,
   });
 
   final LedgerTab tab;
@@ -40,6 +41,9 @@ class LedgerQuery {
   final DateTime? purchaseFrom;
   final DateTime? purchaseTo;
   final String? selectedShiftId;
+
+  /// Zero-based page inside the All Transactions date window.
+  final int salesPage;
 
   DateTimeRange? get salesRange => _range(salesFrom, salesTo);
 
@@ -66,6 +70,7 @@ class LedgerQuery {
     bool clearPurchaseRange = false,
     String? selectedShiftId,
     bool clearSelectedShift = false,
+    int? salesPage,
   }) {
     return LedgerQuery(
       tab: tab ?? this.tab,
@@ -81,6 +86,7 @@ class LedgerQuery {
       selectedShiftId: clearSelectedShift
           ? null
           : (selectedShiftId ?? this.selectedShiftId),
+      salesPage: salesPage ?? this.salesPage,
     );
   }
 }
@@ -100,7 +106,7 @@ class LedgerQueryNotifier extends Notifier<LedgerQuery> {
     if (state.salesMode == salesMode) {
       return;
     }
-    state = state.copyWith(salesMode: salesMode);
+    state = state.copyWith(salesMode: salesMode, salesPage: 0);
   }
 
   void setSalesRange(DateTimeRange? range) {
@@ -108,6 +114,7 @@ class LedgerQueryNotifier extends Notifier<LedgerQuery> {
       salesFrom: range?.start,
       salesTo: range?.end,
       clearSalesRange: range == null,
+      salesPage: 0,
     );
   }
 
@@ -120,11 +127,29 @@ class LedgerQueryNotifier extends Notifier<LedgerQuery> {
   }
 
   void setUnit(int? unitId) {
-    state = state.copyWith(unitId: unitId, clearUnit: unitId == null);
+    if (state.unitId == unitId) {
+      return;
+    }
+    state = state.copyWith(
+      unitId: unitId,
+      clearUnit: unitId == null,
+      salesPage: 0,
+    );
   }
 
   void setSearch(String search) {
-    state = state.copyWith(search: search);
+    if (state.search == search) {
+      return;
+    }
+    state = state.copyWith(search: search, salesPage: 0);
+  }
+
+  void setSalesPage(int page) {
+    final int next = page < 0 ? 0 : page;
+    if (state.salesPage == next) {
+      return;
+    }
+    state = state.copyWith(salesPage: next);
   }
 
   void setSelectedShift(String? shiftId) {
@@ -157,6 +182,9 @@ final salesLedgerSliceProvider = Provider<SalesLedgerSnapshot>((Ref ref) {
   ref.watch(historyRevisionProvider);
   final LedgerQuery query = ref.watch(ledgerQueryProvider);
   final List<SaleTransaction> committed = ref.watch(committedSalesProvider);
+  if (query.salesMode != SalesLedgerMode.shiftWise) {
+    return SalesLedgerSnapshot.empty;
+  }
   List<SaleTransaction> source = committed;
 
   if (query.salesMode == SalesLedgerMode.shiftWise) {
@@ -182,8 +210,8 @@ final salesLedgerSliceProvider = Provider<SalesLedgerSnapshot>((Ref ref) {
     }
   }
 
-  return SalesTransactionRepository.querySnapshot(
-    source,
+  return shiftWiseLedgerSnapshot(
+    source: source,
     unitId: query.unitId,
     search: query.search,
     from: query.salesFrom,
@@ -209,6 +237,24 @@ final salesLedgerRepositoryProvider = Provider<SalesLedgerRepository>((
 ) {
   return SalesLedgerRepository();
 });
+
+/// Paged All Transactions query. Active only while the sales ledger watches it.
+final allTransactionsLedgerProvider =
+    FutureProvider.autoDispose<AllTransactionsPage>((Ref ref) async {
+      ref.watch(historyRevisionProvider);
+      final LedgerQuery query = ref.watch(ledgerQueryProvider);
+      return ref
+          .read(salesLedgerRepositoryProvider)
+          .loadAllTransactionsPage(
+            unitId: query.unitId,
+            search: query.salesMode == SalesLedgerMode.rateWise
+                ? ''
+                : query.search,
+            salesFrom: query.salesFrom,
+            salesTo: query.salesTo,
+            pageIndex: query.salesPage,
+          );
+    });
 
 final shiftLedgerSummariesProvider = FutureProvider<List<ShiftLedgerSummary>>((
   Ref ref,
@@ -246,6 +292,46 @@ final shiftWisePagerProvider = Provider<AsyncValue<List<ShiftLedgerSummary>>>((
     return filterShiftsByRange(rows, from: query.salesFrom, to: query.salesTo);
   });
 });
+
+OperatorShiftRecord operatorShiftFromLedger(ShiftLedgerSummary selected) {
+  return OperatorShiftRecord(
+    shiftId: selected.shiftId,
+    operatorId: selected.operatorId,
+    operatorName: selected.operatorName,
+    role: selected.role,
+    startTime: selected.startTime,
+    endTime: selected.endTime,
+    expectedCash: 0,
+    status: selected.status,
+    openingMeters: selected.openingMeters,
+    closingMeters: selected.closingMeters,
+  );
+}
+
+ShiftSummary shiftSummaryForLedger({
+  required ShiftWorkspaceState workspace,
+  required ShiftLedgerSummary selected,
+}) {
+  OperatorShiftRecord? shift;
+  for (final OperatorShiftRecord row in workspace.knownShifts) {
+    if (row.shiftId == selected.shiftId) {
+      shift = row;
+      break;
+    }
+  }
+  shift ??= operatorShiftFromLedger(selected);
+  final ReconciliationSnapshot? pending = workspace.pendingReconciliation;
+  if (shift.isOpen) {
+    return ShiftSummary(shift: shift, metrics: workspace.activeMetrics);
+  }
+  if (pending != null && pending.shift.shiftId == shift.shiftId) {
+    return ShiftSummary(shift: pending.shift, metrics: pending.metrics);
+  }
+  return ShiftSummary(
+    shift: shift,
+    metrics: SqliteShiftRepository.metricsForShift(workspace.sales, shift),
+  );
+}
 
 final selectedShiftSummaryProvider = Provider<ShiftLedgerSummary?>((Ref ref) {
   final LedgerQuery query = ref.watch(ledgerQueryProvider);

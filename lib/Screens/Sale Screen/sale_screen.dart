@@ -6,15 +6,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../Shell/shell_navigation.dart';
 import '../../core/theme/dispensr_theme.dart';
 import '../../core/widgets/app_screen_header.dart';
+import '../../core/widgets/proof_story_popup.dart';
 import '../../core/widgets/station_lock_banner.dart';
 import '../../features/access/domain/access_policy.dart';
 import '../../features/shift/domain/shift_models.dart';
 import '../../features/shift/presentation/shift_providers.dart';
 import '../../features/station/domain/dispenser_models.dart';
-import '../../features/station/domain/dispenser_monitor_models.dart';
 import '../../features/station/domain/money_format.dart';
 import '../../features/station/domain/station_link_alerts.dart';
-import '../../features/station/presentation/dispenser_monitor_providers.dart';
 import '../../features/station/presentation/office_lan_provider.dart';
 import '../../features/station/presentation/station_providers.dart';
 import '../../features/station/presentation/workspace_refresh.dart';
@@ -77,14 +76,20 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
     );
     final bool liveShift =
         ref.watch(shiftWorkspaceProvider).activeShift?.isOpen == true;
-    final bool onOfficeLan = ref.watch(officeLanProvider).asData?.value ?? true;
-    final StationState station = ref.watch(stationControllerProvider);
-    final DispenserMonitorState monitor = ref.watch(dispenserMonitorProvider);
-    final List<StationLinkAlert> linkAlerts = buildStationLinkAlerts(
+    final bool onOfficeLan = ref.watch(stationLanOkProvider);
+    final String networkName = stationWifiAlertName(
+      ref.watch(stationOfficeSsidProvider),
+    );
+    final Map<int, UnitBoardLink> links = <int, UnitBoardLink>{
+      for (final int unitId in unitIds)
+        unitId: ref.watch(unitBoardLinkProvider(unitId)),
+    };
+    final List<StationLinkAlert> linkAlerts = buildLinkAlerts(
       onOfficeLan: onOfficeLan,
       unitIds: unitIds,
-      station: station,
-      monitor: monitor,
+      networkName: networkName,
+      connected: (int unitId) => links[unitId]?.connected ?? false,
+      espToBoardLink: (int unitId) => links[unitId]?.espToBoardLink,
     );
     final MeterMismatchNotice? mismatch = ref.watch(
       meterMismatchNoticeProvider,
@@ -208,7 +213,7 @@ class _SaleScreenState extends ConsumerState<SaleScreen> {
   }
 }
 
-class _UnitsRow extends ConsumerWidget {
+class _UnitsRow extends StatelessWidget {
   const _UnitsRow({
     required this.unitIds,
     required this.selectedUnitId,
@@ -224,35 +229,59 @@ class _UnitsRow extends ConsumerWidget {
   final ValueChanged<int> onDismissReceipt;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final StationState station = ref.watch(stationControllerProvider);
-    final DispenserMonitorState monitor = ref.watch(dispenserMonitorProvider);
-    final DispensrTokens tokens = DispensrTokens.of(context);
+  Widget build(BuildContext context) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         for (int i = 0; i < unitIds.length; i++) ...<Widget>[
           if (i > 0) const SizedBox(width: 8),
           Expanded(
-            child: _unitCell(
-              tokens,
-              station.unit(unitIds[i]),
-              station,
-              monitor,
+            child: _SaleUnitCard(
+              unitId: unitIds[i],
+              isSelected: selectedUnitId == unitIds[i],
+              receiptTxn: receiptOverlays[unitIds[i]],
+              onSelect: () => onSelect(unitIds[i]),
+              onDismissReceipt: () => onDismissReceipt(unitIds[i]),
             ),
           ),
         ],
       ],
     );
   }
+}
 
-  Widget _unitCell(
-    DispensrTokens tokens,
-    DispenserUnit unit,
-    StationState station,
-    DispenserMonitorState monitor,
-  ) {
-    final SaleTransaction? receiptTxn = receiptOverlays[unit.unitId];
+class _SaleUnitCard extends ConsumerWidget {
+  const _SaleUnitCard({
+    required this.unitId,
+    required this.isSelected,
+    required this.receiptTxn,
+    required this.onSelect,
+    required this.onDismissReceipt,
+  });
+
+  final int unitId;
+  final bool isSelected;
+  final SaleTransaction? receiptTxn;
+  final VoidCallback onSelect;
+  final VoidCallback onDismissReceipt;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DispensrTokens tokens = DispensrTokens.of(context);
+    final DispenserUnit unit = ref.watch(
+      stationControllerProvider.select(
+        (StationState station) => station.unit(unitId),
+      ),
+    );
+    final UnitBoardLink link = ref.watch(unitBoardLinkProvider(unitId));
+    final String? abortNotice = ref.watch(
+      stationControllerProvider.select(
+        (StationState station) => station.abortNoticeFor(unitId),
+      ),
+    );
+    final SaleTransaction? overlay = receiptTxn;
+    final int overlayBaqaya =
+        ref.watch(receiptOverlayBaqayaProvider)[unitId] ?? 0;
     return ClipRRect(
       borderRadius: BorderRadius.circular(tokens.radius20),
       child: Stack(
@@ -261,22 +290,20 @@ class _UnitsRow extends ConsumerWidget {
             key: ValueKey<int>(unit.unitId),
             data: DispenserUnitData.fromUnit(
               unit,
-              espConnected:
-                  !shouldEnforceStationGuards ||
-                  station.endpoint(unit.unitId).connected,
+              espConnected: !shouldEnforceStationGuards || link.connected,
               fdxBoardLinked:
-                  !shouldEnforceStationGuards ||
-                  monitor.diagnosticFor(unit.unitId).espToBoardLink != false,
+                  !shouldEnforceStationGuards || link.espToBoardLink != false,
             ),
-            isSelected: selectedUnitId == unit.unitId,
-            abortNotice: station.abortNoticeFor(unit.unitId),
-            onSelect: () => onSelect(unit.unitId),
+            isSelected: isSelected,
+            abortNotice: abortNotice,
+            onSelect: onSelect,
           ),
-          if (receiptTxn != null)
+          if (overlay != null)
             Positioned.fill(
               child: UnitReceiptOverlay(
-                txn: receiptTxn,
-                onDismiss: () => onDismissReceipt(unit.unitId),
+                txn: overlay,
+                baqayaPkr: overlayBaqaya,
+                onDismiss: onDismissReceipt,
               ),
             ),
         ],
@@ -365,8 +392,8 @@ class _TransactionsCard extends ConsumerWidget {
               child: SingleChildScrollView(
                 child: LayoutBuilder(
                   builder: (BuildContext context, BoxConstraints constraints) {
-                    final double tableWidth = constraints.maxWidth < 1600
-                        ? 1600
+                    final double tableWidth = constraints.maxWidth < 1680
+                        ? 1680
                         : constraints.maxWidth;
                     final double gutter = tableWidth >= 1400 ? 24 : 16;
                     return SingleChildScrollView(
@@ -375,8 +402,8 @@ class _TransactionsCard extends ConsumerWidget {
                         constraints: BoxConstraints(minWidth: tableWidth),
                         child: DataTable(
                           headingRowHeight: 32,
-                          dataRowMinHeight: 36,
-                          dataRowMaxHeight: 40,
+                          dataRowMinHeight: 40,
+                          dataRowMaxHeight: 44,
                           horizontalMargin: tableWidth >= 1400 ? 20 : 12,
                           columnSpacing: gutter,
                           headingTextStyle: TextStyle(
@@ -414,6 +441,7 @@ class _TransactionsCard extends ConsumerWidget {
                             const DataColumn(label: Text('VEHICLE NO')),
                             const DataColumn(label: Text('HELPER')),
                             const DataColumn(label: Text('OPERATOR')),
+                            const DataColumn(label: Text('SCREENSHOT')),
                             const DataColumn(label: Text('ACTIONS')),
                           ],
                           rows: <DataRow>[
@@ -538,6 +566,11 @@ class _TransactionsCard extends ConsumerWidget {
                                     ),
                                   ),
                                   DataCell(
+                                    LedgerProofThumb(
+                                      imagePath: row.proofImagePath,
+                                    ),
+                                  ),
+                                  DataCell(
                                     Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: <Widget>[
@@ -606,22 +639,10 @@ class _TransactionsCard extends ConsumerWidget {
 
 Future<void> _printRecent(BuildContext context, SaleTransaction row) async {
   try {
-    await spoolSaleReceipt(
+    await presentSaleReceipt(
       context: context,
       txn: row,
       kind: ReceiptPrintKind.secondCopy,
-    );
-    if (!context.mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          row.payment.printsTwoCopies
-              ? 'Second copy — 2 slips sent to printer'
-              : 'Second copy sent to printer',
-        ),
-      ),
     );
   } catch (error, stack) {
     debugPrint('Recent reprint failed: $error\n$stack');

@@ -12,6 +12,11 @@ import '../../shift/presentation/shift_providers.dart';
 import '../../../providers/settings_provider.dart';
 import '../../../services/database_helper.dart';
 import '../data/dispenser_socket_manager.dart';
+import '../data/station_unit_scan.dart';
+import '../data/station_wifi_store.dart';
+import '../data/esp_usb_wifi_windows.dart';
+import '../data/wifi_status.dart';
+import '../data/intercom_codec.dart';
 import '../data/mock_telemetry_simulator.dart';
 import '../data/payment_buzzer.dart';
 import '../data/printer_queue.dart';
@@ -21,9 +26,13 @@ import '../domain/dispenser_models.dart';
 import '../domain/dispenser_monitor_models.dart';
 import '../domain/esp_token_log.dart';
 import '../domain/fuel_precision.dart';
+import '../domain/intercom_audio_settings.dart';
 import '../domain/money_format.dart';
 import '../domain/sale_fulfillment.dart';
 import 'dispenser_monitor_providers.dart';
+import 'office_lan_provider.dart';
+import 'intercom_audio_settings_provider.dart';
+import 'intercom_controller.dart';
 
 final transactionStoreProvider = Provider<TransactionStore>((Ref ref) {
   return TransactionStore();
@@ -154,6 +163,70 @@ final liveUnitLcdProvider = Provider.family<LiveUnitLcd, int>((
   );
 });
 
+/// Socket up and ESP-to-board link for one unit. Ignores clock, RSSI, and
+/// last-packet time so Sale does not rebuild on every wire frame.
+class UnitBoardLink {
+  const UnitBoardLink({required this.connected, required this.espToBoardLink});
+
+  final bool connected;
+  final bool? espToBoardLink;
+
+  @override
+  bool operator ==(Object other) {
+    return other is UnitBoardLink &&
+        other.connected == connected &&
+        other.espToBoardLink == espToBoardLink;
+  }
+
+  @override
+  int get hashCode => Object.hash(connected, espToBoardLink);
+}
+
+final unitBoardLinkProvider = Provider.family<UnitBoardLink, int>((
+  Ref ref,
+  int unitId,
+) {
+  final bool connected = ref.watch(
+    stationControllerProvider.select(
+      (StationState station) => station.endpoint(unitId).connected,
+    ),
+  );
+  final bool? espToBoardLink = ref.watch(
+    dispenserMonitorProvider.select(
+      (DispenserMonitorState monitor) =>
+          monitor.diagnosticFor(unitId).espToBoardLink,
+    ),
+  );
+  return UnitBoardLink(connected: connected, espToBoardLink: espToBoardLink);
+});
+
+/// Whether this PC is on the station LAN for Sale / Dispenser banners.
+///
+/// A live unit WebSocket counts first — that is proof the app reached the Tenda
+/// LAN even when Windows hides the Wi-Fi name. While the network check is still
+/// loading, assume on-LAN so the software banner does not stick on screen.
+final stationLanOkProvider = Provider<bool>((Ref ref) {
+  final bool showUnit5 = ref.watch(
+    settingsProvider.select((SettingsState settings) => settings.showUnit5),
+  );
+  for (final int unitId in visibleDispenserUnitIds(showUnit5: showUnit5)) {
+    final bool live = ref.watch(
+      stationControllerProvider.select(
+        (StationState station) => station.endpoint(unitId).connected,
+      ),
+    );
+    if (live) {
+      return true;
+    }
+  }
+  final AsyncValue<bool> network = ref.watch(officeLanProvider);
+  return network.when(
+    data: (bool onLan) => onLan,
+    loading: () => true,
+    error: (_, __) => true,
+  );
+});
+
 final paymentSheetUnitsProvider = StateProvider<Set<int>>((Ref ref) => <int>{});
 
 final paymentSubmitNonceProvider = StateProvider<int>((Ref ref) => 0);
@@ -211,6 +284,11 @@ void _emitPaymentCycle(
 
 final receiptOverlayTxnsProvider = StateProvider<Map<int, SaleTransaction>>(
   (Ref ref) => <int, SaleTransaction>{},
+);
+
+/// Live cash-back for the on-screen receipt only. Never written to SQLite.
+final receiptOverlayBaqayaProvider = StateProvider<Map<int, int>>(
+  (Ref ref) => <int, int>{},
 );
 
 final espRecoverOffersProvider = StateProvider<List<EspTokenLogRow>>(
@@ -278,23 +356,50 @@ final lowStockAlertProvider =
       LowStockAlertNotifier.new,
     );
 
-void showUnitReceiptOverlay(WidgetRef ref, SaleTransaction txn) {
+void showUnitReceiptOverlay(
+  WidgetRef ref,
+  SaleTransaction txn, {
+  int baqayaPkr = 0,
+}) {
   final Map<int, SaleTransaction> next = Map<int, SaleTransaction>.from(
     ref.read(receiptOverlayTxnsProvider),
   );
   next[txn.unitId] = txn;
   ref.read(receiptOverlayTxnsProvider.notifier).state = next;
+  ref.read(receiptOverlayBaqayaProvider.notifier).state = _overlayBaqayaMap(
+    ref.read(receiptOverlayBaqayaProvider),
+    txn.unitId,
+    baqayaPkr,
+  );
 }
 
 void dismissUnitReceiptOverlay(WidgetRef ref, int unitId) {
   final Map<int, SaleTransaction> next = Map<int, SaleTransaction>.from(
     ref.read(receiptOverlayTxnsProvider),
   );
-  if (!next.containsKey(unitId)) {
-    return;
+  if (next.containsKey(unitId)) {
+    next.remove(unitId);
+    ref.read(receiptOverlayTxnsProvider.notifier).state = next;
   }
-  next.remove(unitId);
-  ref.read(receiptOverlayTxnsProvider.notifier).state = next;
+  ref.read(receiptOverlayBaqayaProvider.notifier).state = _overlayBaqayaMap(
+    ref.read(receiptOverlayBaqayaProvider),
+    unitId,
+    0,
+  );
+}
+
+Map<int, int> _overlayBaqayaMap(
+  Map<int, int> current,
+  int unitId,
+  int baqayaPkr,
+) {
+  final Map<int, int> next = Map<int, int>.from(current);
+  if (baqayaPkr <= 0) {
+    next.remove(unitId);
+  } else {
+    next[unitId] = baqayaPkr;
+  }
+  return next;
 }
 
 void nudgeSelectedUnit(WidgetRef ref, int delta) {
@@ -372,7 +477,50 @@ class StationController extends Notifier<StationState> {
       onWire: (DispenserWireFrame frame) {
         ref.read(dispenserMonitorProvider.notifier).ingestWire(frame);
       },
+      onIntercomSignal: (IntercomNotice notice) {
+        ref.read(intercomControllerProvider.notifier).onHelperSignal(notice);
+      },
+      onIntercomAudio: (int unitId, Uint8List pcm) {
+        ref
+            .read(intercomControllerProvider.notifier)
+            .onHelperAudio(unitId, pcm);
+      },
+      onWifiStatus: _adoptDebugWifi,
     );
+    ref
+        .read(intercomControllerProvider.notifier)
+        .bind(
+          isOnline: (int unitId) => state.endpoint(unitId).connected,
+          sendPtt: (int unitId, bool down) {
+            unawaited(
+              _sockets.sendCommand(
+                unitId: unitId,
+                payload: <String, Object>{
+                  'cmd': down ? 'PTT_DOWN' : 'PTT_UP',
+                  'unit': unitId,
+                },
+              ),
+            );
+          },
+          sendPcm: (int unitId, Uint8List frame) {
+            unawaited(_sockets.sendBinary(unitId: unitId, frame: frame));
+          },
+        );
+    ref.listen<IntercomState>(intercomControllerProvider, (
+      IntercomState? previous,
+      IntercomState next,
+    ) {
+      _syncBuzzer();
+    });
+    ref.listen<IntercomAudioSettings>(intercomAudioSettingsProvider, (
+      IntercomAudioSettings? previous,
+      IntercomAudioSettings next,
+    ) {
+      ref
+          .read(intercomControllerProvider.notifier)
+          .applyStationVolume(next.stationVolume);
+      _pushIntercomLevels(next);
+    });
     ref.listen<ShiftWorkspaceState>(shiftWorkspaceProvider, (
       ShiftWorkspaceState? previous,
       ShiftWorkspaceState next,
@@ -403,11 +551,31 @@ class StationController extends Notifier<StationState> {
     state = state.copyWith(endpoints: stored);
     await _sockets.start();
     _syncHardwareToShift(ref.read(shiftWorkspaceProvider));
+    if (kDebugMode) {
+      await _applySavedNetworkHosts();
+    }
+    final String savedSsid = kDebugMode
+        ? await StationWifiStore.read()
+        : StationNetDefaults.officeSsid;
+    final bool stationNetwork =
+        !kDebugMode || StationWifiStore.isSystemNetwork(savedSsid);
     for (final int unitId in dispenserUnitIds) {
       if (unitId == kOptionalDispenserUnitId) {
         continue;
       }
+      if (!stationNetwork) {
+        final String? host = await StationWifiStore.readUnitHost(
+          ssid: savedSsid,
+          unitId: unitId,
+        );
+        if (host == null) {
+          continue;
+        }
+      }
       connectUnit(unitId);
+    }
+    if (kDebugMode) {
+      unawaited(_lookForUnitsOnSavedNetwork());
     }
     final Map<int, int> dbSequences = await _salesSequences();
     await _refreshCommittedSales();
@@ -539,6 +707,12 @@ class StationController extends Notifier<StationState> {
   }
 
   void _syncBuzzer() {
+    final bool voice =
+        ref.read(intercomControllerProvider).phase != IntercomPhase.idle;
+    if (voice) {
+      _buzzer.stop();
+      return;
+    }
     // PC speaker only while Confirm is actually enabled on a unit.
     final bool waitingForConfirm = state.units.values.any(
       (DispenserUnit unit) => unit.canConfirmPayment,
@@ -585,11 +759,30 @@ class StationController extends Notifier<StationState> {
     final DispenserUnit previous = state.unit(packet.unitId);
     final String cmd = packet.cmd.toUpperCase();
     DispenserRunState nextStatus = packet.status;
-    if (packet.status == DispenserRunState.dispensing) {
-      _lastPumpingLiters[packet.unitId] = packet.volumeLiters;
-      _pendingConfirmUnits.remove(packet.unitId);
+    final bool saleCompleteCmd = cmd == 'SALE_COMPLETE';
+    final double? confirmedLiters = _confirmedLiters[packet.unitId];
+    final bool replayOfConfirmed =
+        confirmedLiters != null &&
+        (packet.volumeLiters - confirmedLiters).abs() <
+            DispenserUnit.zeroVolumeEpsilon;
+    // A fresh SALE_COMPLETE is a new ticket. Drop the post-Confirm suppress
+    // so the unit waits again. Replays of the just-confirmed liters stay suppressed.
+    if (saleCompleteCmd && !replayOfConfirmed) {
       _suppressConfirmUntilReset.remove(packet.unitId);
-      _confirmedLiters.remove(packet.unitId);
+    }
+
+    final bool waitingForConfirm = _pendingConfirmUnits.contains(packet.unitId);
+    if (packet.status == DispenserRunState.dispensing) {
+      if (waitingForConfirm) {
+        // Keep the Confirm hold. A pumping frame before Confirm must not
+        // clear the ticket or unlock the sheet.
+        nextStatus = DispenserRunState.cycleComplete;
+      } else {
+        _lastPumpingLiters[packet.unitId] = packet.volumeLiters;
+        _pendingConfirmUnits.remove(packet.unitId);
+        _suppressConfirmUntilReset.remove(packet.unitId);
+        _confirmedLiters.remove(packet.unitId);
+      }
     }
 
     final double? pumped = _lastPumpingLiters[packet.unitId];
@@ -600,7 +793,6 @@ class StationController extends Notifier<StationState> {
         packet.status == DispenserRunState.idle &&
         hadPump &&
         !previous.isCycleComplete;
-    final bool saleCompleteCmd = cmd == 'SALE_COMPLETE';
     final bool suppressConfirm = _suppressConfirmUntilReset.contains(
       packet.unitId,
     );
@@ -640,9 +832,17 @@ class StationController extends Notifier<StationState> {
         nextStatus == DispenserRunState.cycleComplete && !suppressConfirm;
     double amountPkr = packet.amountPkr;
     double volumeLiters = packet.volumeLiters;
-    if (holdComplete && volumeLiters.abs() < DispenserUnit.zeroVolumeEpsilon) {
-      volumeLiters = previous.volumeLiters;
-      amountPkr = previous.amountPkr;
+    // Idle LCD frames after hang-up often show 0 L. Keep the sale totals so
+    // Confirm stays enabled until the operator presses it.
+    if (holdComplete &&
+        (volumeLiters.abs() < DispenserUnit.zeroVolumeEpsilon ||
+            amountPkr.abs() < DispenserUnit.zeroVolumeEpsilon)) {
+      if (previous.volumeLiters.abs() >= DispenserUnit.zeroVolumeEpsilon) {
+        volumeLiters = previous.volumeLiters;
+      }
+      if (previous.amountPkr.abs() >= DispenserUnit.zeroVolumeEpsilon) {
+        amountPkr = previous.amountPkr;
+      }
     }
 
     if (nextStatus == DispenserRunState.dispensing) {
@@ -651,7 +851,9 @@ class StationController extends Notifier<StationState> {
     }
 
     double? cycleOpening = previous.cycleOpeningMeter;
-    if (packet.status == DispenserRunState.dispensing && cycleOpening == null) {
+    if (packet.status == DispenserRunState.dispensing &&
+        !waitingForConfirm &&
+        cycleOpening == null) {
       if (!previous.isDispensing ||
           previous.volumeLiters.abs() < DispenserUnit.zeroVolumeEpsilon) {
         cycleOpening = previous.meterCount;
@@ -664,16 +866,17 @@ class StationController extends Notifier<StationState> {
     }
 
     final bool latchTest = previous.testMode || previous.testCycle;
+    final bool pendingConfirm = _pendingConfirmUnits.contains(packet.unitId);
 
     _patchUnit(
       packet.unitId,
       previous.copyWith(
         status: nextStatus,
-        amountPkr: packet.amountPkr,
-        volumeLiters: packet.volumeLiters,
+        amountPkr: amountPkr,
+        volumeLiters: volumeLiters,
         rate: packet.rate,
         meterCount: packet.meterCount,
-        keypadLocked: _pendingConfirmUnits.contains(packet.unitId)
+        keypadLocked: pendingConfirm
             ? true
             : (_monitorUnlockTimers.containsKey(packet.unitId)
                   ? false
@@ -734,12 +937,61 @@ class StationController extends Notifier<StationState> {
     ref.read(dispenserMonitorProvider.notifier).markSocketOpened(unitId);
     _syncBuzzer();
     unawaited(_sockets.requestSyncLog(unitId));
-    if (_suppressConfirmUntilReset.contains(unitId)) {
+    _pushIntercomLevels(
+      ref.read(intercomAudioSettingsProvider),
+      onlyUnit: unitId,
+    );
+    if (_suppressConfirmUntilReset.contains(unitId) &&
+        !_pendingConfirmUnits.contains(unitId)) {
       unawaited(_sockets.confirmUnit(unitId));
     }
   }
 
+  /// Speaker-test path. Same PTT frames as the hold-to-talk bar.
+  void sendIntercomPtt(int unitId, bool down) {
+    unawaited(
+      _sockets.sendCommand(
+        unitId: unitId,
+        payload: <String, Object>{
+          'cmd': down ? 'PTT_DOWN' : 'PTT_UP',
+          'unit': unitId,
+        },
+      ),
+    );
+  }
+
+  /// One 20 ms operator frame. The ESP plays it only while PTT is down.
+  void sendIntercomPcm(int unitId, Uint8List pcm) {
+    unawaited(
+      _sockets.sendBinary(
+        unitId: unitId,
+        frame: IntercomCodec.operatorFrame(pcm),
+      ),
+    );
+  }
+
+  void _pushIntercomLevels(IntercomAudioSettings settings, {int? onlyUnit}) {
+    final List<int> units = onlyUnit == null
+        ? const <int>[1, 2, 3, 4, 5]
+        : <int>[onlyUnit];
+    for (final int unitId in units) {
+      unawaited(
+        _sockets.sendCommand(
+          unitId: unitId,
+          payload: <String, Object>{
+            'cmd': 'INTERCOM_CFG',
+            'unit': unitId,
+            'spk': settings.pumpVolume,
+            'mic': settings.pumpMicLevel,
+            'gate': settings.pumpNoiseCut,
+          },
+        ),
+      );
+    }
+  }
+
   void _onOffline(int unitId) {
+    ref.read(intercomControllerProvider.notifier).onUnitOffline(unitId);
     final UnitEndpoint current = state.endpoint(unitId);
     final DispenserUnit unit = state.unit(unitId);
     if (!current.connected && (unit.isOffline || unit.isCycleComplete)) {
@@ -780,9 +1032,10 @@ class StationController extends Notifier<StationState> {
           final DateTime bAt = b.at ?? DateTime.fromMillisecondsSinceEpoch(0);
           return bAt.compareTo(aAt);
         });
-      final Map<int, List<EspTokenLogRow>> logs = Map<int, List<EspTokenLogRow>>.from(
-        ref.read(espLastTenByUnitProvider),
-      );
+      final Map<int, List<EspTokenLogRow>> logs =
+          Map<int, List<EspTokenLogRow>>.from(
+            ref.read(espLastTenByUnitProvider),
+          );
       logs[unitId] = sorted;
       ref.read(espLastTenByUnitProvider.notifier).state = logs;
       final List<EspTokenLogRow> missing = missingEspTokenRows(
@@ -866,6 +1119,7 @@ class StationController extends Notifier<StationState> {
     String vehicleNo = '',
     String customerId = '',
     double cashNow = 0,
+    double accountNow = 0,
   }) async {
     if (state.unit(row.unitId).isTestRun) {
       return null;
@@ -888,6 +1142,17 @@ class StationController extends Notifier<StationState> {
       payment: payment,
       saleAmount: amountPkr,
       cashNow: cashNow,
+      accountNow: accountNow,
+    );
+    final ({
+      double cashAmount,
+      double accountAmount,
+      double pendingAccountAmount,
+    })
+    heldRecovered = accountPersistSplit(
+      payment: split.payment,
+      cashAmount: split.cashAmount,
+      accountAmount: split.accountAmount,
     );
     final double opening = row.meterCount - volumeLiters;
     final SaleTransaction txn = SaleTransaction(
@@ -901,7 +1166,9 @@ class StationController extends Notifier<StationState> {
       timestamp: row.at ?? DateTime.now(),
       openingMeter: opening < 0 ? 0 : opening,
       closingMeter: row.meterCount,
-      customerName: customerName.trim().isEmpty ? 'Walk-in' : customerName.trim(),
+      customerName: customerName.trim().isEmpty
+          ? 'Walk-in'
+          : customerName.trim(),
       vehicleNo: persistVehicleNo(vehicleNo),
       payment: split.payment,
       cashierName: SalesTransactionRepository.operatorNameFor(
@@ -910,12 +1177,9 @@ class StationController extends Notifier<StationState> {
       ),
       helperName: assigned?.name ?? '',
       shiftId: activeShift?.shiftId ?? '',
-      cashAmount: split.cashAmount,
-      accountAmount: split.accountAmount,
-      pendingAccountAmount: split.payment == PaymentMethod.bankAccount ||
-              split.payment == PaymentMethod.easyPaisa
-          ? split.accountAmount
-          : 0,
+      cashAmount: heldRecovered.cashAmount,
+      accountAmount: heldRecovered.accountAmount,
+      pendingAccountAmount: heldRecovered.pendingAccountAmount,
       notes: 'RECOVERED',
       saleType: 'RECOVERED',
       espTxId: row.token > 0 ? '${row.token}' : '',
@@ -967,6 +1231,7 @@ class StationController extends Notifier<StationState> {
     required PaymentMethod payment,
     String cashierName = 'Operator',
     double cashAmount = 0,
+    double accountNow = 0,
     int? tokenNo,
     String saleType = '',
   }) {
@@ -990,6 +1255,7 @@ class StationController extends Notifier<StationState> {
       payment: payment,
       saleAmount: unit.amountPkr,
       cashNow: cashAmount,
+      accountNow: accountNow,
     );
     return SaleTransaction(
       tokenNo: resolvedToken,
@@ -1274,6 +1540,7 @@ class StationController extends Notifier<StationState> {
     required String vehicleNo,
     required PaymentMethod payment,
     double cashNow = 0,
+    double accountNow = 0,
   }) {
     final DispenserUnit unit = state.unit(unitId);
     if (!unit.canConfirmPayment) {
@@ -1282,19 +1549,14 @@ class StationController extends Notifier<StationState> {
     if (!unit.isTestRun && !isVehicleRegistrationValid(vehicleNo)) {
       return false;
     }
-    final ({PaymentMethod payment, double cashAmount, double accountAmount})
-    split = resolveAccountSplit(
-      payment: payment,
-      saleAmount: unit.amountPkr,
-      cashNow: cashNow,
-    );
     SaleTransaction draft = _draftSale(
       unitId: unitId,
       unit: unit,
       customerName: customerName,
       vehicleNo: vehicleNo,
-      payment: split.payment,
-      cashAmount: split.cashAmount,
+      payment: payment,
+      cashAmount: cashNow,
+      accountNow: accountNow,
     );
     if (unit.isTestRun) {
       draft = draft.copyWith(
@@ -1310,6 +1572,16 @@ class StationController extends Notifier<StationState> {
     );
     next[unitId] = draft;
     ref.read(receiptOverlayTxnsProvider.notifier).state = next;
+    ref.read(receiptOverlayBaqayaProvider.notifier).state = _overlayBaqayaMap(
+      ref.read(receiptOverlayBaqayaProvider),
+      unitId,
+      unit.isTestRun
+          ? 0
+          : accountOverpayBaqaya(
+              saleAmount: unit.amountPkr,
+              accountNow: accountNow,
+            ),
+    );
     return true;
   }
 
@@ -1319,6 +1591,7 @@ class StationController extends Notifier<StationState> {
     required String vehicleNo,
     required PaymentMethod payment,
     double cashNow = 0,
+    double accountNow = 0,
   }) {
     final DispenserUnit unit = state.unit(unitId);
     if (!unit.canConfirmPayment) {
@@ -1327,19 +1600,14 @@ class StationController extends Notifier<StationState> {
     if (!unit.isTestRun && !isVehicleRegistrationValid(vehicleNo)) {
       return null;
     }
-    final ({PaymentMethod payment, double cashAmount, double accountAmount})
-    split = resolveAccountSplit(
-      payment: payment,
-      saleAmount: unit.amountPkr,
-      cashNow: cashNow,
-    );
     SaleTransaction draft = _draftSale(
       unitId: unitId,
       unit: unit,
       customerName: customerName,
       vehicleNo: vehicleNo,
-      payment: split.payment,
-      cashAmount: split.cashAmount,
+      payment: payment,
+      cashAmount: cashNow,
+      accountNow: accountNow,
     );
     if (unit.isTestRun) {
       draft = draft.copyWith(
@@ -1357,11 +1625,15 @@ class StationController extends Notifier<StationState> {
     final Map<int, SaleTransaction> next = Map<int, SaleTransaction>.from(
       ref.read(receiptOverlayTxnsProvider),
     );
-    if (!next.containsKey(unitId)) {
-      return;
+    if (next.containsKey(unitId)) {
+      next.remove(unitId);
+      ref.read(receiptOverlayTxnsProvider.notifier).state = next;
     }
-    next.remove(unitId);
-    ref.read(receiptOverlayTxnsProvider.notifier).state = next;
+    ref.read(receiptOverlayBaqayaProvider.notifier).state = _overlayBaqayaMap(
+      ref.read(receiptOverlayBaqayaProvider),
+      unitId,
+      0,
+    );
   }
 
   void setUnitTestMode(int unitId, {required bool enabled}) {
@@ -1564,6 +1836,7 @@ class StationController extends Notifier<StationState> {
     String cashierName = 'Operator',
     String customerId = '',
     double cashNow = 0,
+    double accountNow = 0,
   }) async {
     if (_confirmInFlight.contains(unitId)) {
       return null;
@@ -1594,6 +1867,7 @@ class StationController extends Notifier<StationState> {
       payment: payment,
       saleAmount: unit.amountPkr,
       cashNow: cashNow,
+      accountNow: accountNow,
     );
     final PaymentMethod tender = split.payment;
     final ({
@@ -1797,6 +2071,10 @@ class StationController extends Notifier<StationState> {
   }
 
   Future<void> setKeypadLock({required int unitId, required bool lock}) async {
+    if (!lock && _pendingConfirmUnits.contains(unitId)) {
+      // Fueling wait owns the lock until Confirm.
+      return;
+    }
     if (lock) {
       _monitorUnlockTimers.remove(unitId)?.cancel();
     }
@@ -1902,6 +2180,153 @@ class StationController extends Notifier<StationState> {
     unawaited(_sockets.rescanUnitWifi(unitId));
   }
 
+  int _unitSearch = 0;
+
+  /// Points each unit at the address saved for the current network.
+  ///
+  /// System uses the fixed 192.168.0.1x0 addresses. Any other network uses the
+  /// last address found on that network.
+  Future<void> _applySavedNetworkHosts() async {
+    final String ssid = await StationWifiStore.read();
+    if (StationWifiStore.isSystemNetwork(ssid)) {
+      for (final int unitId in dispenserUnitIds) {
+        saveEndpoint(
+          unitId: unitId,
+          host: StationNetDefaults.hostFor(unitId),
+          port: 81,
+        );
+      }
+      return;
+    }
+    for (final int unitId in dispenserUnitIds) {
+      final String? host = await StationWifiStore.readUnitHost(
+        ssid: ssid,
+        unitId: unitId,
+      );
+      if (host == null) {
+        continue;
+      }
+      saveEndpoint(unitId: unitId, host: host, port: 81);
+    }
+  }
+
+  /// Debug builds only. Searches the saved gateway's network for unit sockets.
+  Future<void> _lookForUnitsOnSavedNetwork() async {
+    if (!kDebugMode) {
+      return;
+    }
+    final int ticket = ++_unitSearch;
+    final String ssid = await StationWifiStore.read();
+    if (StationWifiStore.isSystemNetwork(ssid) || ticket != _unitSearch) {
+      return;
+    }
+    final String gateway = await StationWifiStore.readGateway();
+    if (gateway.isEmpty || ticket != _unitSearch) {
+      return;
+    }
+    final List<StationUnitHit> found = await findUnitsOnGateway(gateway);
+    if (ticket != _unitSearch) {
+      return;
+    }
+    for (final StationUnitHit hit in found) {
+      await StationWifiStore.writeUnitHost(
+        ssid: ssid,
+        unitId: hit.unitId,
+        host: hit.host,
+      );
+      saveEndpoint(unitId: hit.unitId, host: hit.host, port: 81);
+      connectUnit(hit.unitId);
+    }
+  }
+
+  /// Debug builds only. Sends one network name to every unit that is online.
+  Future<int> pushDebugWifi({
+    required String ssid,
+    required String password,
+    String gateway = '',
+  }) async {
+    if (!kDebugMode) {
+      return 0;
+    }
+    await ref
+        .read(stationOfficeSsidProvider.notifier)
+        .remember(ssid, gateway: gateway);
+    int sent = 0;
+    for (final int unitId in dispenserUnitIds) {
+      if (!state.endpoint(unitId).connected) {
+        continue;
+      }
+      final bool ok = await _sockets.sendWifi(
+        unitId: unitId,
+        ssid: ssid,
+        password: password,
+      );
+      if (ok) {
+        sent += 1;
+      }
+    }
+    await _applySavedNetworkHosts();
+    if (StationWifiStore.isSystemNetwork(ssid)) {
+      for (final int unitId in dispenserUnitIds) {
+        connectUnit(unitId);
+      }
+    } else {
+      for (final int unitId in dispenserUnitIds) {
+        final String? host = await StationWifiStore.readUnitHost(
+          ssid: ssid,
+          unitId: unitId,
+        );
+        if (host != null) {
+          connectUnit(unitId);
+        }
+      }
+    }
+    unawaited(_lookForUnitsOnSavedNetwork());
+    return sent;
+  }
+
+  /// Debug builds only. The board is plugged into this computer.
+  Future<DispenserWifiStatus> pushDebugWifiOverUsb({
+    required String portName,
+    required String ssid,
+    required String password,
+    String gateway = '',
+  }) async {
+    if (!kDebugMode) {
+      throw const EspUsbWifiException('Wi-Fi setup is only in a debug build.');
+    }
+    await ref
+        .read(stationOfficeSsidProvider.notifier)
+        .remember(ssid, gateway: gateway);
+    final DispenserWifiStatus status = await EspUsbWifi.send(
+      portName: portName,
+      ssid: ssid,
+      password: password,
+    );
+    _adoptDebugWifi(status);
+    unawaited(_lookForUnitsOnSavedNetwork());
+    return status;
+  }
+
+  void _adoptDebugWifi(DispenserWifiStatus status) {
+    if (!kDebugMode || !status.dhcp || !status.hasAddress) {
+      return;
+    }
+    if (status.unitId < 1 || status.unitId > 5) {
+      return;
+    }
+    final String ssid = ref.read(stationOfficeSsidProvider);
+    unawaited(
+      StationWifiStore.writeUnitHost(
+        ssid: ssid,
+        unitId: status.unitId,
+        host: status.ip,
+      ),
+    );
+    saveEndpoint(unitId: status.unitId, host: status.ip, port: 81);
+    connectUnit(status.unitId);
+  }
+
   void flushUartBuffer(int unitId) {
     unawaited(_sockets.flushUartBuffer(unitId));
   }
@@ -1975,7 +2400,9 @@ class StationController extends Notifier<StationState> {
     required String vehicleNo,
     required PaymentMethod payment,
     double cashNow = 0,
+    double accountNow = 0,
     double saleAmount = 0,
+    String creditCustomerId = '',
   }) async {
     final SaleTransaction? current = await _salesDb.byToken(tokenNo);
     if (current == null || current.isAccountPending) {
@@ -1986,36 +2413,87 @@ class StationController extends Notifier<StationState> {
       payment: payment,
       saleAmount: saleAmount,
       cashNow: cashNow,
+      accountNow: accountNow,
     );
+    final ({
+      double cashAmount,
+      double accountAmount,
+      double pendingAccountAmount,
+      bool clearProof,
+    })
+    held = editedAccountPersistSplit(
+      saved: current,
+      payment: split.payment,
+      cashAmount: split.cashAmount,
+      accountAmount: split.accountAmount,
+    );
+    final PaymentMethod previousPayment = current.payment;
     await _salesDb.updateMetadata(
       tokenNo: tokenNo,
       customerName: customerName,
       vehicleNo: vehicleNo,
       payment: split.payment,
-      cashAmount: split.cashAmount,
-      accountAmount: split.accountAmount,
-      pendingAccountAmount: 0,
+      cashAmount: held.cashAmount,
+      accountAmount: held.accountAmount,
+      pendingAccountAmount: held.pendingAccountAmount,
       edited: true,
+      creditCustomerId: creditCustomerId,
+      creditShiftId: current.shiftId,
+      creditDescription: current.fuelType,
     );
+    if (held.clearProof && current.proofImagePath.trim().isNotEmpty) {
+      await _salesDb.setProofImagePath(tokenNo: tokenNo, path: null);
+    }
     await _refreshCommittedSales();
     bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
-    return _salesDb.byToken(tokenNo);
+    final SaleTransaction? updated = await _salesDb.byToken(tokenNo);
+    if (updated != null) {
+      ref
+          .read(shiftWorkspaceProvider.notifier)
+          .patchSaleTender(
+            tokenNo: updated.tokenNo,
+            payment: updated.payment,
+            cashAmount: updated.cashAmount,
+            accountAmount: updated.accountAmount,
+            pendingAccountAmount: updated.pendingAccountAmount,
+            customerName: updated.customerName,
+            edited: true,
+          );
+    }
+    if (split.payment == PaymentMethod.udhaar ||
+        previousPayment == PaymentMethod.udhaar) {
+      try {
+        await reloadCustomerPersistence(ref);
+      } catch (error, stack) {
+        debugPrint('Could not refresh udhaar ledger: $error\n$stack');
+      }
+    }
+    return updated;
   }
 
   Future<SaleTransaction?> confirmPendingAccountTransfer({
     required int tokenNo,
     required double cashAmount,
+    double? pendingAccountAmount,
   }) async {
     final SaleTransaction? current = await _salesDb.byToken(tokenNo);
     if (current == null || !current.isAccountPending) {
       return null;
     }
     final ({PaymentMethod payment, double cashAmount, double accountAmount})
-    confirmed = resolvePendingAccountConfirm(
-      payment: current.payment,
-      saleAmount: current.amountPkr,
-      cashAmount: cashAmount,
-    );
+    confirmed = current.payment == PaymentMethod.udhaar
+        ? (
+            payment: PaymentMethod.udhaar,
+            cashAmount: cashAmount,
+            accountAmount: pendingAccountAmount ?? current.pendingAccountAmount,
+          )
+        : resolvePendingAccountConfirm(
+            payment: current.payment,
+            saleAmount: current.amountPkr,
+            cashAmount: cashAmount,
+            pendingAccountAmount:
+                pendingAccountAmount ?? current.pendingAccountAmount,
+          );
     final SaleTransaction? updated = await _salesDb.confirmPendingAccount(
       tokenNo: tokenNo,
       receivedAmount: confirmed.accountAmount,
@@ -2035,6 +2513,19 @@ class StationController extends Notifier<StationState> {
             pendingAccountAmount: updated.pendingAccountAmount,
           );
     }
+    return updated;
+  }
+
+  Future<SaleTransaction?> saveAccountProofImage({
+    required int tokenNo,
+    required String? path,
+  }) async {
+    final SaleTransaction? updated = await _salesDb.setProofImagePath(
+      tokenNo: tokenNo,
+      path: path,
+    );
+    await _refreshCommittedSales();
+    bumpHistoryRevision(ref.read(historyRevisionProvider.notifier));
     return updated;
   }
 
